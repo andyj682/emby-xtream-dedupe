@@ -65,6 +65,16 @@ namespace Emby.Xtream.Plugin
         /// </summary>
         public int[] ExcludedVodStreamIds { get; set; } = new int[0];
 
+        /// <summary>
+        /// Reviewed-checkpoint: JSON array of VOD StreamIds the user has marked
+        /// "reviewed" in the de-duplicated view. Stored as a JSON string (not int[])
+        /// because the set grows toward the full library size; the client keeps it in
+        /// a Set for O(1) lookups. A title counts as reviewed if it is in this set OR
+        /// excluded (excluding implies reviewed), so existing exclusions need no
+        /// migration and "unreviewed" doubles as "new since I last looked".
+        /// </summary>
+        public string ReviewedVodStreamIdsJson { get; set; } = string.Empty;
+
         // Series / TV Shows
         public bool SyncSeries { get; set; }
         public int[] SelectedSeriesCategoryIds { get; set; } = new int[0];
@@ -76,6 +86,12 @@ namespace Emby.Xtream.Plugin
         /// Granularity is per-series, not per-episode.
         /// </summary>
         public int[] ExcludedSeriesIds { get; set; } = new int[0];
+
+        /// <summary>
+        /// Reviewed-checkpoint for series. Same semantics as ReviewedVodStreamIdsJson:
+        /// JSON array of reviewed SeriesIds; reviewed = this set OR excluded.
+        /// </summary>
+        public string ReviewedSeriesIdsJson { get; set; } = string.Empty;
 
         // Content name cleaning
         public bool EnableContentNameCleaning { get; set; }
