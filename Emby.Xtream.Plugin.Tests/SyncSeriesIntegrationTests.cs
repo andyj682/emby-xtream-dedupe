@@ -575,5 +575,92 @@ namespace Emby.Xtream.Plugin.Tests
 
             Assert.Equal(5000, config.LastSeriesSyncTimestamp);
         }
+
+        // -----------------------------------------------------------------
+        // Test 18: Collapse_CrossListedSameName_KeepsOneRepresentative
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task Collapse_CrossListedSameName_KeepsOneRepresentative()
+        {
+            // A provider cross-lists the "same" series under two SeriesIds (e.g. one per
+            // category). In single-folder mode both land in Shows/{name}, so the sync must
+            // collapse them by (folder + cleaned name) and process only the first
+            // representative — no duplicate per-episode files, no redundant get_series_info.
+            var config = DefaultConfig();
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Dup Show", lastModified: "1000"),
+                Series(seriesId: 2, name: "Dup Show", lastModified: "1000")));
+            // Only the kept representative (id=1) is fetched. id=2's detail is deliberately
+            // NOT registered: if collapse regresses and id=2 is processed, the loop's fetch
+            // throws (unregistered URL), is caught, and counts as Failed — asserted 0 below.
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            var strmPath = EpisodeStrmPath("Dup Show", season: 1, episode: 1, title: "Episode Title");
+            Assert.True(File.Exists(strmPath), $"Expected STRM at: {strmPath}");
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+            Assert.Contains(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=1"));
+            Assert.DoesNotContain(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=2"));
+        }
+
+        // -----------------------------------------------------------------
+        // Test 19: Collapse_DifferentNames_BothProcessed
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task Collapse_DifferentNames_BothProcessed()
+        {
+            // Guard against over-collapsing: two genuinely different titles must both be
+            // processed (the collapse key includes the cleaned name, not just the folder).
+            var config = DefaultConfig();
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Show One", lastModified: "1000"),
+                Series(seriesId: 2, name: "Show Two", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+            Handler.RespondWith("action=get_series_info&series_id=2", SeriesDetailJson(seriesId: 2));
+
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(EpisodeStrmPath("Show One", season: 1, episode: 1, title: "Episode Title")));
+            Assert.True(File.Exists(EpisodeStrmPath("Show Two", season: 1, episode: 1, title: "Episode Title")));
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+        }
+
+        // -----------------------------------------------------------------
+        // Test 20: EmptyDetailUnderLoad_RetryRecovers
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task EmptyDetailUnderLoad_RetryRecovers()
+        {
+            // get_series_info can answer HTTP 200 with an empty episode list under concurrent
+            // load. FetchSeriesDetailAsync retries; an empty-then-valid sequence must recover
+            // the episode within a single sync (no ratchet where re-included titles trickle in).
+            var config = DefaultConfig();
+            var emptyDetail = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                info = new { series_id = 1, name = "Test Show", tmdb = "" },
+                seasons = new object[0],
+                episodes = new System.Collections.Generic.Dictionary<string, object[]>()
+            });
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Test Show", lastModified: "1000")));
+            Handler.RespondWithSequence("action=get_series_info&series_id=1",
+                new[] { emptyDetail, SeriesDetailJson(seriesId: 1) });
+
+            var svc = MakeService();
+            svc.SeriesDetailRetryBaseDelayMs = 0; // no real delay in tests
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            var strmPath = EpisodeStrmPath("Test Show", season: 1, episode: 1, title: "Episode Title");
+            Assert.True(File.Exists(strmPath), $"Expected STRM at: {strmPath}");
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+            var detailCalls = Handler.ReceivedUrls.FindAll(u => u.Contains("get_series_info&series_id=1")).Count;
+            Assert.Equal(2, detailCalls);
+        }
     }
 }

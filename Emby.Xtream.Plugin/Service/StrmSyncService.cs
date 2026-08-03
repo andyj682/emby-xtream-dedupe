@@ -127,6 +127,11 @@ namespace Emby.Xtream.Plugin.Service
         private SyncProgress _seriesProgress = new SyncProgress();
         private SyncProgress _episodeProgress = new SyncProgress();
 
+        // get_series_info retry tuning (see FetchSeriesDetailAsync). Internal so tests can
+        // zero the delay; prod defaults re-fetch a transient empty episode list a few times.
+        internal int SeriesDetailMaxAttempts = 3;
+        internal int SeriesDetailRetryBaseDelayMs = 500;
+
         // Single-flight gates. Each sync replaces its progress object wholesale and shares a
         // written-path set, so two overlapping runs of the same kind corrupt each other's state.
         // Movies and series are gated separately because they touch different roots and are
@@ -867,6 +872,43 @@ namespace Emby.Xtream.Plugin.Service
 
                     _logger.Info("Per-item exclusions: skipping {0} of {1} series",
                         excludedSeriesItems.Count, fetchedSeries.Count);
+                }
+
+                // Collapse series that would land in the same folder under the same name.
+                // Unlike movies (one shared StreamId), a provider/proxy can cross-list the
+                // "same" series under a different SeriesId per category; those instances point
+                // at the same episodes but can carry different episode titles, which would
+                // otherwise write duplicate per-episode .strm files (same URL, different
+                // filename). Keeping one representative also skips redundant get_series_info
+                // calls. Keyed on (target folder + cleaned name), so Multiple/Custom-folder
+                // mode still keeps genuinely per-category copies in their separate folders.
+                // Excluded series are already filtered out above, so first-wins is safe here
+                // (no need to prefer a non-excluded representative).
+                if (allSeries.Count > 1)
+                {
+                    var keptKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var collapsedSeries = new List<SeriesInfo>(allSeries.Count);
+                    foreach (var s in allSeries)
+                    {
+                        var cleaned = config.EnableContentNameCleaning
+                            ? ContentNameCleaner.CleanContentName(s.Name, config.ContentRemoveTerms)
+                            : s.Name;
+                        var sanitized = SanitizeFileName(cleaned);
+                        var sf = BuildContentFolderPath(
+                            config.SeriesFolderMode, s.CategoryId, categoryNames, folderMappings, "Shows");
+                        var folderKey = (sf ?? "null") + " " + sanitized;
+                        if (keptKeys.Add(folderKey))
+                        {
+                            collapsedSeries.Add(s);
+                        }
+                    }
+
+                    if (collapsedSeries.Count != allSeries.Count)
+                    {
+                        _logger.Info("Collapsed {0} cross-listed series entries into {1} unique titles before sync",
+                            allSeries.Count, collapsedSeries.Count);
+                        allSeries = collapsedSeries;
+                    }
                 }
 
                 // Delta sync: split into changed and unchanged using LastModified timestamp
@@ -2024,8 +2066,34 @@ namespace Emby.Xtream.Plugin.Service
                 "{0}/player_api.php?username={1}&password={2}&action=get_series_info&series_id={3}",
                 config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), seriesId);
 
-            var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
-            return STJ.JsonSerializer.Deserialize<SeriesDetailInfo>(json, JsonOptions);
+            // Some providers answer get_series_info with HTTP 200 but an empty episode
+            // list when several detail requests arrive at once (SyncParallelism > 1). The
+            // payload is fine on a lightly-loaded retry, so re-fetch a few times with a
+            // short backoff before giving up. Without this, each empty response is silently
+            // treated as "no episodes" and the series is skipped, so a batch of newly-added
+            // (or just re-included) titles only trickles in a couple per sync. The backoff
+            // also spaces concurrent detail calls apart, easing the contention that produces
+            // the empties. A throw still propagates to the caller's catch unchanged.
+            var maxAttempts = Math.Max(1, SeriesDetailMaxAttempts);
+            SeriesDetailInfo detail = null;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
+                detail = STJ.JsonSerializer.Deserialize<SeriesDetailInfo>(json, JsonOptions);
+
+                if (detail != null && detail.Episodes != null && detail.Episodes.Count > 0)
+                    return detail;
+
+                if (attempt < maxAttempts)
+                {
+                    _logger.Debug("Empty episode list for series {0} (attempt {1}/{2}) — retrying", seriesId, attempt, maxAttempts);
+                    if (SeriesDetailRetryBaseDelayMs > 0)
+                        await Task.Delay(SeriesDetailRetryBaseDelayMs * attempt, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            // Still empty after retries — return it and let the caller record the outcome.
+            return detail;
         }
 
         /// <summary>
