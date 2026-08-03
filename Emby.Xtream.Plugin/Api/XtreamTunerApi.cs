@@ -57,6 +57,16 @@ namespace Emby.Xtream.Plugin.Api
         public int CategoryId { get; set; }
     }
 
+    [Route("/XtreamTuner/Items/VodDeduped", "GET", Summary = "Lists de-duplicated VOD titles across the selected categories, each with its category memberships")]
+    public class GetVodDedupedItems : IReturn<List<DedupedItemDto>>
+    {
+    }
+
+    [Route("/XtreamTuner/Items/SeriesDeduped", "GET", Summary = "Lists de-duplicated series titles across the selected categories, each with its category memberships")]
+    public class GetSeriesDedupedItems : IReturn<List<DedupedItemDto>>
+    {
+    }
+
     [Route("/XtreamTuner/Sync/Movies", "POST", Summary = "Triggers VOD movie STRM sync")]
     public class SyncMovies : IReturn<SyncResult>
     {
@@ -171,6 +181,17 @@ namespace Emby.Xtream.Plugin.Api
     [Route("/XtreamTuner/StreamStats", "GET", Summary = "Returns cached stream stats received from Dispatcharr for all known streams")]
     public class GetStreamStats : IReturn<object>
     {
+    }
+
+    public class DedupedItemDto
+    {
+        // A title can map to several provider IDs: movies share one StreamId across
+        // categories (so Ids has one element), but Dispatcharr gives the "same" series a
+        // distinct SeriesId per category, so a series title groups several ids. Excluding
+        // the title excludes every id in this array.
+        public int[] Ids { get; set; }
+        public string Name { get; set; }
+        public int[] Categories { get; set; }
     }
 
     public class SyncGuideMappingsResult
@@ -503,6 +524,207 @@ namespace Emby.Xtream.Plugin.Api
             catch
             {
                 return new List<ContentItemSummary>();
+            }
+        }
+
+        private class DedupAcc
+        {
+            public string Name;
+            public HashSet<int> Ids = new HashSet<int>();
+            public HashSet<int> Categories = new HashSet<int>();
+        }
+
+        public async Task<object> Get(GetVodDedupedItems request)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config == null || string.IsNullOrEmpty(config.BaseUrl) ||
+                string.IsNullOrEmpty(config.Username) || string.IsNullOrEmpty(config.Password))
+            {
+                return new List<DedupedItemDto>();
+            }
+
+            // Scope: the selected VOD categories, matching the sync's allowlist semantics.
+            // An empty (or null) selection means "all categories" — the same rule
+            // FetchVodStreamsAsync applies at sync time — so it resolves to the full
+            // category list below. This is a read-only endpoint and writes no config.
+            var sel = config.SelectedVodCategoryIds;
+            var targets = (sel == null || sel.Length == 0) ? null : sel.ToList();
+
+            try
+            {
+                using (var httpClient = Plugin.CreateHttpClient())
+                {
+                    if (targets == null)
+                    {
+                        var catUrl = string.Format(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            "{0}/player_api.php?username={1}&password={2}&action=get_vod_categories",
+                            config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password));
+                        var catJson = await httpClient.GetStringAsync(catUrl).ConfigureAwait(false);
+                        var cats = System.Text.Json.JsonSerializer.Deserialize<List<Category>>(catJson, ItemListJsonOptions)
+                            ?? new List<Category>();
+                        targets = cats.Select(c => c.CategoryId).Distinct().ToList();
+                    }
+
+                    // Aggregate by StreamId across categories: a movie cross-listed in
+                    // several categories shares one StreamId, so it collapses to one entry
+                    // (Ids has a single element) recording every category it appears in.
+                    var byKey = new Dictionary<int, DedupAcc>();
+                    var gate = new object();
+                    var sem = new SemaphoreSlim(Math.Max(1, config.SyncParallelism));
+
+                    var tasks = targets.Select(async catId =>
+                    {
+                        await sem.WaitAsync().ConfigureAwait(false);
+                        try
+                        {
+                            var url = string.Format(
+                                System.Globalization.CultureInfo.InvariantCulture,
+                                "{0}/player_api.php?username={1}&password={2}&action=get_vod_streams&category_id={3}",
+                                config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password), catId);
+                            var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
+                            var streams = System.Text.Json.JsonSerializer.Deserialize<List<VodStreamInfo>>(json, ItemListJsonOptions)
+                                ?? new List<VodStreamInfo>();
+
+                            lock (gate)
+                            {
+                                foreach (var s in streams)
+                                {
+                                    DedupAcc acc;
+                                    if (!byKey.TryGetValue(s.StreamId, out acc))
+                                    {
+                                        acc = new DedupAcc { Name = s.Name };
+                                        byKey[s.StreamId] = acc;
+                                    }
+
+                                    acc.Ids.Add(s.StreamId);
+                                    acc.Categories.Add(catId);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Warn("De-duped VOD fetch failed for category {0}: {1}", catId, ex.Message);
+                        }
+                        finally
+                        {
+                            sem.Release();
+                        }
+                    });
+
+                    await Task.WhenAll(tasks).ConfigureAwait(false);
+
+                    return byKey.Values
+                        .Select(a => new DedupedItemDto { Name = a.Name, Ids = a.Ids.ToArray(), Categories = a.Categories.ToArray() })
+                        .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("De-duped VOD listing failed: {0}", ex.Message);
+                return new List<DedupedItemDto>();
+            }
+        }
+
+        public async Task<object> Get(GetSeriesDedupedItems request)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config == null || string.IsNullOrEmpty(config.BaseUrl) ||
+                string.IsNullOrEmpty(config.Username) || string.IsNullOrEmpty(config.Password))
+            {
+                return new List<DedupedItemDto>();
+            }
+
+            // Scope: the selected series categories; empty/null = all (matches
+            // FetchSeriesListAsync at sync time). Read-only — writes no config.
+            var sel = config.SelectedSeriesCategoryIds;
+            var targets = (sel == null || sel.Length == 0) ? null : sel.ToList();
+
+            try
+            {
+                using (var httpClient = Plugin.CreateHttpClient())
+                {
+                    if (targets == null)
+                    {
+                        var catUrl = string.Format(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            "{0}/player_api.php?username={1}&password={2}&action=get_series_categories",
+                            config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password));
+                        var catJson = await httpClient.GetStringAsync(catUrl).ConfigureAwait(false);
+                        var cats = System.Text.Json.JsonSerializer.Deserialize<List<Category>>(catJson, ItemListJsonOptions)
+                            ?? new List<Category>();
+                        targets = cats.Select(c => c.CategoryId).Distinct().ToList();
+                    }
+
+                    // Unlike movies, Dispatcharr gives the "same" series a distinct SeriesId
+                    // per category, so grouping by SeriesId would not de-duplicate. Group by
+                    // (trimmed, case-insensitive) name instead — the names are identical
+                    // across categories — collecting all of the title's SeriesIds so the UI
+                    // can exclude every copy at once.
+                    var byKey = new Dictionary<string, DedupAcc>(StringComparer.OrdinalIgnoreCase);
+                    var gate = new object();
+                    var sem = new SemaphoreSlim(Math.Max(1, config.SyncParallelism));
+
+                    var tasks = targets.Select(async catId =>
+                    {
+                        await sem.WaitAsync().ConfigureAwait(false);
+                        try
+                        {
+                            var url = string.Format(
+                                System.Globalization.CultureInfo.InvariantCulture,
+                                "{0}/player_api.php?username={1}&password={2}&action=get_series&category_id={3}",
+                                config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password), catId);
+                            var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
+                            var seriesList = System.Text.Json.JsonSerializer.Deserialize<List<SeriesInfo>>(json, ItemListJsonOptions)
+                                ?? new List<SeriesInfo>();
+
+                            lock (gate)
+                            {
+                                foreach (var s in seriesList)
+                                {
+                                    // Fall back to a per-id key for unnamed entries so they
+                                    // don't all collapse into a single blank-named group.
+                                    var key = (s.Name ?? string.Empty).Trim();
+                                    if (key.Length == 0)
+                                    {
+                                        key = "id:" + s.SeriesId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                    }
+
+                                    DedupAcc acc;
+                                    if (!byKey.TryGetValue(key, out acc))
+                                    {
+                                        acc = new DedupAcc { Name = s.Name };
+                                        byKey[key] = acc;
+                                    }
+
+                                    acc.Ids.Add(s.SeriesId);
+                                    acc.Categories.Add(catId);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Warn("De-duped series fetch failed for category {0}: {1}", catId, ex.Message);
+                        }
+                        finally
+                        {
+                            sem.Release();
+                        }
+                    });
+
+                    await Task.WhenAll(tasks).ConfigureAwait(false);
+
+                    return byKey.Values
+                        .Select(a => new DedupedItemDto { Name = a.Name, Ids = a.Ids.ToArray(), Categories = a.Categories.ToArray() })
+                        .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("De-duped series listing failed: {0}", ex.Message);
+                return new List<DedupedItemDto>();
             }
         }
 
