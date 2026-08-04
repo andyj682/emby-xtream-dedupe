@@ -16,6 +16,39 @@
 
 ---
 
+> **This is a fork of [firestaerter3/emby-xtream](https://github.com/firestaerter3/emby-xtream).**
+> It tracks upstream and adds a de-duplicated review interface that makes reviewing
+> libraries with lots of cross-listed / duplicate titles far easier. It's currently tuned
+> for **Dispatcharr** libraries. Dispatcharr normalizes titles across providers before they
+> reach Emby — a movie ends up with a single stream ID across categories, and a series
+> carries an identical name in each — which is exactly what this fork's de-duplication keys
+> on (movies by ID, series by name). Extending it to raw multi-provider libraries, where the
+> same title's name varies from provider to provider with no Dispatcharr pre-processing, is
+> possible future work. Everything in the upstream README below still applies.
+
+## What this fork adds
+
+When a provider lists the same title under many categories, a simple per-category view means
+reviewing the same movie or show multiple times. This fork adds a title-level review workflow
+on top of the existing per-title exclusion:
+
+- **De-duplicated review view** — one row per unique title across your selected categories
+  (movies collapse by stream ID, series by name), so a title listed in five categories appears
+  once. Search, filter by category, and exclude at the title level.
+- **Reviewed checkpoint** — mark titles "reviewed" (a bookmark, separate from excluding), with
+  *hide reviewed* / *hide excluded* worklist filters. After an initial pass through your library,
+  "unreviewed" doubles as "new since I last looked." Per-title and bulk.
+- **Browse ⇄ De-duplicated review toggle** — switch between the classic per-category tree and
+  the de-dup list; both edit the same exclusion list, so switching is lossless, and your choice
+  is remembered.
+- **Title-level series exclusion** — Dispatcharr gives the same show a distinct ID per category,
+  so excluding it in one place can leave copies elsewhere. The de-dup view extends your exclusions
+  to cover every copy of a title when you open it. *(Applies when you open the review view and
+  save; a sync that skips it won't auto-exclude brand-new duplicate copies.)*
+- **Sync robustness for duplicates** — cross-listed series collapse to one folder instead of
+  writing duplicate per-episode files, and series whose episode list returns empty under load are
+  retried so a batch of new titles lands in one sync.
+
 ## Features
 
 ### Live TV & EPG
