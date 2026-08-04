@@ -638,6 +638,10 @@ function (BaseView, loading) {
                 applyScheduleToTasks(view, config, ApiClient);
                 setDedupedCatNudge(instance, 'vod', false);
                 setDedupedCatNudge(instance, 'series', false);
+                ['vod', 'series'].forEach(function (t) {
+                    var h = instance.view.querySelector('.' + t + 'DedupedHealNotice');
+                    if (h) h.style.display = 'none';
+                });
                 if (typeof callback === 'function') callback();
             });
         }).catch(function () {
@@ -1575,6 +1579,39 @@ function updateEpgVisibility(view) {
         });
     }
 
+    // Series get a distinct provider id per category, so excluding a title in one category
+    // leaves its copies in other categories un-excluded — and a category added LATER brings
+    // a fresh un-excluded copy, quietly re-enabling a title you'd already excluded. On load,
+    // extend any PARTIALLY-excluded title (some ids excluded, not all) to cover all its ids,
+    // making series exclusion effectively title-level. Idempotent; a no-op for single-id
+    // titles (all movies, which already share one id across categories). Returns the number
+    // of titles healed so the caller can prompt a save. (Movies never hit the length<2 gate.)
+    function healPartialExclusions(instance, type) {
+        var cfg = dedupedConfig(type);
+        if (!instance[cfg.excludeKey]) instance[cfg.excludeKey] = [];
+        var list = instance[cfg.excludeKey];
+        var excluded = {};
+        list.forEach(function (id) { excluded[id] = true; });
+
+        var healedTitles = 0;
+        var data = instance[cfg.dataKey] || [];
+        for (var i = 0; i < data.length; i++) {
+            var ids = data[i].Ids || [];
+            if (ids.length < 2) continue;
+            var anyExcluded = false, allExcluded = true;
+            for (var k = 0; k < ids.length; k++) {
+                if (excluded[ids[k]]) anyExcluded = true; else allExcluded = false;
+            }
+            if (anyExcluded && !allExcluded) {
+                for (var j = 0; j < ids.length; j++) {
+                    if (!excluded[ids[j]]) { list.push(ids[j]); excluded[ids[j]] = true; }
+                }
+                healedTitles++;
+            }
+        }
+        return healedTitles;
+    }
+
     function loadDeduped(instance, type) {
         var cfg = dedupedConfig(type);
         var view = instance.view;
@@ -1588,6 +1625,21 @@ function updateEpgVisibility(view) {
             instance[cfg.dataKey] = items || [];
             statusEl.style.color = '#52B54B';
             statusEl.textContent = 'Loaded ' + instance[cfg.dataKey].length + ' unique titles';
+
+            // Extend any partial exclusions to whole titles (covers duplicate copies from
+            // categories added since the last review), then tell the user to save.
+            var healed = healPartialExclusions(instance, type);
+            var healEl = view.querySelector('.' + cfg.prefix + 'DedupedHealNotice');
+            if (healEl) {
+                if (healed > 0) {
+                    healEl.textContent = 'Re-applied your exclusions to ' + healed +
+                        (healed === 1 ? ' title' : ' titles') + ' with new duplicate copies — Save to keep.';
+                    healEl.style.display = '';
+                } else {
+                    healEl.style.display = 'none';
+                }
+            }
+
             controlsEl.style.display = '';
             populateDedupedCategoryFilter(instance, type);
             renderDedupedList(instance, type);
