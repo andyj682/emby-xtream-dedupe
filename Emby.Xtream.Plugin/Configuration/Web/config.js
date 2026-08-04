@@ -45,6 +45,12 @@ function (BaseView, loading) {
         this.excludedSeriesIds = [];
         this.contentItemsByCategory = { vod: {}, series: {} };
         this.expandedContentCategories = { vod: {}, series: {} };
+        // De-duplicated review view: cached title lists + reviewed-checkpoint sets
+        // (kept as id→true maps for O(1) membership; persisted as JSON id arrays).
+        this.reviewedVodStreamIds = {};
+        this.reviewedSeriesIds = {};
+        this.dedupedVod = [];
+        this.dedupedSeries = [];
 
         var self = this;
 
@@ -279,6 +285,10 @@ function (BaseView, loading) {
             deleteContent(view, 'Series');
         });
 
+        // De-duplicated review views (Movies + Series) — same blocklist as the tree above
+        wireDedupedView(view, self, 'vod');
+        wireDedupedView(view, self, 'series');
+
         view.querySelector('.chkCleanupOrphans').addEventListener('change', function () {
             view.querySelector('.orphanThresholdContainer').style.display = this.checked ? '' : 'none';
         });
@@ -461,6 +471,7 @@ function (BaseView, loading) {
             loadFolderEntries(view, 'movie', config.MovieFolderMappings || '', cachedVodCats);
             instance.selectedVodCategoryIds = config.SelectedVodCategoryIds || [];
             instance.excludedVodStreamIds = config.ExcludedVodStreamIds || [];
+            instance.reviewedVodStreamIds = parseReviewedSet(config.ReviewedVodStreamIdsJson);
 
             // Series
             view.querySelector('.chkSyncSeries').checked = !!config.SyncSeries;
@@ -470,6 +481,7 @@ function (BaseView, loading) {
             loadFolderEntries(view, 'series', config.SeriesFolderMappings || '', cachedSeriesCats);
             instance.selectedSeriesCategoryIds = config.SelectedSeriesCategoryIds || [];
             instance.excludedSeriesIds = config.ExcludedSeriesIds || [];
+            instance.reviewedSeriesIds = parseReviewedSet(config.ReviewedSeriesIdsJson);
 
             // Update channel
             view.querySelector('.chkUseBetaChannel').checked = !!config.UseBetaChannel;
@@ -576,6 +588,7 @@ function (BaseView, loading) {
             config.MovieFolderMappings = serializeFolderEntries(view, 'movie');
             config.SelectedVodCategoryIds = getSelectedVodCategoryIds(instance);
             config.ExcludedVodStreamIds = instance.excludedVodStreamIds.slice();
+            config.ReviewedVodStreamIdsJson = serializeReviewedSet(instance.reviewedVodStreamIds);
 
             // Series
             config.SyncSeries = view.querySelector('.chkSyncSeries').checked;
@@ -583,6 +596,7 @@ function (BaseView, loading) {
             config.SeriesFolderMappings = serializeFolderEntries(view, 'series');
             config.SelectedSeriesCategoryIds = getSelectedSeriesCategoryIds(instance);
             config.ExcludedSeriesIds = instance.excludedSeriesIds.slice();
+            config.ReviewedSeriesIdsJson = serializeReviewedSet(instance.reviewedSeriesIds);
 
             // Update channel
             config.UseBetaChannel = view.querySelector('.chkUseBetaChannel').checked;
@@ -1411,6 +1425,462 @@ function updateEpgVisibility(view) {
             boxes[i].checked = checked;
             setContentExclusion(instance, contentType, parseInt(boxes[i].getAttribute('data-item-id'), 10), !checked);
         }
+    }
+
+    // ---- De-duplicated title view (Movies + Series, type-parameterized) ----
+    // One row per unique StreamId/SeriesId across the selected categories. Shares the
+    // same exclusion blocklist as the per-category tree (excluded*StreamIds), so ticking
+    // a title here is identical to unticking it in the tree. Rendering is capped so very
+    // large provider lists stay responsive; search + category filter narrow the set.
+    var DEDUPED_RENDER_CAP = 300;
+
+    // The reviewed-checkpoint set is persisted as a JSON id array (it grows toward the
+    // full library, so a JSON string beats a huge int[] round-tripping through config),
+    // but the client keeps it as a Set (id->true) for O(1) membership tests.
+    function parseReviewedSet(json) {
+        var set = {};
+        if (json) {
+            try {
+                var arr = JSON.parse(json);
+                if (Array.isArray(arr)) {
+                    for (var i = 0; i < arr.length; i++) {
+                        var n = parseInt(arr[i], 10);
+                        if (!isNaN(n)) { set[n] = true; }
+                    }
+                }
+            } catch (e) {}
+        }
+        return set;
+    }
+
+    function serializeReviewedSet(set) {
+        if (!set) return '[]';
+        var ids = Object.keys(set).map(function (k) { return parseInt(k, 10); });
+        return JSON.stringify(ids);
+    }
+
+    // A title is "reviewed" when every one of its provider ids is either in the reviewed
+    // set or already excluded — excluding a title implicitly reviews it (the derived
+    // union), which is why existing exclusions need no migration. Mirrors the "all ids
+    // excluded" rule used for the keep/exclude checkbox.
+    function isTitleReviewed(instance, cfg, ids) {
+        if (!ids || ids.length === 0) return false;
+        var reviewed = instance[cfg.reviewedKey] || {};
+        var excluded = instance[cfg.excludeKey] || [];
+        for (var i = 0; i < ids.length; i++) {
+            if (reviewed[ids[i]]) continue;
+            if (excluded.indexOf(ids[i]) !== -1) continue;
+            return false;
+        }
+        return true;
+    }
+
+    function dedupedConfig(type) {
+        if (type === 'series') {
+            return {
+                prefix: 'series',
+                loadClass: '.btnLoadSeriesDeduped',
+                endpoint: 'XtreamTuner/Items/SeriesDeduped',
+                dataKey: 'dedupedSeries',
+                excludeKey: 'excludedSeriesIds',
+                reviewedKey: 'reviewedSeriesIds',
+                catsKey: 'loadedSeriesCategories'
+            };
+        }
+        return {
+            prefix: 'vod',
+            loadClass: '.btnLoadVodDeduped',
+            endpoint: 'XtreamTuner/Items/VodDeduped',
+            dataKey: 'dedupedVod',
+            excludeKey: 'excludedVodStreamIds',
+            reviewedKey: 'reviewedVodStreamIds',
+            catsKey: 'loadedVodCategories'
+        };
+    }
+
+    // Attaches all listeners for one de-duplicated view (vod or series).
+    function wireDedupedView(view, self, type) {
+        var cfg = dedupedConfig(type);
+        var P = '.' + cfg.prefix + 'Deduped';
+        view.querySelector(cfg.loadClass).addEventListener('click', function () {
+            loadDeduped(self, type);
+        });
+        view.querySelector(P + 'Search').addEventListener('input', function () {
+            self[cfg.prefix + 'DedupedShowAll'] = false;
+            renderDedupedList(self, type);
+        });
+        view.querySelector(P + 'CatFilterList').addEventListener('change', function (e) {
+            if (e.target.classList.contains(cfg.prefix + 'DedupedCatCheckbox')) {
+                self[cfg.prefix + 'DedupedShowAll'] = false;
+                renderDedupedList(self, type);
+            }
+        });
+        view.querySelector(P + 'CatAll').addEventListener('click', function () {
+            setDedupedCatFilterAll(self, type, true);
+        });
+        view.querySelector(P + 'CatNone').addEventListener('click', function () {
+            setDedupedCatFilterAll(self, type, false);
+        });
+        view.querySelector(P + 'Count').addEventListener('click', function (e) {
+            if (e.target.classList.contains(cfg.prefix + 'DedupedShowAll')) {
+                self[cfg.prefix + 'DedupedShowAll'] = true;
+                renderDedupedList(self, type);
+            }
+        });
+        view.querySelector(P + 'List').addEventListener('change', function (e) {
+            if (e.target.classList.contains('dedupedItemCheckbox')) {
+                updateDedupedExclusion(self, type, e.target);
+            }
+        });
+        // Per-title reviewed toggle (the right-side control). Delegated so it works for rows
+        // rendered later into the list.
+        view.querySelector(P + 'List').addEventListener('click', function (e) {
+            var toggle = e.target.closest ? e.target.closest('.dedupedReviewToggle') : null;
+            if (toggle) {
+                toggleTitleReviewed(self, type, parseItemIds(toggle.getAttribute('data-item-ids')),
+                    toggle.closest('.exclusionItemRow'));
+            }
+        });
+        view.querySelector(P + 'SelectAll').addEventListener('click', function () {
+            bulkDedupedExclusion(self, type, false);
+        });
+        view.querySelector(P + 'DeselectAll').addEventListener('click', function () {
+            bulkDedupedExclusion(self, type, true);
+        });
+        view.querySelector(P + 'MarkReviewed').addEventListener('click', function () {
+            bulkMarkReviewed(self, type);
+        });
+        view.querySelector(P + 'MarkUnreviewed').addEventListener('click', function () {
+            bulkMarkUnreviewed(self, type);
+        });
+        view.querySelector(P + 'HideReviewed').addEventListener('change', function (e) {
+            self[cfg.prefix + 'DedupedHideReviewed'] = e.target.checked;
+            self[cfg.prefix + 'DedupedShowAll'] = false;
+            renderDedupedList(self, type);
+        });
+        view.querySelector(P + 'HideExcluded').addEventListener('change', function (e) {
+            self[cfg.prefix + 'DedupedHideExcluded'] = e.target.checked;
+            self[cfg.prefix + 'DedupedShowAll'] = false;
+            renderDedupedList(self, type);
+        });
+    }
+
+    function loadDeduped(instance, type) {
+        var cfg = dedupedConfig(type);
+        var view = instance.view;
+        var statusEl = view.querySelector('.' + cfg.prefix + 'DedupedStatus');
+        var controlsEl = view.querySelector('.' + cfg.prefix + 'DedupedControls');
+
+        statusEl.style.color = '';
+        statusEl.textContent = 'Loading…';
+
+        ApiClient.getJSON(ApiClient.getUrl(cfg.endpoint)).then(function (items) {
+            instance[cfg.dataKey] = items || [];
+            statusEl.style.color = '#52B54B';
+            statusEl.textContent = 'Loaded ' + instance[cfg.dataKey].length + ' unique titles';
+            controlsEl.style.display = '';
+            populateDedupedCategoryFilter(instance, type);
+            renderDedupedList(instance, type);
+        }).catch(function () {
+            statusEl.style.color = '#cc0000';
+            statusEl.textContent = 'Failed to load. Save your connection and select categories first.';
+        });
+    }
+
+    function populateDedupedCategoryFilter(instance, type) {
+        var cfg = dedupedConfig(type);
+        var view = instance.view;
+        var listEl = view.querySelector('.' + cfg.prefix + 'DedupedCatFilterList');
+        var nameById = {};
+        (instance[cfg.catsKey] || []).forEach(function (c) { nameById[c.CategoryId] = c.CategoryName; });
+
+        var present = {};
+        (instance[cfg.dataKey] || []).forEach(function (t) {
+            (t.Categories || []).forEach(function (cid) { present[cid] = true; });
+        });
+
+        var ids = Object.keys(present).map(function (k) { return parseInt(k, 10); });
+        ids.sort(function (a, b) {
+            return (nameById[a] || ('Category ' + a)).localeCompare(nameById[b] || ('Category ' + b));
+        });
+
+        // Default every category ticked: with none=none semantics an empty filter shows
+        // nothing, so a fresh load must start all-ticked to show the full list.
+        var html = '';
+        for (var i = 0; i < ids.length; i++) {
+            html += '<label style="display:flex; align-items:flex-start; cursor:pointer; line-height:1.3;">';
+            html += '<input type="checkbox" class="' + cfg.prefix + 'DedupedCatCheckbox" data-category-id="' + ids[i] + '" checked style="margin-right:0.35em; margin-top:0.15em; flex:0 0 auto;" />';
+            html += '<span>' + escapeHtml(nameById[ids[i]] || ('Category ' + ids[i])) + '</span>';
+            html += '</label>';
+        }
+        listEl.innerHTML = html || '<div style="opacity:0.5;">No categories.</div>';
+    }
+
+    // Reads the ticked category-filter checkboxes. none=none: an empty result shows nothing
+    // (the filter defaults to all-ticked on populate, so the initial load shows everything).
+    function getDedupedCatFilter(instance, type) {
+        var cfg = dedupedConfig(type);
+        var cbs = instance.view.querySelectorAll('.' + cfg.prefix + 'DedupedCatCheckbox:checked');
+        var ids = [];
+        for (var i = 0; i < cbs.length; i++) {
+            ids.push(parseInt(cbs[i].getAttribute('data-category-id'), 10));
+        }
+        return ids;
+    }
+
+    function setDedupedCatFilterAll(instance, type, checked) {
+        var cfg = dedupedConfig(type);
+        var cbs = instance.view.querySelectorAll('.' + cfg.prefix + 'DedupedCatCheckbox');
+        for (var i = 0; i < cbs.length; i++) { cbs[i].checked = checked; }
+        instance[cfg.prefix + 'DedupedShowAll'] = false;
+        renderDedupedList(instance, type);
+    }
+
+    function renderDedupedList(instance, type) {
+        var cfg = dedupedConfig(type);
+        var view = instance.view;
+        var listEl = view.querySelector('.' + cfg.prefix + 'DedupedList');
+        var countEl = view.querySelector('.' + cfg.prefix + 'DedupedCount');
+
+        var search = (view.querySelector('.' + cfg.prefix + 'DedupedSearch').value || '').toLowerCase();
+        var catFilter = getDedupedCatFilter(instance, type);
+
+        var excluded = {};
+        (instance[cfg.excludeKey] || []).forEach(function (id) { excluded[id] = true; });
+
+        var hideReviewed = !!instance[cfg.prefix + 'DedupedHideReviewed'];
+        var hideExcluded = !!instance[cfg.prefix + 'DedupedHideExcluded'];
+
+        var matches = [];
+        var reviewedCount = 0;
+        var excludedCount = 0;
+        var data = instance[cfg.dataKey] || [];
+        for (var i = 0; i < data.length; i++) {
+            var t = data[i];
+            if (search && (t.Name || '').toLowerCase().indexOf(search) < 0) continue;
+            // Category filter is a union AND none=none: a title shows only if it's in ANY
+            // ticked category, so an empty filter (all unticked) shows nothing. The filter
+            // defaults to all-ticked on populate, so the initial load still shows everything.
+            var cats = t.Categories || [];
+            var inAny = false;
+            for (var m = 0; m < catFilter.length; m++) {
+                if (cats.indexOf(catFilter[m]) >= 0) { inAny = true; break; }
+            }
+            if (!inAny) continue;
+            // Cache reviewed + excluded state on the title so rendering, the count line, and
+            // the hide-worklist filters all agree and none recomputes it per row. A title is
+            // excluded when every one of its ids is in the blocklist (mirrors the checkbox).
+            t._reviewed = isTitleReviewed(instance, cfg, t.Ids);
+            var tIds = t.Ids || [];
+            var allExcluded = tIds.length > 0;
+            for (var e2 = 0; e2 < tIds.length; e2++) {
+                if (!excluded[tIds[e2]]) { allExcluded = false; break; }
+            }
+            t._excluded = allExcluded;
+            if (t._reviewed) reviewedCount++;
+            if (t._excluded) excludedCount++;
+            // Hide-reviewed / hide-excluded = "worklist" views: drop reviewed (≈ already
+            // looked at) or excluded (≈ won't sync) titles. Both opt-in, off by default.
+            if (hideReviewed && t._reviewed) continue;
+            if (hideExcluded && t._excluded) continue;
+            matches.push(t);
+        }
+        // Remember the full filtered set so bulk actions apply to all matches, not just
+        // the capped rows that are rendered.
+        instance[cfg.prefix + 'DedupedMatches'] = matches;
+
+        var showAll = instance[cfg.prefix + 'DedupedShowAll'];
+        var renderCap = showAll ? matches.length : DEDUPED_RENDER_CAP;
+        var shown = matches.slice(0, renderCap);
+        var html = '';
+        for (var j = 0; j < shown.length; j++) {
+            var it = shown[j];
+            var itIds = it.Ids || [];
+            // A title is shown ticked (kept) unless every one of its ids is excluded
+            // (cached as _excluded during filtering above).
+            var isChecked = it._excluded ? '' : ' checked';
+            // Dimmed name = excluded (won't sync); the right-side toggle carries the reviewed
+            // bookmark. Excluded rows hide the toggle — the dim + unticked box already say
+            // "dealt with", and "reviewed" is derived from exclusion there (not un-reviewable).
+            var revClass = it._reviewed ? 'dedupedReviewToggle is-reviewed' : 'dedupedReviewToggle is-unreviewed';
+            var revText = it._reviewed ? '✓ reviewed' : 'mark reviewed';
+            var revTitle = it._reviewed ? 'Reviewed — click to mark unreviewed' : 'Click to mark reviewed';
+            html += '<div class="exclusionItemRow" data-item-ids="' + itIds.join(',') + '" style="margin:0.1em 0; display:flex; align-items:center; justify-content:space-between;">';
+            html += '<label style="display:flex; align-items:center; cursor:pointer; flex:1 1 auto; min-width:0;">';
+            html += '<input type="checkbox" class="dedupedItemCheckbox" data-item-ids="' + itIds.join(',') + '"' + isChecked + ' style="margin-right:0.5em; flex:0 0 auto;" />';
+            html += '<span class="dedupedItemName" style="' + (it._excluded ? 'opacity:0.5;' : '') + '">' + escapeHtml(it.Name || ('#' + (itIds[0] || '?'))) + '</span>';
+            html += '</label>';
+            html += '<span class="' + revClass + '" data-item-ids="' + itIds.join(',') + '" title="' + revTitle + '"' + (it._excluded ? ' style="display:none;"' : '') + '>' + revText + '</span>';
+            html += '</div>';
+        }
+        if (html) {
+            listEl.innerHTML = html;
+        } else if (catFilter.length === 0) {
+            // none=none: an empty category filter is why nothing shows — point the user at it
+            // rather than implying there are no titles.
+            listEl.innerHTML = '<div style="opacity:0.5;">No category selected in the filter above — tick a category (or click All) to show titles.</div>';
+        } else {
+            listEl.innerHTML = '<div style="opacity:0.5;">No matching titles.</div>';
+        }
+
+        // Count line: "M of N titles (R reviewed, X excluded)". When the match set exceeds
+        // the cap, cap the render for responsiveness but offer a one-click "Show all".
+        var notes = [];
+        if (reviewedCount > 0) notes.push(reviewedCount + ' reviewed');
+        if (excludedCount > 0) notes.push(excludedCount + ' excluded');
+        var reviewedSuffix = notes.length ? ' (' + notes.join(', ') + ')' : '';
+        if (matches.length > DEDUPED_RENDER_CAP && !showAll) {
+            countEl.innerHTML = 'Showing ' + DEDUPED_RENDER_CAP + ' of ' + matches.length + reviewedSuffix +
+                ' — <button type="button" class="' + cfg.prefix + 'DedupedShowAll" style="cursor:pointer;">Show all ' + matches.length + '</button> or refine your search';
+        } else if (showAll && matches.length > DEDUPED_RENDER_CAP) {
+            countEl.textContent = 'Showing all ' + matches.length + ' of ' + data.length + ' titles' + reviewedSuffix;
+        } else {
+            countEl.textContent = matches.length + ' of ' + data.length + ' titles' + reviewedSuffix;
+        }
+    }
+
+    function parseItemIds(attr) {
+        var ids = [];
+        (attr || '').split(',').forEach(function (s) {
+            var n = parseInt(s, 10);
+            if (!isNaN(n)) { ids.push(n); }
+        });
+        return ids;
+    }
+
+    // A title maps to one or more provider ids (one for movies, several for a series
+    // that spans categories). Excluding the title adds all its ids to the blocklist;
+    // including removes them all.
+    function updateDedupedExclusion(instance, type, cb) {
+        var cfg = dedupedConfig(type);
+        var ids = parseItemIds(cb.getAttribute('data-item-ids'));
+        if (!instance[cfg.excludeKey]) instance[cfg.excludeKey] = [];
+        if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
+        var list = instance[cfg.excludeKey];
+        var reviewed = instance[cfg.reviewedKey];
+        for (var i = 0; i < ids.length; i++) {
+            var idx = list.indexOf(ids[i]);
+            if (!cb.checked && idx === -1) {
+                // Exclude: the derived union (excluded ⇒ reviewed) marks it reviewed,
+                // no need to also touch the reviewed set here.
+                list.push(ids[i]);
+            } else if (cb.checked && idx !== -1) {
+                // Re-include: drop from the blocklist but keep it reviewed — the user has
+                // looked at this title and made a decision, so it should not resurface in
+                // the unreviewed worklist.
+                list.splice(idx, 1);
+                reviewed[ids[i]] = true;
+            }
+        }
+        // Restyle the row in place (excluded dimming / reviewed toggle) without a full
+        // re-render, so stepping through a long list one checkbox at a time doesn't reset
+        // scroll or yank rows out from under the cursor. Hide filters cull on next render.
+        var row = cb.closest ? cb.closest('.exclusionItemRow') : null;
+        if (row) restyleDedupedRow(instance, type, row, ids);
+    }
+
+    // Sets the right-side reviewed toggle's appearance for a row: hidden when excluded
+    // (exclusion governs "dealt with" there), else "✓ reviewed" (click to un-review) or the
+    // fainter "mark reviewed" (click to review).
+    function applyReviewToggleState(el, excluded, reviewed) {
+        if (!el) return;
+        if (excluded) { el.style.display = 'none'; return; }
+        el.style.display = '';
+        el.className = reviewed ? 'dedupedReviewToggle is-reviewed' : 'dedupedReviewToggle is-unreviewed';
+        el.textContent = reviewed ? '✓ reviewed' : 'mark reviewed';
+        el.title = reviewed ? 'Reviewed — click to mark unreviewed' : 'Click to mark reviewed';
+    }
+
+    // Recomputes a row's excluded/reviewed styling from current instance state (name dim +
+    // reviewed toggle) without a full re-render, so single-title edits keep scroll position.
+    function restyleDedupedRow(instance, type, row, ids) {
+        var cfg = dedupedConfig(type);
+        var excludedSet = {};
+        (instance[cfg.excludeKey] || []).forEach(function (id) { excludedSet[id] = true; });
+        var allExcluded = ids.length > 0;
+        for (var i = 0; i < ids.length; i++) {
+            if (!excludedSet[ids[i]]) { allExcluded = false; break; }
+        }
+        var reviewed = isTitleReviewed(instance, cfg, ids);
+        var nameEl = row.querySelector('.dedupedItemName');
+        if (nameEl) nameEl.style.opacity = allExcluded ? '0.5' : '';
+        applyReviewToggleState(row.querySelector('.dedupedReviewToggle'), allExcluded, reviewed);
+    }
+
+    // Toggles the reviewed bookmark for a single included title (the right-side control).
+    // Excluded titles are reviewed-by-derivation and their toggle is hidden, so this only
+    // ever flips reviewed-set membership for an included title's ids.
+    function toggleTitleReviewed(instance, type, ids, row) {
+        if (!ids || !ids.length) return;
+        var cfg = dedupedConfig(type);
+        if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
+        var reviewed = instance[cfg.reviewedKey];
+        var isRev = isTitleReviewed(instance, cfg, ids);
+        for (var i = 0; i < ids.length; i++) {
+            if (isRev) delete reviewed[ids[i]];
+            else reviewed[ids[i]] = true;
+        }
+        if (row) restyleDedupedRow(instance, type, row, ids);
+    }
+
+    // Applies to every title in the current filtered set (all matches, not just the
+    // capped rows), then re-renders so the visible checkboxes reflect the change.
+    function bulkDedupedExclusion(instance, type, exclude) {
+        var cfg = dedupedConfig(type);
+        var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
+        if (!instance[cfg.excludeKey]) instance[cfg.excludeKey] = [];
+        if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
+        var list = instance[cfg.excludeKey];
+        var reviewed = instance[cfg.reviewedKey];
+        for (var i = 0; i < matches.length; i++) {
+            var ids = matches[i].Ids || [];
+            for (var k = 0; k < ids.length; k++) {
+                var idx = list.indexOf(ids[k]);
+                if (exclude && idx === -1) {
+                    list.push(ids[k]);
+                } else if (!exclude && idx !== -1) {
+                    // Bulk re-include of a previously-excluded title keeps it reviewed,
+                    // mirroring the single-checkbox path. Guarding on idx !== -1 means
+                    // "Select all matching" on an untouched category is a genuine no-op and
+                    // does NOT mass-mark reviewed.
+                    list.splice(idx, 1);
+                    reviewed[ids[k]] = true;
+                }
+            }
+        }
+        renderDedupedList(instance, type);
+    }
+
+    // "Mark all shown reviewed" — adds every id in the current filtered match set to the
+    // reviewed set. With hide-reviewed on, the match set IS the unreviewed worklist, so
+    // this clears it; with it off, it marks the whole filtered list reviewed. Does not
+    // change exclusions — reviewing is orthogonal to keep/exclude.
+    function bulkMarkReviewed(instance, type) {
+        var cfg = dedupedConfig(type);
+        var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
+        if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
+        var reviewed = instance[cfg.reviewedKey];
+        for (var i = 0; i < matches.length; i++) {
+            var ids = matches[i].Ids || [];
+            for (var k = 0; k < ids.length; k++) { reviewed[ids[k]] = true; }
+        }
+        renderDedupedList(instance, type);
+    }
+
+    // "Mark all shown unreviewed" — the inverse: clears the reviewed set for every id in the
+    // current filtered match set. Exclusions are untouched, so excluded titles stay reviewed
+    // by derivation (re-include them to make them un-reviewable). Handy for undoing a bulk
+    // mark or re-surfacing a batch in the unreviewed worklist.
+    function bulkMarkUnreviewed(instance, type) {
+        var cfg = dedupedConfig(type);
+        var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
+        if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
+        var reviewed = instance[cfg.reviewedKey];
+        for (var i = 0; i < matches.length; i++) {
+            var ids = matches[i].Ids || [];
+            for (var k = 0; k < ids.length; k++) { delete reviewed[ids[k]]; }
+        }
+        renderDedupedList(instance, type);
     }
 
     // ---- Live TV Categories ----

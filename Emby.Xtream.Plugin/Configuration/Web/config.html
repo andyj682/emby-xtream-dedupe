@@ -176,6 +176,25 @@
                     .danger-zone.open .danger-zone-content {
                         display: block;
                     }
+                    /* Per-title reviewed toggle in the de-dup list (right-side slot). */
+                    .dedupedReviewToggle {
+                        cursor: pointer;
+                        font-size: 0.8em;
+                        white-space: nowrap;
+                        flex: 0 0 auto;
+                        margin-left: 0.5em;
+                        opacity: 0.55;
+                        transition: opacity 0.12s;
+                    }
+                    .dedupedReviewToggle:hover {
+                        opacity: 0.9;
+                    }
+                    .dedupedReviewToggle.is-unreviewed {
+                        opacity: 0.28;
+                    }
+                    .dedupedReviewToggle.is-unreviewed:hover {
+                        opacity: 0.7;
+                    }
                     .categorySearchInput {
                         width: 100%;
                         padding: 0.5em 0.8em;
@@ -796,6 +815,55 @@
                                 <div class="vodCategoriesLoading" style="display:none; opacity:0.5;">Loading categories...</div>
                                 <div class="vodCategoriesList"></div>
                             </div>
+
+                            <!-- De-duplicated title view: one row per unique title across the selected categories -->
+                            <div class="vodDedupedSection" style="margin-top:1em; border-top:1px solid rgba(128,128,128,0.15); padding-top:0.75em;">
+                                <div class="fieldDescription" style="margin-bottom:0.5em;">
+                                    Review one de-duplicated list of movie titles across your selected categories (a title appearing in several categories shows once). Untick a title to exclude it from sync everywhere.
+                                </div>
+                                <details style="margin:-0.2em 0 0.6em;">
+                                    <summary class="fieldDescription" style="cursor:pointer;">How reviewing &amp; the hide filters work</summary>
+                                    <div class="fieldDescription" style="margin:0.3em 0 0;">
+                                        Reviewing is just a bookmark of what you've already looked at — it doesn't sync or exclude anything. Untick a title to exclude it (which also counts as reviewed). "Hide reviewed" leaves only titles new since you last reviewed; "Hide excluded" leaves only the titles that will sync.
+                                    </div>
+                                </details>
+                                <button class="btnLoadVodDeduped raised button-secondary" is="emby-button" type="button">
+                                    <span>Load de-duplicated titles</span>
+                                </button>
+                                <span class="vodDedupedStatus" style="margin-left:0.5em; color:#52B54B;"></span>
+                                <div class="vodDedupedControls" style="display:none; margin-top:0.6em;">
+                                    <div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center; margin-bottom:0.4em;">
+                                        <input type="text" class="categorySearchInput vodDedupedSearch" placeholder="Search titles..." style="flex:1 1 200px;" />
+                                    </div>
+                                    <div class="vodDedupedCatFilter" style="margin-bottom:0.4em;">
+                                        <div style="display:flex; align-items:center; gap:0.5em; flex-wrap:wrap; margin-bottom:0.25em;">
+                                            <span style="opacity:0.7;">Filter this list by category:</span>
+                                            <button type="button" class="vodDedupedCatAll" style="cursor:pointer;">All</button>
+                                            <button type="button" class="vodDedupedCatNone" style="cursor:pointer;">None</button>
+                                            <span style="opacity:0.55;">(view filter only — doesn't change what syncs; unticking all hides the list)</span>
+                                        </div>
+                                        <div class="vodDedupedCatFilterList" style="max-height:160px; overflow-y:auto; border:1px solid rgba(128,128,128,0.15); border-radius:4px; padding:0.4em; display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:0.1em 1em;"></div>
+                                    </div>
+                                    <div style="display:flex; gap:0.5em; align-items:center; flex-wrap:wrap; margin-bottom:0.4em;">
+                                        <span class="vodDedupedCount" style="opacity:0.7;"></span>
+                                        <button type="button" class="vodDedupedSelectAll" style="cursor:pointer;">Select all matching</button>
+                                        <button type="button" class="vodDedupedDeselectAll" style="cursor:pointer;">Deselect all matching</button>
+                                        <button type="button" class="vodDedupedMarkReviewed" style="cursor:pointer;">Mark all shown reviewed</button>
+                                        <button type="button" class="vodDedupedMarkUnreviewed" style="cursor:pointer;">Mark all shown unreviewed</button>
+                                    </div>
+                                    <div style="display:flex; gap:1.25em; align-items:center; flex-wrap:wrap; margin-bottom:0.4em;">
+                                        <label style="display:flex; align-items:center; cursor:pointer;">
+                                            <input type="checkbox" class="vodDedupedHideExcluded" style="margin-right:0.35em;" />
+                                            <span>Hide excluded</span>
+                                        </label>
+                                        <label style="display:flex; align-items:center; cursor:pointer;">
+                                            <input type="checkbox" class="vodDedupedHideReviewed" style="margin-right:0.35em;" />
+                                            <span>Hide reviewed</span>
+                                        </label>
+                                    </div>
+                                    <div class="vodDedupedList" style="max-height:450px; overflow-y:auto; border:1px solid rgba(128,128,128,0.15); border-radius:4px; padding:0.5em;"></div>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- Multiple folders mode: header + refresh -->
@@ -910,6 +978,55 @@
                             <div class="seriesCategoriesContainer" style="max-height:450px; overflow-y:auto; border:1px solid rgba(128,128,128,0.15); border-radius:4px; padding:0.5em;">
                                 <div class="seriesCategoriesLoading" style="display:none; opacity:0.5;">Loading categories...</div>
                                 <div class="seriesCategoriesList"></div>
+                            </div>
+
+                            <!-- De-duplicated title view: one row per unique series across the selected categories -->
+                            <div class="seriesDedupedSection" style="margin-top:1em; border-top:1px solid rgba(128,128,128,0.15); padding-top:0.75em;">
+                                <div class="fieldDescription" style="margin-bottom:0.5em;">
+                                    Review one de-duplicated list of series across your selected categories (a series appearing in several categories shows once). Untick a series to exclude it from sync everywhere.
+                                </div>
+                                <details style="margin:-0.2em 0 0.6em;">
+                                    <summary class="fieldDescription" style="cursor:pointer;">How reviewing &amp; the hide filters work</summary>
+                                    <div class="fieldDescription" style="margin:0.3em 0 0;">
+                                        Reviewing is just a bookmark of what you've already looked at — it doesn't sync or exclude anything. Untick a title to exclude it (which also counts as reviewed). "Hide reviewed" leaves only titles new since you last reviewed; "Hide excluded" leaves only the titles that will sync.
+                                    </div>
+                                </details>
+                                <button class="btnLoadSeriesDeduped raised button-secondary" is="emby-button" type="button">
+                                    <span>Load de-duplicated titles</span>
+                                </button>
+                                <span class="seriesDedupedStatus" style="margin-left:0.5em; color:#52B54B;"></span>
+                                <div class="seriesDedupedControls" style="display:none; margin-top:0.6em;">
+                                    <div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center; margin-bottom:0.4em;">
+                                        <input type="text" class="categorySearchInput seriesDedupedSearch" placeholder="Search titles..." style="flex:1 1 200px;" />
+                                    </div>
+                                    <div class="seriesDedupedCatFilter" style="margin-bottom:0.4em;">
+                                        <div style="display:flex; align-items:center; gap:0.5em; flex-wrap:wrap; margin-bottom:0.25em;">
+                                            <span style="opacity:0.7;">Filter this list by category:</span>
+                                            <button type="button" class="seriesDedupedCatAll" style="cursor:pointer;">All</button>
+                                            <button type="button" class="seriesDedupedCatNone" style="cursor:pointer;">None</button>
+                                            <span style="opacity:0.55;">(view filter only — doesn't change what syncs; unticking all hides the list)</span>
+                                        </div>
+                                        <div class="seriesDedupedCatFilterList" style="max-height:160px; overflow-y:auto; border:1px solid rgba(128,128,128,0.15); border-radius:4px; padding:0.4em; display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:0.1em 1em;"></div>
+                                    </div>
+                                    <div style="display:flex; gap:0.5em; align-items:center; flex-wrap:wrap; margin-bottom:0.4em;">
+                                        <span class="seriesDedupedCount" style="opacity:0.7;"></span>
+                                        <button type="button" class="seriesDedupedSelectAll" style="cursor:pointer;">Select all matching</button>
+                                        <button type="button" class="seriesDedupedDeselectAll" style="cursor:pointer;">Deselect all matching</button>
+                                        <button type="button" class="seriesDedupedMarkReviewed" style="cursor:pointer;">Mark all shown reviewed</button>
+                                        <button type="button" class="seriesDedupedMarkUnreviewed" style="cursor:pointer;">Mark all shown unreviewed</button>
+                                    </div>
+                                    <div style="display:flex; gap:1.25em; align-items:center; flex-wrap:wrap; margin-bottom:0.4em;">
+                                        <label style="display:flex; align-items:center; cursor:pointer;">
+                                            <input type="checkbox" class="seriesDedupedHideExcluded" style="margin-right:0.35em;" />
+                                            <span>Hide excluded</span>
+                                        </label>
+                                        <label style="display:flex; align-items:center; cursor:pointer;">
+                                            <input type="checkbox" class="seriesDedupedHideReviewed" style="margin-right:0.35em;" />
+                                            <span>Hide reviewed</span>
+                                        </label>
+                                    </div>
+                                    <div class="seriesDedupedList" style="max-height:450px; overflow-y:auto; border:1px solid rgba(128,128,128,0.15); border-radius:4px; padding:0.5em;"></div>
+                                </div>
                             </div>
                         </div>
 
