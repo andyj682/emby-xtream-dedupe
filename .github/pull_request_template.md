@@ -6,13 +6,6 @@
 
 Fixes #
 
-## Agent report
-
-Classification:
-Confidence:
-Value:
-Risk:
-
 ## Tests
 
 - [ ] `dotnet test Emby.Xtream.Plugin.Tests/ -v minimal`
