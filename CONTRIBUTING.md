@@ -1,5 +1,7 @@
 # Contributing to Emby Xtream Plugin
 
+> This is the de-duplicated review fork of [firestaerter3/emby-xtream](https://github.com/firestaerter3/emby-xtream). Contributions to the de-duplication / review workflow are welcome here; for bugs in the shared plugin functionality, consider reporting them upstream as well. The architecture and workflow notes below apply to both.
+
 ## Architecture
 
 ### Emby DI / SimpleInjector — service class construction
