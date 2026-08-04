@@ -790,6 +790,11 @@
 
                         <!-- Single folder mode: flat category selection -->
                         <div class="movieSingleContainer">
+                            <div class="vodModeToggle" style="display:inline-flex; margin-bottom:0.75em; border:1px solid rgba(128,128,128,0.3); border-radius:6px; overflow:hidden;">
+                                <button type="button" class="vodModeBtn" data-mode="browse" style="padding:0.4em 0.9em; border:none; background:none; color:inherit; cursor:pointer; font-size:0.9em;">Browse by category</button>
+                                <button type="button" class="vodModeBtn" data-mode="dedup" style="padding:0.4em 0.9em; border:none; border-left:1px solid rgba(128,128,128,0.3); background:none; color:inherit; cursor:pointer; font-size:0.9em;">De-duplicated review</button>
+                            </div>
+                            <div class="vodBrowseSection">
                             <div class="fieldDescription" style="margin-bottom:0.5em;">
                                 Select which VOD categories to sync. Leave all unchecked to include all movies.
                                 Click the arrow next to a category to pick individual titles. Unticking a title
@@ -815,6 +820,7 @@
                                 <div class="vodCategoriesLoading" style="display:none; opacity:0.5;">Loading categories...</div>
                                 <div class="vodCategoriesList"></div>
                             </div>
+                            </div><!-- end vodBrowseSection -->
 
                             <!-- De-duplicated title view: one row per unique title across the selected categories -->
                             <div class="vodDedupedSection" style="margin-top:1em; border-top:1px solid rgba(128,128,128,0.15); padding-top:0.75em;">
@@ -831,10 +837,8 @@
                                     <span>Load de-duplicated titles</span>
                                 </button>
                                 <span class="vodDedupedStatus" style="margin-left:0.5em; color:#52B54B;"></span>
+                                <div class="vodDedupedCatNudge" style="display:none; margin-top:0.4em; color:#e67e22; font-size:0.9em;">Category selection changed — Save settings, then Load again to refresh this list.</div>
                                 <div class="vodDedupedControls" style="display:none; margin-top:0.6em;">
-                                    <div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center; margin-bottom:0.4em;">
-                                        <input type="text" class="categorySearchInput vodDedupedSearch" placeholder="Search titles..." style="flex:1 1 200px;" />
-                                    </div>
                                     <div class="vodDedupedCatFilter" style="margin-bottom:0.4em;">
                                         <div style="display:flex; align-items:center; gap:0.5em; flex-wrap:wrap; margin-bottom:0.25em;">
                                             <span style="opacity:0.7;">Filter this list by category:</span>
@@ -844,8 +848,11 @@
                                         </div>
                                         <div class="vodDedupedCatFilterList" style="max-height:160px; overflow-y:auto; border:1px solid rgba(128,128,128,0.15); border-radius:4px; padding:0.4em; display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:0.1em 1em;"></div>
                                     </div>
+                                    <div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center; margin-bottom:0.4em;">
+                                        <input type="text" class="categorySearchInput vodDedupedSearch" placeholder="Search titles..." style="flex:1 1 200px;" />
+                                    </div>
+                                    <div class="vodDedupedCount" style="opacity:0.7; margin-bottom:0.4em;"></div>
                                     <div style="display:flex; gap:0.5em; align-items:center; flex-wrap:wrap; margin-bottom:0.4em;">
-                                        <span class="vodDedupedCount" style="opacity:0.7;"></span>
                                         <button type="button" class="vodDedupedSelectAll" style="cursor:pointer;">Select all matching</button>
                                         <button type="button" class="vodDedupedDeselectAll" style="cursor:pointer;">Deselect all matching</button>
                                         <button type="button" class="vodDedupedMarkReviewed" style="cursor:pointer;">Mark all shown reviewed</button>
@@ -954,6 +961,11 @@
 
                         <!-- Single folder mode: flat category selection -->
                         <div class="seriesSingleContainer">
+                            <div class="seriesModeToggle" style="display:inline-flex; margin-bottom:0.75em; border:1px solid rgba(128,128,128,0.3); border-radius:6px; overflow:hidden;">
+                                <button type="button" class="seriesModeBtn" data-mode="browse" style="padding:0.4em 0.9em; border:none; background:none; color:inherit; cursor:pointer; font-size:0.9em;">Browse by category</button>
+                                <button type="button" class="seriesModeBtn" data-mode="dedup" style="padding:0.4em 0.9em; border:none; border-left:1px solid rgba(128,128,128,0.3); background:none; color:inherit; cursor:pointer; font-size:0.9em;">De-duplicated review</button>
+                            </div>
+                            <div class="seriesBrowseSection">
                             <div class="fieldDescription" style="margin-bottom:0.5em;">
                                 Select which series categories to sync. Leave all unchecked to include all series.
                                 Click the arrow next to a category to pick individual shows. Unticking a show
@@ -979,6 +991,7 @@
                                 <div class="seriesCategoriesLoading" style="display:none; opacity:0.5;">Loading categories...</div>
                                 <div class="seriesCategoriesList"></div>
                             </div>
+                            </div><!-- end seriesBrowseSection -->
 
                             <!-- De-duplicated title view: one row per unique series across the selected categories -->
                             <div class="seriesDedupedSection" style="margin-top:1em; border-top:1px solid rgba(128,128,128,0.15); padding-top:0.75em;">
@@ -995,10 +1008,8 @@
                                     <span>Load de-duplicated titles</span>
                                 </button>
                                 <span class="seriesDedupedStatus" style="margin-left:0.5em; color:#52B54B;"></span>
+                                <div class="seriesDedupedCatNudge" style="display:none; margin-top:0.4em; color:#e67e22; font-size:0.9em;">Category selection changed — Save settings, then Load again to refresh this list.</div>
                                 <div class="seriesDedupedControls" style="display:none; margin-top:0.6em;">
-                                    <div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center; margin-bottom:0.4em;">
-                                        <input type="text" class="categorySearchInput seriesDedupedSearch" placeholder="Search titles..." style="flex:1 1 200px;" />
-                                    </div>
                                     <div class="seriesDedupedCatFilter" style="margin-bottom:0.4em;">
                                         <div style="display:flex; align-items:center; gap:0.5em; flex-wrap:wrap; margin-bottom:0.25em;">
                                             <span style="opacity:0.7;">Filter this list by category:</span>
@@ -1008,8 +1019,11 @@
                                         </div>
                                         <div class="seriesDedupedCatFilterList" style="max-height:160px; overflow-y:auto; border:1px solid rgba(128,128,128,0.15); border-radius:4px; padding:0.4em; display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:0.1em 1em;"></div>
                                     </div>
+                                    <div style="display:flex; gap:0.5em; flex-wrap:wrap; align-items:center; margin-bottom:0.4em;">
+                                        <input type="text" class="categorySearchInput seriesDedupedSearch" placeholder="Search titles..." style="flex:1 1 200px;" />
+                                    </div>
+                                    <div class="seriesDedupedCount" style="opacity:0.7; margin-bottom:0.4em;"></div>
                                     <div style="display:flex; gap:0.5em; align-items:center; flex-wrap:wrap; margin-bottom:0.4em;">
-                                        <span class="seriesDedupedCount" style="opacity:0.7;"></span>
                                         <button type="button" class="seriesDedupedSelectAll" style="cursor:pointer;">Select all matching</button>
                                         <button type="button" class="seriesDedupedDeselectAll" style="cursor:pointer;">Deselect all matching</button>
                                         <button type="button" class="seriesDedupedMarkReviewed" style="cursor:pointer;">Mark all shown reviewed</button>

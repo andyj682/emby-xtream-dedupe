@@ -188,10 +188,12 @@ function (BaseView, loading) {
 
         view.querySelector('.btnSelectAllVodCategories').addEventListener('click', function () {
             toggleAllVodCategories(self, true);
+            setDedupedCatNudge(self, 'vod', true);
         });
 
         view.querySelector('.btnDeselectAllVodCategories').addEventListener('click', function () {
             toggleAllVodCategories(self, false);
+            setDedupedCatNudge(self, 'vod', true);
         });
 
         // VOD category buttons (multi mode)
@@ -206,10 +208,12 @@ function (BaseView, loading) {
 
         view.querySelector('.btnSelectAllSeriesCategories').addEventListener('click', function () {
             toggleAllSeriesCategories(self, true);
+            setDedupedCatNudge(self, 'series', true);
         });
 
         view.querySelector('.btnDeselectAllSeriesCategories').addEventListener('click', function () {
             toggleAllSeriesCategories(self, false);
+            setDedupedCatNudge(self, 'series', true);
         });
 
         // Per-title selection: delegated so re-rendered panels stay live
@@ -288,6 +292,8 @@ function (BaseView, loading) {
         // De-duplicated review views (Movies + Series) — same blocklist as the tree above
         wireDedupedView(view, self, 'vod');
         wireDedupedView(view, self, 'series');
+        setupDedupMode(view, self, 'vod');
+        setupDedupMode(view, self, 'series');
 
         view.querySelector('.chkCleanupOrphans').addEventListener('change', function () {
             view.querySelector('.orphanThresholdContainer').style.display = this.checked ? '' : 'none';
@@ -347,11 +353,13 @@ function (BaseView, loading) {
         view.querySelector('.vodCategoriesContainer').addEventListener('change', function (e) {
             if (e.target.classList.contains('vodCategoryCheckbox')) {
                 updateCategoryCountBadge(view, 'vod');
+                setDedupedCatNudge(self, 'vod', true);
             }
         });
         view.querySelector('.seriesCategoriesContainer').addEventListener('change', function (e) {
             if (e.target.classList.contains('seriesCategoryCheckbox')) {
                 updateCategoryCountBadge(view, 'series');
+                setDedupedCatNudge(self, 'series', true);
             }
         });
         view.querySelector('.categoriesContainer').addEventListener('change', function (e) {
@@ -628,6 +636,8 @@ function (BaseView, loading) {
             ApiClient.updatePluginConfiguration(pluginId, config).then(function () {
                 Dashboard.processPluginConfigurationUpdateResult();
                 applyScheduleToTasks(view, config, ApiClient);
+                setDedupedCatNudge(instance, 'vod', false);
+                setDedupedCatNudge(instance, 'series', false);
                 if (typeof callback === 'function') callback();
             });
         }).catch(function () {
@@ -1881,6 +1891,64 @@ function updateEpgVisibility(view) {
             for (var k = 0; k < ids.length; k++) { delete reviewed[ids[k]]; }
         }
         renderDedupedList(instance, type);
+    }
+
+    // ---- De-dup / Browse mode toggle ----
+    // The single-folder VOD/Series UI shows either the category tree ("browse") or the
+    // de-dup review list ("dedup"), never both. Both edit the same exclusion blocklist,
+    // so switching is lossless. The choice is remembered per type in localStorage; the
+    // fork defaults to de-dup.
+    function setDedupMode(instance, type, mode) {
+        var view = instance.view;
+        var browseEl = view.querySelector('.' + type + 'BrowseSection');
+        var dedupEl = view.querySelector('.' + type + 'DedupedSection');
+        if (!browseEl || !dedupEl) return;
+        browseEl.style.display = mode === 'browse' ? '' : 'none';
+        dedupEl.style.display = mode === 'dedup' ? '' : 'none';
+        var btns = view.querySelectorAll('.' + type + 'ModeBtn');
+        for (var i = 0; i < btns.length; i++) {
+            var active = btns[i].getAttribute('data-mode') === mode;
+            btns[i].style.background = active ? '#52B54B' : 'none';
+            btns[i].style.color = active ? '#fff' : 'inherit';
+        }
+        // Repaint the view we switch INTO so exclusions made in the other view show without
+        // a page reload (both edit the same blocklist). The de-dup list's category SCOPE is
+        // still server-side, so a category-selection change needs save+reload (the nudge).
+        if (mode === 'dedup') {
+            var cfg = dedupedConfig(type);
+            if ((instance[cfg.dataKey] || []).length) renderDedupedList(instance, type);
+        } else {
+            var expanded = instance.expandedContentCategories[type] || {};
+            for (var catId in expanded) {
+                if (expanded[catId] && instance.contentItemsByCategory[type][catId]) {
+                    renderContentItems(instance, type, catId);
+                }
+            }
+        }
+        try { window.localStorage.setItem('xtreamDedupMode_' + type, mode); } catch (e) {}
+    }
+
+    function setupDedupMode(view, self, type) {
+        var toggle = view.querySelector('.' + type + 'ModeToggle');
+        if (toggle) {
+            toggle.addEventListener('click', function (e) {
+                var btn = e.target.closest ? e.target.closest('.' + type + 'ModeBtn') : null;
+                if (btn) setDedupMode(self, type, btn.getAttribute('data-mode'));
+            });
+        }
+        var stored = null;
+        try { stored = window.localStorage.getItem('xtreamDedupMode_' + type); } catch (e) {}
+        // Default to browse for a fresh user (clearer cold-start — de-dup needs Load +
+        // category selection); a remembered choice wins.
+        setDedupMode(self, type, stored === 'dedup' ? 'dedup' : 'browse');
+    }
+
+    // Shows/hides the "category selection changed — save & reload" hint in the de-dup
+    // section. The de-dup list is scoped server-side to the SAVED Selected*CategoryIds,
+    // so a category change only reaches it after a save + re-load.
+    function setDedupedCatNudge(instance, type, show) {
+        var el = instance.view.querySelector('.' + type + 'DedupedCatNudge');
+        if (el) el.style.display = show ? '' : 'none';
     }
 
     // ---- Live TV Categories ----
