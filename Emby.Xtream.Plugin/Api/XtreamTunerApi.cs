@@ -534,6 +534,72 @@ namespace Emby.Xtream.Plugin.Api
             public HashSet<int> Categories = new HashSet<int>();
         }
 
+        // Aggregate by StreamId across categories: a movie cross-listed in several
+        // categories shares one StreamId, so it collapses to one entry (Ids has a single
+        // element) recording every category it appears in. Input is each category's fetched
+        // streams; output is sorted by name.
+        internal static List<DedupedItemDto> AggregateVodByStreamId(
+            IEnumerable<KeyValuePair<int, List<VodStreamInfo>>> perCategory)
+        {
+            var byKey = new Dictionary<int, DedupAcc>();
+            foreach (var kv in perCategory)
+            {
+                foreach (var s in kv.Value ?? new List<VodStreamInfo>())
+                {
+                    DedupAcc acc;
+                    if (!byKey.TryGetValue(s.StreamId, out acc))
+                    {
+                        acc = new DedupAcc { Name = s.Name };
+                        byKey[s.StreamId] = acc;
+                    }
+
+                    acc.Ids.Add(s.StreamId);
+                    acc.Categories.Add(kv.Key);
+                }
+            }
+
+            return byKey.Values
+                .Select(a => new DedupedItemDto { Name = a.Name, Ids = a.Ids.ToArray(), Categories = a.Categories.ToArray() })
+                .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        // Unlike movies, a provider/proxy gives the "same" series a distinct SeriesId per
+        // category, so grouping by SeriesId would not de-duplicate. Group by (trimmed,
+        // case-insensitive) name instead, collecting all of the title's SeriesIds. Unnamed
+        // entries fall back to a per-id key so they don't collapse into one blank group.
+        internal static List<DedupedItemDto> AggregateSeriesByName(
+            IEnumerable<KeyValuePair<int, List<SeriesInfo>>> perCategory)
+        {
+            var byKey = new Dictionary<string, DedupAcc>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in perCategory)
+            {
+                foreach (var s in kv.Value ?? new List<SeriesInfo>())
+                {
+                    var key = (s.Name ?? string.Empty).Trim();
+                    if (key.Length == 0)
+                    {
+                        key = "id:" + s.SeriesId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    }
+
+                    DedupAcc acc;
+                    if (!byKey.TryGetValue(key, out acc))
+                    {
+                        acc = new DedupAcc { Name = s.Name };
+                        byKey[key] = acc;
+                    }
+
+                    acc.Ids.Add(s.SeriesId);
+                    acc.Categories.Add(kv.Key);
+                }
+            }
+
+            return byKey.Values
+                .Select(a => new DedupedItemDto { Name = a.Name, Ids = a.Ids.ToArray(), Categories = a.Categories.ToArray() })
+                .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
         public async Task<object> Get(GetVodDedupedItems request)
         {
             var config = Plugin.Instance?.Configuration;
@@ -566,11 +632,9 @@ namespace Emby.Xtream.Plugin.Api
                         targets = cats.Select(c => c.CategoryId).Distinct().ToList();
                     }
 
-                    // Aggregate by StreamId across categories: a movie cross-listed in
-                    // several categories shares one StreamId, so it collapses to one entry
-                    // (Ids has a single element) recording every category it appears in.
-                    var byKey = new Dictionary<int, DedupAcc>();
-                    var gate = new object();
+                    // Fetch each category's streams concurrently, then aggregate by StreamId
+                    // (see AggregateVodByStreamId).
+                    var perCategory = new System.Collections.Concurrent.ConcurrentDictionary<int, List<VodStreamInfo>>();
                     var sem = new SemaphoreSlim(Math.Max(1, config.SyncParallelism));
 
                     var tasks = targets.Select(async catId =>
@@ -583,24 +647,8 @@ namespace Emby.Xtream.Plugin.Api
                                 "{0}/player_api.php?username={1}&password={2}&action=get_vod_streams&category_id={3}",
                                 config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password), catId);
                             var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
-                            var streams = System.Text.Json.JsonSerializer.Deserialize<List<VodStreamInfo>>(json, ItemListJsonOptions)
+                            perCategory[catId] = System.Text.Json.JsonSerializer.Deserialize<List<VodStreamInfo>>(json, ItemListJsonOptions)
                                 ?? new List<VodStreamInfo>();
-
-                            lock (gate)
-                            {
-                                foreach (var s in streams)
-                                {
-                                    DedupAcc acc;
-                                    if (!byKey.TryGetValue(s.StreamId, out acc))
-                                    {
-                                        acc = new DedupAcc { Name = s.Name };
-                                        byKey[s.StreamId] = acc;
-                                    }
-
-                                    acc.Ids.Add(s.StreamId);
-                                    acc.Categories.Add(catId);
-                                }
-                            }
                         }
                         catch (Exception ex)
                         {
@@ -614,10 +662,7 @@ namespace Emby.Xtream.Plugin.Api
 
                     await Task.WhenAll(tasks).ConfigureAwait(false);
 
-                    return byKey.Values
-                        .Select(a => new DedupedItemDto { Name = a.Name, Ids = a.Ids.ToArray(), Categories = a.Categories.ToArray() })
-                        .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
-                        .ToList();
+                    return AggregateVodByStreamId(perCategory);
                 }
             }
             catch (Exception ex)
@@ -657,13 +702,9 @@ namespace Emby.Xtream.Plugin.Api
                         targets = cats.Select(c => c.CategoryId).Distinct().ToList();
                     }
 
-                    // Unlike movies, Dispatcharr gives the "same" series a distinct SeriesId
-                    // per category, so grouping by SeriesId would not de-duplicate. Group by
-                    // (trimmed, case-insensitive) name instead — the names are identical
-                    // across categories — collecting all of the title's SeriesIds so the UI
-                    // can exclude every copy at once.
-                    var byKey = new Dictionary<string, DedupAcc>(StringComparer.OrdinalIgnoreCase);
-                    var gate = new object();
+                    // Fetch each category's series concurrently, then aggregate by name
+                    // (see AggregateSeriesByName).
+                    var perCategory = new System.Collections.Concurrent.ConcurrentDictionary<int, List<SeriesInfo>>();
                     var sem = new SemaphoreSlim(Math.Max(1, config.SyncParallelism));
 
                     var tasks = targets.Select(async catId =>
@@ -676,32 +717,8 @@ namespace Emby.Xtream.Plugin.Api
                                 "{0}/player_api.php?username={1}&password={2}&action=get_series&category_id={3}",
                                 config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password), catId);
                             var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
-                            var seriesList = System.Text.Json.JsonSerializer.Deserialize<List<SeriesInfo>>(json, ItemListJsonOptions)
+                            perCategory[catId] = System.Text.Json.JsonSerializer.Deserialize<List<SeriesInfo>>(json, ItemListJsonOptions)
                                 ?? new List<SeriesInfo>();
-
-                            lock (gate)
-                            {
-                                foreach (var s in seriesList)
-                                {
-                                    // Fall back to a per-id key for unnamed entries so they
-                                    // don't all collapse into a single blank-named group.
-                                    var key = (s.Name ?? string.Empty).Trim();
-                                    if (key.Length == 0)
-                                    {
-                                        key = "id:" + s.SeriesId.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                                    }
-
-                                    DedupAcc acc;
-                                    if (!byKey.TryGetValue(key, out acc))
-                                    {
-                                        acc = new DedupAcc { Name = s.Name };
-                                        byKey[key] = acc;
-                                    }
-
-                                    acc.Ids.Add(s.SeriesId);
-                                    acc.Categories.Add(catId);
-                                }
-                            }
                         }
                         catch (Exception ex)
                         {
@@ -715,10 +732,7 @@ namespace Emby.Xtream.Plugin.Api
 
                     await Task.WhenAll(tasks).ConfigureAwait(false);
 
-                    return byKey.Values
-                        .Select(a => new DedupedItemDto { Name = a.Name, Ids = a.Ids.ToArray(), Categories = a.Categories.ToArray() })
-                        .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
-                        .ToList();
+                    return AggregateSeriesByName(perCategory);
                 }
             }
             catch (Exception ex)
