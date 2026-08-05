@@ -162,7 +162,12 @@ namespace Emby.Xtream.Plugin.Tests
 
             var orphanPath = SeedSeriesStrm("Removed Show", "Season 01", "S01E01.strm");
 
-            await MakeService().SyncSeriesAsync(config, None, SaveConfig);
+            // Empty Show is genuinely episode-less. Disable the get_series_info retry so its single
+            // mocked empty response isn't re-fetched — a retry would hit the unregistered URL, throw,
+            // and wrongly count the show as failed, which would block the orphan cleanup this asserts.
+            var svc = MakeService();
+            svc.SeriesDetailMaxAttempts = 1;
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
 
             Assert.False(File.Exists(orphanPath),
                 "A show that returns empty while owning nothing on disk is not a failure, so unrelated orphans are still cleaned");
