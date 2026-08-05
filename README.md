@@ -17,14 +17,15 @@
 ---
 
 > **This is a fork of [firestaerter3/emby-xtream](https://github.com/firestaerter3/emby-xtream).**
-> It tracks upstream and adds a de-duplicated review interface that makes reviewing
-> libraries with lots of cross-listed / duplicate titles far easier. It's currently tuned
-> for **Dispatcharr** libraries. Dispatcharr normalizes titles across providers before they
-> reach Emby — a movie ends up with a single stream ID across categories, and a series
-> carries an identical name in each — which is exactly what this fork's de-duplication keys
-> on (movies by ID, series by name). Extending it to raw multi-provider libraries, where the
-> same title's name varies from provider to provider with no Dispatcharr pre-processing, is
-> possible future work. Everything in the upstream README below still applies.
+> It tracks upstream, adding a companion interface that de-duplicates titles across categories
+> and tracks reviewed/unreviewed items to make processing large VOD libraries more efficient.
+> It's currently most useful if you use Dispatcharr as your XC provider: Dispatcharr normalizes
+> titles across providers before they reach Emby, giving movies a single stream ID and series
+> an identical name across providers. Those are the two factors that drive this fork's
+> de-duplication. While this approach is unlikely to help de-duplicate libraries imported
+> directly from IPTV providers, the reviewed/unreviewed aspect of the companion interface will
+> function regardless. Extending de-duplication to raw provider libraries is possible future
+> work. Everything in the upstream README below still applies.
 
 ## What this fork adds
 
