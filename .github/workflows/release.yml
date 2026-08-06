@@ -68,7 +68,6 @@ jobs:
             out/Emby.Xtream.Plugin.dll \
             out_4_10/Emby.Xtream.Plugin-4.10.dll \
             --title "$GITHUB_REF_NAME" \
-            --notes-file release_notes.md \
-            --prerelease
+            --notes-file release_notes.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
