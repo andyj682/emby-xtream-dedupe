@@ -37,8 +37,10 @@ on top of the existing per-title exclusion:
   (movies collapse by stream ID, series by name), so a title listed in five categories appears
   once. Search, filter by category, and exclude at the title level.
 - **Reviewed checkpoint** — mark titles "reviewed" (a bookmark, separate from excluding), with
-  *hide reviewed* / *hide excluded* worklist filters. After an initial pass through your library,
-  "unreviewed" doubles as "new since I last looked." Per-title and bulk.
+  segmented *Show* (All / Included / Excluded) and *Reviewed* (All / Reviewed / Unreviewed) view
+  filters — pull up just your worklist (unreviewed), audit everything excluded, and so on. After an
+  initial pass through your library, "unreviewed" doubles as "new since I last looked." Per-title
+  and bulk.
 - **Browse ⇄ De-duplicated review toggle** — switch between the classic per-category tree and
   the de-dup list; both edit the same exclusion list, so switching is lossless, and your choice
   is remembered.
@@ -49,6 +51,12 @@ on top of the existing per-title exclusion:
 - **Sync robustness for duplicates** — cross-listed series collapse to one folder instead of
   writing duplicate per-episode files, and series whose episode list returns empty under load are
   retried so a batch of new titles lands in one sync.
+- **Dispatcharr episode refresh on sync** *(opt-in)* — Dispatcharr fetches a series' episode
+  streams lazily, so alternate versions (e.g. a 4K copy listed under another category) can stay
+  invisible to its stream selection. Enable this and each sync nudges Dispatcharr to refresh
+  episodes for every copy of the series you sync — not just the one written to disk — so all your
+  providers' streams become available for Dispatcharr to serve. Throttled to once per copy per day;
+  covers only copies in the categories you sync.
 
 ## Features
 

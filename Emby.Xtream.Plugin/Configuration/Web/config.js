@@ -51,6 +51,12 @@ function (BaseView, loading) {
         this.reviewedSeriesIds = {};
         this.dedupedVod = [];
         this.dedupedSeries = [];
+        // De-dup view filters (session-only, reset each load). Show: 'all' | 'included' |
+        // 'excluded'; Reviewed: 'all' | 'reviewed' | 'unreviewed'.
+        this.vodDedupedShowFilter = 'all';
+        this.seriesDedupedShowFilter = 'all';
+        this.vodDedupedReviewedFilter = 'all';
+        this.seriesDedupedReviewedFilter = 'all';
 
         var self = this;
 
@@ -1569,15 +1575,13 @@ function updateEpgVisibility(view) {
         view.querySelector(P + 'MarkUnreviewed').addEventListener('click', function () {
             bulkMarkUnreviewed(self, type);
         });
-        view.querySelector(P + 'HideReviewed').addEventListener('change', function (e) {
-            self[cfg.prefix + 'DedupedHideReviewed'] = e.target.checked;
-            self[cfg.prefix + 'DedupedShowAll'] = false;
-            renderDedupedList(self, type);
+        view.querySelector(P + 'ShowFilter').addEventListener('click', function (e) {
+            var btn = e.target.closest ? e.target.closest('.' + cfg.prefix + 'DedupedShowBtn') : null;
+            if (btn) setDedupedFilter(self, type, 'Show', btn.getAttribute('data-filter'));
         });
-        view.querySelector(P + 'HideExcluded').addEventListener('change', function (e) {
-            self[cfg.prefix + 'DedupedHideExcluded'] = e.target.checked;
-            self[cfg.prefix + 'DedupedShowAll'] = false;
-            renderDedupedList(self, type);
+        view.querySelector(P + 'ReviewedFilter').addEventListener('click', function (e) {
+            var btn = e.target.closest ? e.target.closest('.' + cfg.prefix + 'DedupedReviewedBtn') : null;
+            if (btn) setDedupedFilter(self, type, 'Reviewed', btn.getAttribute('data-filter'));
         });
     }
 
@@ -1643,6 +1647,8 @@ function updateEpgVisibility(view) {
             }
 
             controlsEl.style.display = '';
+            styleDedupedFilterButtons(view, cfg.prefix, 'Show', instance[cfg.prefix + 'DedupedShowFilter'] || 'all');
+            styleDedupedFilterButtons(view, cfg.prefix, 'Reviewed', instance[cfg.prefix + 'DedupedReviewedFilter'] || 'all');
             populateDedupedCategoryFilter(instance, type);
             renderDedupedList(instance, type);
         }).catch(function () {
@@ -1712,8 +1718,8 @@ function updateEpgVisibility(view) {
         var excluded = {};
         (instance[cfg.excludeKey] || []).forEach(function (id) { excluded[id] = true; });
 
-        var hideReviewed = !!instance[cfg.prefix + 'DedupedHideReviewed'];
-        var hideExcluded = !!instance[cfg.prefix + 'DedupedHideExcluded'];
+        var showFilter = instance[cfg.prefix + 'DedupedShowFilter'] || 'all';
+        var reviewedFilter = instance[cfg.prefix + 'DedupedReviewedFilter'] || 'all';
 
         var matches = [];
         var reviewedCount = 0;
@@ -1743,10 +1749,14 @@ function updateEpgVisibility(view) {
             t._excluded = allExcluded;
             if (t._reviewed) reviewedCount++;
             if (t._excluded) excludedCount++;
-            // Hide-reviewed / hide-excluded = "worklist" views: drop reviewed (≈ already
-            // looked at) or excluded (≈ won't sync) titles. Both opt-in, off by default.
-            if (hideReviewed && t._reviewed) continue;
-            if (hideExcluded && t._excluded) continue;
+            // Tri-state view filters (default All, counted above so totals ignore them).
+            // Show: Included = only titles that will sync; Excluded = only blocklisted
+            // (audit / bulk un-exclude). Reviewed: Unreviewed = the "new since I last looked"
+            // worklist; Reviewed = only already-checked.
+            if (showFilter === 'included' && t._excluded) continue;
+            if (showFilter === 'excluded' && !t._excluded) continue;
+            if (reviewedFilter === 'reviewed' && !t._reviewed) continue;
+            if (reviewedFilter === 'unreviewed' && t._reviewed) continue;
             matches.push(t);
         }
         // Remember the full filtered set so bulk actions apply to all matches, not just
@@ -1800,6 +1810,25 @@ function updateEpgVisibility(view) {
             countEl.textContent = 'Showing all ' + matches.length + ' of ' + data.length + ' titles' + reviewedSuffix;
         } else {
             countEl.textContent = matches.length + ' of ' + data.length + ' titles' + reviewedSuffix;
+        }
+    }
+
+    // Tri-state view filters for the de-dup list (session-only). kind = 'Show' | 'Reviewed'.
+    function setDedupedFilter(instance, type, kind, value) {
+        var cfg = dedupedConfig(type);
+        instance[cfg.prefix + 'Deduped' + kind + 'Filter'] = value;
+        instance[cfg.prefix + 'DedupedShowAll'] = false;
+        styleDedupedFilterButtons(instance.view, cfg.prefix, kind, value);
+        renderDedupedList(instance, type);
+    }
+
+    // Reflects the active option of one segmented filter control (reuses the mode-toggle look).
+    function styleDedupedFilterButtons(view, prefix, kind, value) {
+        var btns = view.querySelectorAll('.' + prefix + 'Deduped' + kind + 'Btn');
+        for (var i = 0; i < btns.length; i++) {
+            var active = btns[i].getAttribute('data-filter') === value;
+            btns[i].style.background = active ? '#52B54B' : 'none';
+            btns[i].style.color = active ? '#fff' : 'inherit';
         }
     }
 
