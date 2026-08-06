@@ -498,6 +498,7 @@ function (BaseView, loading) {
             view.querySelector('.txtStrmLibraryPath').value = config.StrmLibraryPath || '/config/xtream';
             validateStrmPath(view);
             view.querySelector('.chkSmartSkipExisting').checked = config.SmartSkipExisting !== false;
+            view.querySelector('.chkRefreshDispatcharrEpisodes').checked = !!config.RefreshDispatcharrEpisodes;
             view.querySelector('.txtSyncParallelism').value = config.SyncParallelism || 3;
             view.querySelector('.txtXtreamRequestsPerSecond').value = config.XtreamRequestsPerSecond || 0;
             view.querySelector('.chkCleanupOrphans').checked = !!config.CleanupOrphans;
@@ -612,6 +613,7 @@ function (BaseView, loading) {
             // Sync settings
             config.StrmLibraryPath = view.querySelector('.txtStrmLibraryPath').value.replace(/\/+$/, '') || '/config/xtream';
             config.SmartSkipExisting = view.querySelector('.chkSmartSkipExisting').checked;
+            config.RefreshDispatcharrEpisodes = view.querySelector('.chkRefreshDispatcharrEpisodes').checked;
             config.SyncParallelism = parseInt(view.querySelector('.txtSyncParallelism').value, 10) || 3;
             config.XtreamRequestsPerSecond = parseInt(view.querySelector('.txtXtreamRequestsPerSecond').value, 10) || 0;
             config.CleanupOrphans = view.querySelector('.chkCleanupOrphans').checked;

@@ -662,5 +662,117 @@ namespace Emby.Xtream.Plugin.Tests
             var detailCalls = Handler.ReceivedUrls.FindAll(u => u.Contains("get_series_info&series_id=1")).Count;
             Assert.Equal(2, detailCalls);
         }
+
+        // -----------------------------------------------------------------
+        // Test 21: RefreshDispatcharrEpisodes_PokesCollapsedSiblings
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task RefreshDispatcharrEpisodes_PokesCollapsedSiblings()
+        {
+            // With the toggle on, the collapsed-away sibling (id=2) — a distinct Dispatcharr
+            // relation for the same show — must still get a get_series_info call so Dispatcharr
+            // refreshes its episode streams, even though only id=1 is written to disk.
+            var config = DefaultConfig();
+            config.RefreshDispatcharrEpisodes = true;
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Dup Show", lastModified: "1000"),
+                Series(seriesId: 2, name: "Dup Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+            Handler.RespondWith("action=get_series_info&series_id=2", SeriesDetailJson(seriesId: 2));
+
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            // One STRM written (collapse unchanged), and both relations poked.
+            Assert.True(File.Exists(EpisodeStrmPath("Dup Show", season: 1, episode: 1, title: "Episode Title")));
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+            Assert.Contains(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=1"));
+            Assert.Contains(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=2"));
+        }
+
+        // -----------------------------------------------------------------
+        // Test 22: RefreshDispatcharrEpisodes_Off_DoesNotPokeSiblings
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task RefreshDispatcharrEpisodes_Off_DoesNotPokeSiblings()
+        {
+            // Toggle off (the default) → the sibling is never poked; behaviour is exactly the
+            // pre-feature collapse. id=2's detail is deliberately not registered.
+            var config = DefaultConfig();
+            config.RefreshDispatcharrEpisodes = false;
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Dup Show", lastModified: "1000"),
+                Series(seriesId: 2, name: "Dup Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+            Assert.DoesNotContain(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=2"));
+        }
+
+        // -----------------------------------------------------------------
+        // Test 23: RefreshDispatcharrEpisodes_ThrottledByLog_SkipsRecent
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task RefreshDispatcharrEpisodes_ThrottledByLog_SkipsRecent()
+        {
+            // A sibling poked within the throttle window must be skipped — no wasted call that
+            // Dispatcharr would only answer from cache.
+            var config = DefaultConfig();
+            config.RefreshDispatcharrEpisodes = true;
+            config.DispatcharrEpisodeRefreshLogJson =
+                System.Text.Json.JsonSerializer.Serialize(new System.Collections.Generic.Dictionary<string, long>
+                {
+                    ["2"] = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                });
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Dup Show", lastModified: "1000"),
+                Series(seriesId: 2, name: "Dup Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+
+            var svc = MakeService();
+            svc.DispatcharrRefreshThrottleSeconds = long.MaxValue; // never re-poke within the test
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+            Assert.DoesNotContain(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=2"));
+        }
+
+        // -----------------------------------------------------------------
+        // Test 24: RefreshDispatcharrEpisodes_ThrottleLog_KeepsFreshEntriesOutOfScope
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task RefreshDispatcharrEpisodes_ThrottleLog_KeepsFreshEntriesOutOfScope()
+        {
+            // The throttle log must survive a sync that doesn't see a given relation: a fresh
+            // entry for id=999 (not a sibling this sync) must remain after the run, so throttle
+            // memory isn't wiped by syncs whose scope is shaped by delta/exclusions.
+            var config = DefaultConfig();
+            config.RefreshDispatcharrEpisodes = true;
+            config.DispatcharrEpisodeRefreshLogJson =
+                System.Text.Json.JsonSerializer.Serialize(new System.Collections.Generic.Dictionary<string, long>
+                {
+                    ["999"] = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                });
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Dup Show", lastModified: "1000"),
+                Series(seriesId: 2, name: "Dup Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+            Handler.RespondWith("action=get_series_info&series_id=2", SeriesDetailJson(seriesId: 2));
+
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+            // Unrelated fresh entry preserved, and the just-poked sibling recorded.
+            Assert.Contains("\"999\"", config.DispatcharrEpisodeRefreshLogJson);
+            Assert.Contains("\"2\"", config.DispatcharrEpisodeRefreshLogJson);
+        }
     }
 }

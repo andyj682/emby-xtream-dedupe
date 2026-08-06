@@ -522,6 +522,19 @@
 
                     <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.5em;">
                         <label>
+                            <input class="chkRefreshDispatcharrEpisodes" type="checkbox" is="emby-checkbox" />
+                            <span>Refresh Dispatcharr episode data (all duplicate copies)</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            For Dispatcharr: after each series sync, ask Dispatcharr to refresh episode
+                            streams for every duplicate copy of a show (each provider/category), not just
+                            the one kept in your library — so 4K and alternate streams become selectable.
+                            Throttled to once per copy per 24h. Leave off for non-Dispatcharr providers.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.5em;">
+                        <label>
                             <input class="chkEnableNfoFiles" type="checkbox" is="emby-checkbox" />
                             <span>Write NFO metadata files (.nfo)</span>
                         </label>
