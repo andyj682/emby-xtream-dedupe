@@ -1797,20 +1797,9 @@ function updateEpgVisibility(view) {
             listEl.innerHTML = '<div style="opacity:0.5;">No matching titles.</div>';
         }
 
-        // Count line: "M of N titles (R reviewed, X excluded)". When the match set exceeds
-        // the cap, cap the render for responsiveness but offer a one-click "Show all".
-        var notes = [];
-        if (reviewedCount > 0) notes.push(reviewedCount + ' reviewed');
-        if (excludedCount > 0) notes.push(excludedCount + ' excluded');
-        var reviewedSuffix = notes.length ? ' (' + notes.join(', ') + ')' : '';
-        if (matches.length > DEDUPED_RENDER_CAP && !showAll) {
-            countEl.innerHTML = 'Showing ' + DEDUPED_RENDER_CAP + ' of ' + matches.length + reviewedSuffix +
-                ' — <button type="button" class="' + cfg.prefix + 'DedupedShowAll" style="cursor:pointer;">Show all ' + matches.length + '</button> or refine your search';
-        } else if (showAll && matches.length > DEDUPED_RENDER_CAP) {
-            countEl.textContent = 'Showing all ' + matches.length + ' of ' + data.length + ' titles' + reviewedSuffix;
-        } else {
-            countEl.textContent = matches.length + ' of ' + data.length + ' titles' + reviewedSuffix;
-        }
+        // Count line: "M of N titles (R reviewed, X excluded)", with a one-click "Show all"
+        // when the match set exceeds the render cap. Shared with the sticky bulk-action path.
+        writeDedupedCountLine(cfg, countEl, matches.length, data.length, reviewedCount, excludedCount, showAll);
     }
 
     // Tri-state view filters for the de-dup list (session-only). kind = 'Show' | 'Reviewed'.
@@ -1895,6 +1884,8 @@ function updateEpgVisibility(view) {
             if (!excludedSet[ids[i]]) { allExcluded = false; break; }
         }
         var reviewed = isTitleReviewed(instance, cfg, ids);
+        var cb = row.querySelector('.dedupedItemCheckbox');
+        if (cb) cb.checked = !allExcluded;
         var nameEl = row.querySelector('.dedupedItemName');
         if (nameEl) nameEl.style.opacity = allExcluded ? '0.5' : '';
         applyReviewToggleState(row.querySelector('.dedupedReviewToggle'), allExcluded, reviewed);
@@ -1916,8 +1907,53 @@ function updateEpgVisibility(view) {
         if (row) restyleDedupedRow(instance, type, row, ids);
     }
 
-    // Applies to every title in the current filtered set (all matches, not just the
-    // capped rows), then re-renders so the visible checkboxes reflect the change.
+    // Writes the de-dup count line ("M of N titles (R reviewed, X excluded)"), offering a
+    // one-click "Show all" when the match set exceeds the render cap. Shared by renderDedupedList
+    // and the sticky bulk-action path so both format the line identically.
+    function writeDedupedCountLine(cfg, countEl, matchLen, dataLen, reviewedCount, excludedCount, showAll) {
+        if (!countEl) return;
+        var notes = [];
+        if (reviewedCount > 0) notes.push(reviewedCount + ' reviewed');
+        if (excludedCount > 0) notes.push(excludedCount + ' excluded');
+        var suffix = notes.length ? ' (' + notes.join(', ') + ')' : '';
+        if (matchLen > DEDUPED_RENDER_CAP && !showAll) {
+            countEl.innerHTML = 'Showing ' + DEDUPED_RENDER_CAP + ' of ' + matchLen + suffix +
+                ' — <button type="button" class="' + cfg.prefix + 'DedupedShowAll" style="cursor:pointer;">Show all ' + matchLen + '</button> or refine your search';
+        } else if (showAll && matchLen > DEDUPED_RENDER_CAP) {
+            countEl.textContent = 'Showing all ' + matchLen + ' of ' + dataLen + ' titles' + suffix;
+        } else {
+            countEl.textContent = matchLen + ' of ' + dataLen + ' titles' + suffix;
+        }
+    }
+
+    // Recomputes only the count line's reviewed/excluded tallies over the CURRENT match set
+    // (the visible rows), without re-filtering or re-rendering — for the sticky bulk path, where
+    // the rows stay put and only their state changed.
+    function updateDedupedCountLine(instance, type) {
+        var cfg = dedupedConfig(type);
+        var countEl = instance.view.querySelector('.' + cfg.prefix + 'DedupedCount');
+        if (!countEl) return;
+        var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
+        var data = instance[cfg.dataKey] || [];
+        var excludedSet = {};
+        (instance[cfg.excludeKey] || []).forEach(function (id) { excludedSet[id] = true; });
+        var reviewedCount = 0, excludedCount = 0;
+        for (var i = 0; i < matches.length; i++) {
+            var ids = matches[i].Ids || [];
+            var allExcluded = ids.length > 0;
+            for (var k = 0; k < ids.length; k++) { if (!excludedSet[ids[k]]) { allExcluded = false; break; } }
+            if (allExcluded) excludedCount++;
+            if (isTitleReviewed(instance, cfg, ids)) reviewedCount++;
+        }
+        writeDedupedCountLine(cfg, countEl, matches.length, data.length, reviewedCount, excludedCount,
+            instance[cfg.prefix + 'DedupedShowAll']);
+    }
+
+    // Applies to every title in the current filtered set (all matches, not just the capped rows).
+    // Restyles the rendered rows IN PLACE instead of re-rendering, so a bulk exclude leaves the
+    // batch visible (like single-exclude) — you can tick back the handful you want to keep before
+    // the next refresh (search / category change / reload) culls the processed set. The match set
+    // is left intact so a follow-up bulk action still targets exactly what's on screen.
     function bulkDedupedExclusion(instance, type, exclude) {
         var cfg = dedupedConfig(type);
         var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
@@ -1941,13 +1977,21 @@ function updateEpgVisibility(view) {
                 }
             }
         }
-        renderDedupedList(instance, type);
+        var listEl = instance.view.querySelector('.' + cfg.prefix + 'DedupedList');
+        if (listEl) {
+            var rows = listEl.querySelectorAll('.exclusionItemRow');
+            for (var r = 0; r < rows.length; r++) {
+                restyleDedupedRow(instance, type, rows[r], parseItemIds(rows[r].getAttribute('data-item-ids')));
+            }
+        }
+        updateDedupedCountLine(instance, type);
     }
 
-    // "Mark all shown reviewed" — adds every id in the current filtered match set to the
-    // reviewed set. With hide-reviewed on, the match set IS the unreviewed worklist, so
-    // this clears it; with it off, it marks the whole filtered list reviewed. Does not
-    // change exclusions — reviewing is orthogonal to keep/exclude.
+    // "Mark all matching reviewed" — adds every id in the current filtered match set (all
+    // matches, not just the capped rows) to the reviewed set. With the Reviewed: Unreviewed
+    // filter on, the match set IS the unreviewed worklist, so this clears it; otherwise it
+    // marks the whole filtered list reviewed. Does not change exclusions — reviewing is
+    // orthogonal to keep/exclude.
     function bulkMarkReviewed(instance, type) {
         var cfg = dedupedConfig(type);
         var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
@@ -1960,7 +2004,7 @@ function updateEpgVisibility(view) {
         renderDedupedList(instance, type);
     }
 
-    // "Mark all shown unreviewed" — the inverse: clears the reviewed set for every id in the
+    // "Mark all matching unreviewed" — the inverse: clears the reviewed set for every id in the
     // current filtered match set. Exclusions are untouched, so excluded titles stay reviewed
     // by derivation (re-include them to make them un-reviewable). Handy for undoing a bulk
     // mark or re-surfacing a batch in the unreviewed worklist.
@@ -2008,7 +2052,6 @@ function updateEpgVisibility(view) {
                 }
             }
         }
-        try { window.localStorage.setItem('xtreamDedupMode_' + type, mode); } catch (e) {}
     }
 
     function setupDedupMode(view, self, type) {
@@ -2019,11 +2062,10 @@ function updateEpgVisibility(view) {
                 if (btn) setDedupMode(self, type, btn.getAttribute('data-mode'));
             });
         }
-        var stored = null;
-        try { stored = window.localStorage.getItem('xtreamDedupMode_' + type); } catch (e) {}
-        // Default to browse for a fresh user (clearer cold-start — de-dup needs Load +
-        // category selection); a remembered choice wins.
-        setDedupMode(self, type, stored === 'dedup' ? 'dedup' : 'browse');
+        // Always start on Browse. Landing on a blank de-dup list (nothing renders until you
+        // click Load) is disorienting after time away, and Browse surfaces any newly-appeared
+        // categories (opt-in — not synced by default). The toggle still switches within a session.
+        setDedupMode(self, type, 'browse');
     }
 
     // Shows/hides the "category selection changed — save & reload" hint in the de-dup
