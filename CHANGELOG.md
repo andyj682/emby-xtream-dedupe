@@ -8,6 +8,28 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-10
+
+### Changed
+
+- **Bulk exclude/include keep their titles on screen.** "Select all matching" and "Deselect
+  all matching" now restyle the affected rows in place instead of clearing them, so you can
+  tick back the handful you want to keep before the list refreshes.
+- **The de-dup view opens on "Browse by category" each time** instead of restoring the
+  last-used mode, so you land on a populated view (and can spot newly-added categories)
+  rather than a blank list.
+- Renamed "Mark all shown reviewed/unreviewed" to "**Mark all matching**…", since they act
+  on the whole filtered set, not just the rows currently visible.
+
+### Fixed
+
+- **Dispatcharr episode refresh no longer churns the series sync.** Each relation is now
+  re-refreshed at most weekly (new relations are still covered on first sight) rather than on
+  every sync, and episode change-detection ignores the container extension — Dispatcharr
+  resolves streams by episode ID and its reported extension can flip (mkv↔mp4) between
+  refreshes, which was causing needless rewrites and duplicate `.strm` files. Episodes now
+  stay stable from one sync to the next.
+
 ## [1.0.0] - 2026-08-05
 
 First release of the fork: a title-level de-duplication and review workflow layered on upstream's
@@ -34,5 +56,6 @@ Xtream `.strm` generator, tuned for Dispatcharr-proxied providers.
 Built on upstream firestaerter3/emby-xtream (MIT); all upstream install, Live TV, Dispatcharr
 integration, and credential-safety features are included.
 
-[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/andyj682/emby-xtream-dedupe/releases/tag/v1.0.0

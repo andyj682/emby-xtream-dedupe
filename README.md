@@ -55,8 +55,10 @@ on top of the existing per-title exclusion:
   streams lazily, so alternate versions (e.g. a 4K copy listed under another category) can stay
   invisible to its stream selection. Enable this and each sync nudges Dispatcharr to refresh
   episodes for every copy of the series you sync — not just the one written to disk — so all your
-  providers' streams become available for Dispatcharr to serve. Throttled to once per copy per day;
-  covers only copies in the categories you sync.
+  providers' streams become available for Dispatcharr to serve. Throttled to about once a week per
+  copy; covers only copies in the categories you sync. *(A newly-added series can take two syncs to
+  show all its episodes: Dispatcharr fills in episode data during the refresh, so the first pass may
+  write a partial list and the next completes it.)*
 
 ## Features
 
