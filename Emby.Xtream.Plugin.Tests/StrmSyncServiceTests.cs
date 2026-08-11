@@ -265,8 +265,11 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         [Fact]
-        public void ComputeSeriesEpisodeHash_DifferentExtension_DifferentHash()
+        public void ComputeSeriesEpisodeHash_DifferentExtension_SameHash()
         {
+            // The container extension is excluded from the hash: it's cosmetic (Dispatcharr
+            // resolves by episode ID) and can flip mkv<->mp4 across refreshes for the same
+            // episode. Same episodes, different extension => same hash => no spurious rewrite.
             var a = new Dictionary<string, List<Emby.Xtream.Plugin.Client.Models.EpisodeInfo>>
             {
                 ["1"] = new List<Emby.Xtream.Plugin.Client.Models.EpisodeInfo>
@@ -281,7 +284,7 @@ namespace Emby.Xtream.Plugin.Tests
                     new Emby.Xtream.Plugin.Client.Models.EpisodeInfo { Id = 101, Season = 1, EpisodeNum = 1, ContainerExtension = "mkv" },
                 }
             };
-            Assert.NotEqual(StrmSyncService.ComputeSeriesEpisodeHash(a), StrmSyncService.ComputeSeriesEpisodeHash(b));
+            Assert.Equal(StrmSyncService.ComputeSeriesEpisodeHash(a), StrmSyncService.ComputeSeriesEpisodeHash(b));
         }
 
         [Fact]

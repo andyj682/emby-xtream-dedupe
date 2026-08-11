@@ -132,8 +132,11 @@ namespace Emby.Xtream.Plugin.Service
         internal int SeriesDetailMaxAttempts = 3;
         internal int SeriesDetailRetryBaseDelayMs = 500;
 
-        // Throttle window for RefreshDispatcharrEpisodes; internal so tests can force/skip pokes.
-        internal long DispatcharrRefreshThrottleSeconds = 24 * 60 * 60;
+        // Re-poke window for RefreshDispatcharrEpisodes: a relation is re-refreshed at most once per
+        // this interval. NEW relations (not yet in the log) are always poked on first sight; existing
+        // ones are re-checked weekly — enough to catch a stream added to a relation, without the
+        // daily churn a short window causes. Internal so tests can force/skip pokes.
+        internal long DispatcharrRefreshThrottleSeconds = 7 * 24 * 60 * 60;
 
         // Single-flight gates. Each sync replaces its progress object wholesale and shares a
         // written-path set, so two overlapping runs of the same kind corrupt each other's state.
@@ -199,9 +202,11 @@ namespace Emby.Xtream.Plugin.Service
         }
 
         /// <summary>
-        /// Computes a stable hash of a series' episode URLs for change detection.
-        /// The hash covers episode ID + extension for each episode, sorted by season+episode
-        /// to be order-independent of the JSON layout.
+        /// Computes a stable hash of a series' episodes for change detection.
+        /// Covers episode ID per episode, sorted by season+episode to be order-independent of the
+        /// JSON layout. The container extension is deliberately EXCLUDED: Dispatcharr resolves the
+        /// stream by episode ID and ignores the URL suffix, and its reported extension can flip
+        /// (mkv↔mp4) across refreshes for the same episode — including it caused spurious rewrites.
         /// </summary>
         internal static string ComputeSeriesEpisodeHash(Dictionary<string, List<EpisodeInfo>> episodes)
         {
@@ -211,8 +216,6 @@ namespace Emby.Xtream.Plugin.Service
                 foreach (var ep in seasonEntry.Value.OrderBy(e => e.Season).ThenBy(e => e.EpisodeNum))
                 {
                     sb.Append(ep.Id);
-                    sb.Append('.');
-                    sb.Append(ep.ContainerExtension ?? "mp4");
                     sb.Append('|');
                 }
             }
@@ -316,6 +319,9 @@ namespace Emby.Xtream.Plugin.Service
             var succeeded = 0;
             if (due.Count > 0)
             {
+                // Surface this as its own phase so a heavy (e.g. weekly) refresh pass reads as
+                // progress instead of a hung 100% "Writing STRM files".
+                _seriesProgress.Phase = "Refreshing Dispatcharr episode data";
                 var refreshed = new ConcurrentDictionary<int, long>();
                 var semaphore = new SemaphoreSlim(ResolveSyncParallelism(config));
                 var tasks = due.Select(async id =>
