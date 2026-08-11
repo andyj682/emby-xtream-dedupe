@@ -149,7 +149,12 @@ namespace Emby.Xtream.Plugin.Service
                 return result;
             }
 
-            var versionStr = tagName.TrimStart('v', 'V');
+            // Fork release tags are prefixed "dedupe-v" (e.g. dedupe-v1.1.0); strip that, tolerating
+            // a bare "v" too (the legacy v1.0.0 release).
+            var versionStr = tagName;
+            if (versionStr.StartsWith("dedupe-", StringComparison.OrdinalIgnoreCase))
+                versionStr = versionStr.Substring("dedupe-".Length);
+            versionStr = versionStr.TrimStart('v', 'V');
             result.LatestVersion = versionStr;
 
             Version current;

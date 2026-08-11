@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - 'dedupe-v*'
 
 permissions:
   contents: write
@@ -22,13 +22,13 @@ jobs:
 
       - name: Build plugin (Emby 4.9.x)
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${GITHUB_REF_NAME#dedupe-v}
           dotnet publish Emby.Xtream.Plugin/Emby.Xtream.Plugin.csproj \
             -c Release -o out --no-self-contained -p:Version=$VERSION
 
       - name: Build plugin (Emby 4.10+)
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${GITHUB_REF_NAME#dedupe-v}
           dotnet publish Emby.Xtream.Plugin/Emby.Xtream.Plugin.csproj \
             -c Release_4_10 -o out_4_10 --no-self-contained -p:Version=$VERSION
 
@@ -36,7 +36,7 @@ jobs:
         id: notes
         run: |
           # Find previous tag
-          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p')
+          PREV_TAG=$(git tag --sort=-v:refname | grep '^dedupe-v' | sed -n '2p')
           if [ -z "$PREV_TAG" ]; then
             RANGE="HEAD"
           else
