@@ -1338,10 +1338,24 @@ namespace Emby.Xtream.Plugin.Service
 
                         foreach (var seasonEntry in detail.Episodes)
                         {
+                            // The episodes map is keyed by season number. Use it as the fallback when
+                            // the per-episode "season" field is absent (0) — some providers only carry
+                            // the season on the key — rather than assuming season 1.
+                            int keySeason;
+                            var haveKeySeason = int.TryParse(
+                                seasonEntry.Key, NumberStyles.Integer, CultureInfo.InvariantCulture, out keySeason)
+                                && keySeason >= 0;
+
                             foreach (var episode in seasonEntry.Value)
                             {
-                                var seasonNum = episode.Season > 0 ? episode.Season : 1;
-                                var episodeNum = episode.EpisodeNum > 0 ? episode.EpisodeNum : 1;
+                                // Season 0 and episode 0 are specials. Forcing them to 1 drops them onto
+                                // the real Season 01 / E01 slot, where a differing episode title writes a
+                                // second .strm beside the genuine one — a duplicate episode in Emby.
+                                // Keep them at 00 so they land in the Specials folder instead.
+                                var seasonNum = episode.Season > 0
+                                    ? episode.Season
+                                    : (haveKeySeason ? keySeason : 1);
+                                var episodeNum = episode.EpisodeNum >= 0 ? episode.EpisodeNum : 1;
                                 var seasonFolder = string.Format(CultureInfo.InvariantCulture, "Season {0:D2}", seasonNum);
                                 var seasonDir = Path.Combine(seriesDir, seasonFolder);
 

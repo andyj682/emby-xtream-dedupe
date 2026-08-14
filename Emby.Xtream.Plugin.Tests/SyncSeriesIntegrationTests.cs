@@ -464,6 +464,84 @@ namespace Emby.Xtream.Plugin.Tests
             Assert.Equal("http://fake-xtream/series/user/pass/201.mp4", File.ReadAllText(s2e1));
         }
 
+        // -----------------------------------------------------------------
+        // Specials (season 0 / episode 0) must not collide with Season 01 / E01
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task SeasonZeroAndEpisodeZero_WriteToSpecials_NotSeasonOne()
+        {
+            var config = DefaultConfig();
+            var list = SeriesListJson(Series(seriesId: 1, name: "Test Show", lastModified: "2000"));
+
+            var detail = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                info = new { series_id = 1, name = "Test Show", tmdb = "" },
+                seasons = new object[0],
+                episodes = new System.Collections.Generic.Dictionary<string, object[]>
+                {
+                    ["0"] = new object[]
+                    {
+                        new { id = 1, episode_num = 2, title = "Special Two",   container_extension = "mp4", season = 0 },
+                        new { id = 2, episode_num = 0, title = "Pilot Special", container_extension = "mp4", season = 0 }
+                    },
+                    ["1"] = new object[]
+                    {
+                        new { id = 3, episode_num = 1, title = "Pilot",  container_extension = "mp4", season = 1 },
+                        new { id = 4, episode_num = 2, title = "Second", container_extension = "mp4", season = 1 }
+                    }
+                }
+            });
+
+            Handler.RespondWith("action=get_series", list);
+            Handler.RespondWith("action=get_series_info&series_id=1", detail);
+
+            await MakeService().SyncSeriesAsync(config, None, SaveConfig);
+
+            var special2 = EpisodeStrmPath("Test Show", season: 0, episode: 2, title: "Special Two");
+            var special0 = EpisodeStrmPath("Test Show", season: 0, episode: 0, title: "Pilot Special");
+            var s1e1 = EpisodeStrmPath("Test Show", season: 1, episode: 1, title: "Pilot");
+            var s1e2 = EpisodeStrmPath("Test Show", season: 1, episode: 2, title: "Second");
+
+            Assert.True(File.Exists(special2), $"Expected Season 00 special at: {special2}");
+            Assert.True(File.Exists(special0), $"Expected Season 00 E00 special at: {special0}");
+            Assert.True(File.Exists(s1e1), $"Expected Season 01 episode at: {s1e1}");
+            Assert.True(File.Exists(s1e2), $"Expected Season 01 episode at: {s1e2}");
+
+            // Season 01 holds exactly the two real episodes — no specials dumped alongside them.
+            var seasonOneDir = Path.Combine(TempDir.Path, "Shows", "Test Show", "Season 01");
+            Assert.Equal(2, Directory.GetFiles(seasonOneDir, "*.strm").Length);
+        }
+
+        [Fact]
+        public async Task MissingEpisodeSeasonField_FallsBackToEpisodesMapKey()
+        {
+            var config = DefaultConfig();
+            var list = SeriesListJson(Series(seriesId: 1, name: "Test Show", lastModified: "2000"));
+
+            // Provider omits the per-episode "season" field; only the map key carries the season.
+            var detail = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                info = new { series_id = 1, name = "Test Show", tmdb = "" },
+                seasons = new object[0],
+                episodes = new System.Collections.Generic.Dictionary<string, object[]>
+                {
+                    ["2"] = new object[]
+                    {
+                        new { id = 201, episode_num = 5, title = "Late One", container_extension = "mp4" }
+                    }
+                }
+            });
+
+            Handler.RespondWith("action=get_series", list);
+            Handler.RespondWith("action=get_series_info&series_id=1", detail);
+
+            await MakeService().SyncSeriesAsync(config, None, SaveConfig);
+
+            var s2e5 = EpisodeStrmPath("Test Show", season: 2, episode: 5, title: "Late One");
+            Assert.True(File.Exists(s2e5), $"Expected Season 02 episode at: {s2e5}");
+        }
+
         [Fact]
         public async Task CustomMode_EmptyMappings_AbortsWithoutHttp()
         {
