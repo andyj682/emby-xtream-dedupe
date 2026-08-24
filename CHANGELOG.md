@@ -8,6 +8,24 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-24
+
+### Fixed
+
+- **Season 0 and episode 0 specials no longer collide with Season 01 / E01.** Episodes
+  reporting a season or episode number of 0 were forced to 1, so a show's specials were
+  written onto real Season-1 slots. Because specials carry different episode titles, each one
+  landed as a *second* `.strm` beside the genuine episode rather than replacing it — showing
+  up as duplicate episodes in Emby. They now write to `Season 00` / `E00`, which Emby treats
+  as Specials. The `.strm` URL is keyed on episode ID rather than the season/episode number,
+  so this only relocates files; no streams change.
+- **Providers that omit the per-episode season are handled correctly.** Where an episode
+  reports no season of its own, the season number is now taken from the episodes map key
+  instead of defaulting to season 1, so those shows are no longer flattened into `Season 01`.
+
+Existing duplicates clear once each affected show is re-processed, on a sync that finishes
+with zero failures — orphan cleanup is gated on that.
+
 ## [1.1.0] - 2026-08-10
 
 ### Changed
@@ -56,6 +74,7 @@ Xtream `.strm` generator, tuned for Dispatcharr-proxied providers.
 Built on upstream firestaerter3/emby-xtream (MIT); all upstream install, Live TV, Dispatcharr
 integration, and credential-safety features are included.
 
-[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/v1.1.0...HEAD
-[1.1.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/v1.0.0...v1.1.0
+[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.1.1...HEAD
+[1.1.1]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.1.0...dedupe-v1.1.1
+[1.1.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/v1.0.0...dedupe-v1.1.0
 [1.0.0]: https://github.com/andyj682/emby-xtream-dedupe/releases/tag/v1.0.0
