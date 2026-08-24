@@ -14,6 +14,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history + tags: the release-notes step below resolves the previous
+          # dedupe-v tag and logs the commit range since it. The default shallow
+          # checkout has neither, so PREV_TAG comes back empty and the notes
+          # collapse to just the tagged commit.
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
