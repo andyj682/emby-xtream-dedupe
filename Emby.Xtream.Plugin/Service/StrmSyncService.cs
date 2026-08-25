@@ -1357,20 +1357,19 @@ namespace Emby.Xtream.Plugin.Service
                                 var seasonFolder = string.Format(CultureInfo.InvariantCulture, "Season {0:D2}", seasonNum);
                                 var seasonDir = Path.Combine(seriesDir, seasonFolder);
 
-                                // Some providers embed the series name + episode code in the title
-                                // (e.g. "EN - American Gigolo - S01E01", "Yago - S01E33 - Episode 33").
-                                // Strip the duplicate portion so the filename doesn't read
-                                // "Show - S01E01 - EN - Show - S01E01".
-                                var rawEpisodeTitle = StripEpisodeTitleDuplicate(
-                                    episode.Title, seriesName, seasonNum, episodeNum);
-                                var episodeTitle = !string.IsNullOrWhiteSpace(rawEpisodeTitle)
-                                    ? " - " + SanitizeFileName(rawEpisodeTitle)
-                                    : string.Empty;
-
+                                // The episode title is deliberately NOT part of the filename.
+                                // Providers hand back different titles for the same episode across
+                                // refreshes (and omit them entirely on some passes), so including
+                                // the title meant a re-fetch wrote a NEW file beside the old one
+                                // instead of overwriting it — one duplicate episode in Emby per
+                                // title change, and a re-sync could mint tens of thousands at once.
+                                // Emby matches episodes on the SxxExx code and its metadata
+                                // providers rather than on filename text, so keying the name on the
+                                // episode code alone is both stable and lossless.
                                 var fileName = string.Format(
                                     CultureInfo.InvariantCulture,
-                                    "{0} - S{1:D2}E{2:D2}{3}.strm",
-                                    seriesName, seasonNum, episodeNum, episodeTitle);
+                                    "{0} - S{1:D2}E{2:D2}.strm",
+                                    seriesName, seasonNum, episodeNum);
 
                                 var strmPath = Path.Combine(seasonDir, fileName);
 

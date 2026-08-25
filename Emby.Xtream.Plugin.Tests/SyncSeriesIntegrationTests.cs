@@ -28,13 +28,18 @@ namespace Emby.Xtream.Plugin.Tests
         /// <summary>
         /// Compute the expected STRM path for a plain-ASCII episode
         /// (no TMDB/TVDb IDs in folder name).
+        ///
+        /// <paramref name="title"/> is accepted but deliberately NOT part of the path:
+        /// filenames are keyed on the SxxExx code alone, so a provider re-titling an
+        /// episode overwrites in place instead of creating a second file. Call sites keep
+        /// passing the provider's title so each fixture still documents what its payload
+        /// contained.
         /// </summary>
         private string EpisodeStrmPath(
-            string seriesName, int season, int episode, string title)
+            string seriesName, int season, int episode, string title = null)
         {
             var seasonFolder = $"Season {season:D2}";
-            var sanitizedTitle = string.IsNullOrWhiteSpace(title) ? string.Empty : $" - {title}";
-            var fileName = $"{seriesName} - S{season:D2}E{episode:D2}{sanitizedTitle}.strm";
+            var fileName = $"{seriesName} - S{season:D2}E{episode:D2}.strm";
             return Path.Combine(TempDir.Path, "Shows", seriesName, seasonFolder, fileName);
         }
 
@@ -262,14 +267,12 @@ namespace Emby.Xtream.Plugin.Tests
         // -----------------------------------------------------------------
 
         [Fact]
-        public async Task EpisodeTitleDeduplication_TitleNotDuplicatedInFilename()
+        public async Task ProviderEmbeddedTitle_DoesNotAppearInFilename()
         {
             // Provider embeds series name + episode code in the episode title:
-            // title = "Breaking Bad - S01E01"
-            // Without deduplication the filename would be:
-            //   Breaking Bad - S01E01 - Breaking Bad - S01E01.strm
-            // With StripEpisodeTitleDuplicate the title becomes empty, giving:
-            //   Breaking Bad - S01E01.strm
+            // title = "Breaking Bad - S01E01". Episode titles are not part of the
+            // filename at all, so the name is keyed on the episode code alone and
+            // nothing from the title can leak into it.
             var config = DefaultConfig();
             var list = SeriesListJson(Series(seriesId: 1, name: "Breaking Bad", lastModified: "2000"));
             var detail = System.Text.Json.JsonSerializer.Serialize(new
@@ -289,15 +292,68 @@ namespace Emby.Xtream.Plugin.Tests
 
             await MakeService().SyncSeriesAsync(config, None, SaveConfig);
 
-            // The clean filename (title stripped to empty string)
-            var expectedPath = EpisodeStrmPath("Breaking Bad", season: 1, episode: 1, title: "");
+            var expectedPath = EpisodeStrmPath("Breaking Bad", season: 1, episode: 1);
             Assert.True(File.Exists(expectedPath), $"Expected STRM at: {expectedPath}");
 
-            // The duplicated filename must NOT exist
-            var duplicatedPath = EpisodeStrmPath("Breaking Bad", season: 1, episode: 1,
-                title: "Breaking Bad - S01E01");
-            Assert.False(File.Exists(duplicatedPath),
-                "Duplicated series name in filename — StripEpisodeTitleDuplicate should have removed it");
+            // Exactly one file for the episode — no title-derived variant beside it.
+            var seasonDir = Path.Combine(TempDir.Path, "Shows", "Breaking Bad", "Season 01");
+            Assert.Single(Directory.GetFiles(seasonDir, "*.strm"));
+        }
+
+        // -----------------------------------------------------------------
+        // A re-titled episode must overwrite in place, not duplicate
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task EpisodeRetitledOnRefetch_OverwritesInPlace_NoDuplicate()
+        {
+            // Providers hand back different episode titles across refreshes. When the
+            // title was part of the filename, a re-fetch wrote a NEW file beside the old
+            // one instead of replacing it — one duplicate per re-titled episode.
+            //
+            // A title change alone never reaches the write loop (the change-hash is keyed
+            // on episode IDs, so an identical ID set hash-skips), so this models what
+            // actually happened in the wild: a new episode arrives AND the rest of the
+            // payload comes back re-titled in the same refresh.
+            //
+            // Orphan cleanup is off so the duplicate is observed rather than swept: under
+            // the old naming the stale-titled file would be deleted as an orphan and the
+            // count would come out right regardless. That is also what happened live —
+            // cleanup was gated off by failures, which is why duplicates accumulated.
+            var config = DefaultConfig();
+            config.CleanupOrphans = false;
+
+            var listV1 = SeriesListJson(Series(seriesId: 1, name: "Test Show", lastModified: "2000"));
+            var listV2 = SeriesListJson(Series(seriesId: 1, name: "Test Show", lastModified: "3000"));
+
+            string Detail(params object[] episodes) => System.Text.Json.JsonSerializer.Serialize(new
+            {
+                info = new { series_id = 1, name = "Test Show", tmdb = "" },
+                seasons = new object[0],
+                episodes = new System.Collections.Generic.Dictionary<string, object[]> { ["1"] = episodes }
+            });
+
+            var detailV1 = Detail(
+                new { id = 101, episode_num = 1, title = "Pilot", container_extension = "mp4", season = 1 });
+            var detailV2 = Detail(
+                new { id = 101, episode_num = 1, title = "Pilot (Extended Cut)", container_extension = "mp4", season = 1 },
+                new { id = 102, episode_num = 2, title = "Second",               container_extension = "mp4", season = 1 });
+
+            // Register the more specific rule first: the detail URL contains
+            // "action=get_series_info&series_id=1", while the list URL does not, so the
+            // list falls through to the broader rule. Registering the broad rule first
+            // would let a queued list body answer a detail request.
+            Handler.RespondWithSequence("action=get_series_info&series_id=1", new[] { detailV1, detailV2 });
+            Handler.RespondWithSequence("action=get_series", new[] { listV1, listV2 });
+
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            var seasonDir = Path.Combine(TempDir.Path, "Shows", "Test Show", "Season 01");
+            Assert.Equal(2, Directory.GetFiles(seasonDir, "*.strm").Length);
+            Assert.True(File.Exists(EpisodeStrmPath("Test Show", season: 1, episode: 1)));
+            Assert.True(File.Exists(EpisodeStrmPath("Test Show", season: 1, episode: 2)));
         }
 
         // -----------------------------------------------------------------
