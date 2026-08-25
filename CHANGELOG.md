@@ -8,6 +8,32 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-25
+
+### Changed
+
+- **Episode filenames no longer include the provider's episode title.** Files are now named
+  `Show Name - S01E02.strm`, keyed on the episode code alone. Providers hand back different
+  titles for the same episode between refreshes — and sometimes none at all — so with the
+  title in the name, a re-fetch wrote a *new* file beside the old one instead of replacing
+  it. Every title change left a duplicate episode behind, and a full re-sync could produce
+  tens of thousands at once. Emby matches episodes on the `SxxExx` code and its metadata
+  providers rather than on filename text, so nothing is lost by dropping it.
+
+  **Existing libraries are migrated automatically** on the next series sync: files are
+  renamed in place, and where both the old and new names already exist the duplicate is
+  removed. Nothing is orphaned, no settings need changing, and watched state is preserved.
+  A one-line summary of what was renamed appears in the log. On a ~60,000 episode library
+  this took about a second.
+
+### From upstream
+
+- Movie NFO files now carry a TMDB ID even when metadata IDs in folder names are switched
+  off — the two settings were coupled, so turning off folder naming silently emptied the
+  NFOs (upstream issue #63).
+- Dispatcharr API token refresh is now serialised, so several requests hitting an expired
+  token no longer trigger simultaneous re-authentication.
+
 ## [1.1.1] - 2026-08-24
 
 ### Fixed
@@ -74,7 +100,8 @@ Xtream `.strm` generator, tuned for Dispatcharr-proxied providers.
 Built on upstream firestaerter3/emby-xtream (MIT); all upstream install, Live TV, Dispatcharr
 integration, and credential-safety features are included.
 
-[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.1.1...HEAD
+[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.2.0...HEAD
+[1.2.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.1.1...dedupe-v1.2.0
 [1.1.1]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.1.0...dedupe-v1.1.1
 [1.1.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/v1.0.0...dedupe-v1.1.0
 [1.0.0]: https://github.com/andyj682/emby-xtream-dedupe/releases/tag/v1.0.0
