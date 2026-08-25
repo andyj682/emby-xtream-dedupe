@@ -532,6 +532,9 @@ namespace Emby.Xtream.Plugin.Service
                             // Both forms already present — the pair of files this change exists
                             // to prevent. The title-free one is canonical and the next sync
                             // corrects its URL if it differs, so drop the titled twin.
+                            // delete-ok: the loop skips every path StrmOwnership.IsOwnedStrm
+                            // rejects, so this only ever removes a STRM the plugin wrote, and
+                            // only when the file it would have been renamed to already exists.
                             File.Delete(path);
                             collapsed++;
                         }
