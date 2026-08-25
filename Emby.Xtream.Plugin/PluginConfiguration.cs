@@ -150,6 +150,15 @@ namespace Emby.Xtream.Plugin
         public string SyncHistoryJson { get; set; } = string.Empty;
 
         /// <summary>
+        /// Tracks the one-time rename of episode STRM files to the title-free
+        /// "{Show} - SxxExx.strm" form. Default 0; set to the current version once the
+        /// migration has run. Deliberately separate from <see cref="StrmNamingVersion"/>,
+        /// which resets the delta watermark and clears episode hashes to force a full
+        /// re-sync — this migration renames files in place and needs no re-fetch.
+        /// </summary>
+        public int EpisodeFilenameMigrationVersion { get; set; }
+
+        /// <summary>
         /// JSON dictionary mapping series_id → SHA256 hash of episode URLs.
         /// Used to skip per-episode file I/O when the episode list hasn't changed.
         /// </summary>

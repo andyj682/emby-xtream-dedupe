@@ -36,6 +36,7 @@ namespace Emby.Xtream.Plugin.Tests
             CleanupOrphans        = false,
             OrphanSafetyThreshold = 0.0,
             StrmNamingVersion     = StrmSyncService.CurrentStrmNamingVersion,
+            EpisodeFilenameMigrationVersion = StrmSyncService.CurrentEpisodeFilenameVersion,
             SyncParallelism       = 1,
             MovieFolderMode       = "single",
             SeriesFolderMode      = "single",

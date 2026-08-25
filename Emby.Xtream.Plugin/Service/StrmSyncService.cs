@@ -99,6 +99,13 @@ namespace Emby.Xtream.Plugin.Service
             @" \[(?:tmdbid|tvdbid)=\d+\]$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+        // Matches the old title-bearing episode filename, capturing the part to keep:
+        // "Show - S01E02 - Some Title" → "Show - S01E02". Lazy so a title that itself
+        // contains an episode code ("Recap of S01E01") splits at the first code, not the last.
+        private static readonly Regex TitledEpisodeFileRegex = new Regex(
+            @"^(?<base>.+? - S\d{2,}E\d{2,}) - .+$",
+            RegexOptions.Compiled);
+
         private static readonly int MaxHistoryEntries = 10;
         private static readonly HttpClient SharedHttpClient = new HttpClient(
             new XtreamRateLimitHandler { InnerHandler = new HttpClientHandler() })
@@ -106,6 +113,10 @@ namespace Emby.Xtream.Plugin.Service
 
         // Increment when naming logic changes so existing installs force a full re-sync on next run.
         internal const int CurrentStrmNamingVersion = 1;
+
+        // Increment when episode filenames change shape so existing libraries are renamed
+        // in place rather than rewritten. See MigrateEpisodeFilenames.
+        internal const int CurrentEpisodeFilenameVersion = 1;
 
         private static void ApplyUserAgentToSharedClient()
         {
@@ -454,6 +465,100 @@ namespace Emby.Xtream.Plugin.Service
             config.SeriesEpisodeHashesJson = string.Empty;
             saveConfig?.Invoke();
             return true;
+        }
+
+        /// <summary>
+        /// One-time rename of episode STRM files from the old title-bearing form
+        /// ("Show - S01E02 - Some Title.strm") to the title-free form
+        /// ("Show - S01E02.strm").
+        ///
+        /// Renaming in place matters. Letting the sync converge on the new names instead
+        /// would write every episode afresh and orphan every old one — on a large library
+        /// that is an orphan ratio around 50%, far above
+        /// <see cref="PluginConfiguration.OrphanSafetyThreshold"/>, so cleanup would refuse
+        /// and the tree would carry two copies of everything until someone raised the
+        /// threshold by hand.
+        ///
+        /// Deliberately does NOT touch the delta watermark or the stored episode hashes
+        /// (unlike <see cref="CheckAndUpgradeNamingVersion"/>): the files land exactly where
+        /// the next sync expects them, so nothing needs re-fetching.
+        /// </summary>
+        /// <returns>Number of files renamed or removed.</returns>
+        internal int MigrateEpisodeFilenames(PluginConfiguration config, Action saveConfig)
+        {
+            if (config.EpisodeFilenameMigrationVersion >= CurrentEpisodeFilenameVersion)
+                return 0;
+
+            var showsRoot = Path.Combine(config.StrmLibraryPath ?? string.Empty, "Shows");
+            var renamed = 0;
+            var collapsed = 0;
+
+            if (Directory.Exists(showsRoot))
+            {
+                // Runs once, but walks the whole tree — surface it rather than leaving an
+                // unexplained pause at the start of the sync.
+                _seriesProgress.Phase = "Migrating episode filenames";
+
+                string[] files;
+                try
+                {
+                    files = Directory.GetFiles(showsRoot, "*.strm", SearchOption.AllDirectories);
+                }
+                catch (Exception ex)
+                {
+                    // Leave the version unset so the migration is retried next run rather
+                    // than being silently skipped on a transient I/O error.
+                    _logger.Warn("Episode filename migration: could not scan '{0}': {1}", showsRoot, ex.Message);
+                    return 0;
+                }
+
+                foreach (var path in files)
+                {
+                    var match = TitledEpisodeFileRegex.Match(Path.GetFileNameWithoutExtension(path) ?? string.Empty);
+                    if (!match.Success) continue;
+
+                    // Only touch files this plugin wrote — the same guard orphan cleanup uses,
+                    // so a hand-placed .strm that happens to match the pattern is left alone.
+                    if (!StrmOwnership.IsOwnedStrm(path, config.BaseUrl, config.DispatcharrUrl)) continue;
+
+                    var dir = Path.GetDirectoryName(path);
+                    if (string.IsNullOrEmpty(dir)) continue;
+                    var target = Path.Combine(dir, match.Groups["base"].Value + ".strm");
+
+                    try
+                    {
+                        if (File.Exists(target))
+                        {
+                            // Both forms already present — the pair of files this change exists
+                            // to prevent. The title-free one is canonical and the next sync
+                            // corrects its URL if it differs, so drop the titled twin.
+                            File.Delete(path);
+                            collapsed++;
+                        }
+                        else
+                        {
+                            File.Move(path, target);
+                            renamed++;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warn("Episode filename migration: could not rename '{0}': {1}", path, ex.Message);
+                    }
+                }
+            }
+
+            config.EpisodeFilenameMigrationVersion = CurrentEpisodeFilenameVersion;
+            saveConfig?.Invoke();
+
+            if (renamed > 0 || collapsed > 0)
+            {
+                _logger.Info(
+                    "Episode filename migration: renamed {0} file(s) to the title-free form, removed {1} duplicate(s)",
+                    renamed, collapsed);
+            }
+
+            return renamed + collapsed;
         }
 
         /// <summary>
@@ -927,6 +1032,11 @@ namespace Emby.Xtream.Plugin.Service
             try
             {
                 EnsureStrmLibraryPath(config.StrmLibraryPath);
+
+                // Rename existing episode files to the title-free form before anything reads
+                // the tree, so the pre-fetch skip and orphan cleanup below both see the names
+                // this run is about to write.
+                MigrateEpisodeFilenames(config, saveConfig);
 
                 var folderMappings = FolderMappingParser.Parse(config.SeriesFolderMappings);
                 if (string.Equals(config.SeriesFolderMode, "custom", StringComparison.OrdinalIgnoreCase) &&

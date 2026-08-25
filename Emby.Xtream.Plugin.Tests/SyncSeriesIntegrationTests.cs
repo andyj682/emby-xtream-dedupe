@@ -357,6 +357,93 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
+        // MigrateEpisodeFilenames — one-time rename to the title-free form
+        // -----------------------------------------------------------------
+
+        /// <summary>Writes an episode STRM with plugin-owned content unless overridden.</summary>
+        private string SeedEpisode(string show, string season, string fileName, string content = null)
+        {
+            var dir = Path.Combine(TempDir.Path, "Shows", show, season);
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, fileName);
+            File.WriteAllText(path, content ?? "http://fake-xtream/series/user/pass/101.mp4");
+            return path;
+        }
+
+        [Fact]
+        public void MigrateEpisodeFilenames_RenamesTitledFileInPlace()
+        {
+            var config = DefaultConfig();
+            config.EpisodeFilenameMigrationVersion = 0;
+            var titled = SeedEpisode("Test Show", "Season 01", "Test Show - S01E01 - Some Title.strm");
+
+            var changed = MakeService().MigrateEpisodeFilenames(config, () => { });
+
+            Assert.Equal(1, changed);
+            Assert.False(File.Exists(titled));
+            Assert.True(File.Exists(EpisodeStrmPath("Test Show", season: 1, episode: 1)));
+            Assert.Equal(StrmSyncService.CurrentEpisodeFilenameVersion, config.EpisodeFilenameMigrationVersion);
+        }
+
+        [Fact]
+        public void MigrateEpisodeFilenames_TitledAndUntitledPair_KeepsUntitled()
+        {
+            var config = DefaultConfig();
+            config.EpisodeFilenameMigrationVersion = 0;
+            var titled = SeedEpisode("Test Show", "Season 01", "Test Show - S01E01 - Some Title.strm");
+            var untitled = SeedEpisode("Test Show", "Season 01", "Test Show - S01E01.strm");
+
+            var changed = MakeService().MigrateEpisodeFilenames(config, () => { });
+
+            Assert.Equal(1, changed);
+            Assert.False(File.Exists(titled));
+            Assert.True(File.Exists(untitled));
+        }
+
+        [Fact]
+        public void MigrateEpisodeFilenames_TitleContainingEpisodeCode_SplitsAtFirstCode()
+        {
+            // A title like "Recap of S01E01" must not be mistaken for the episode code —
+            // the name has to keep S01E02, the code the file is actually for.
+            var config = DefaultConfig();
+            config.EpisodeFilenameMigrationVersion = 0;
+            SeedEpisode("Test Show", "Season 01", "Test Show - S01E02 - Recap of S01E01.strm");
+
+            MakeService().MigrateEpisodeFilenames(config, () => { });
+
+            Assert.True(File.Exists(EpisodeStrmPath("Test Show", season: 1, episode: 2)));
+            Assert.False(File.Exists(EpisodeStrmPath("Test Show", season: 1, episode: 1)));
+        }
+
+        [Fact]
+        public void MigrateEpisodeFilenames_LeavesFilesThePluginDidNotWrite()
+        {
+            var config = DefaultConfig();
+            config.EpisodeFilenameMigrationVersion = 0;
+            var foreign = SeedEpisode("Test Show", "Season 01", "Test Show - S01E01 - Some Title.strm",
+                content: "http://someone-elses-server/video.mkv");
+
+            var changed = MakeService().MigrateEpisodeFilenames(config, () => { });
+
+            Assert.Equal(0, changed);
+            Assert.True(File.Exists(foreign), "A file the plugin did not write must be left alone");
+        }
+
+        [Fact]
+        public void MigrateEpisodeFilenames_AlreadyMigrated_DoesNotRescan()
+        {
+            // DefaultConfig is pinned at the current version, so this models an install
+            // that has already migrated: the tree must not be walked on every later sync.
+            var config = DefaultConfig();
+            var titled = SeedEpisode("Test Show", "Season 01", "Test Show - S01E01 - Some Title.strm");
+
+            var changed = MakeService().MigrateEpisodeFilenames(config, () => { });
+
+            Assert.Equal(0, changed);
+            Assert.True(File.Exists(titled));
+        }
+
+        // -----------------------------------------------------------------
         // Test 9: EpisodeHashSkip_UnchangedEpisodes_NoFileIO
         // -----------------------------------------------------------------
 
