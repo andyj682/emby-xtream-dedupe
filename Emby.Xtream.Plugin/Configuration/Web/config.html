@@ -522,6 +522,20 @@
 
                     <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.5em;">
                         <label>
+                            <input class="chkRefreshEmbyLibraryAfterSync" type="checkbox" is="emby-checkbox" />
+                            <span>Refresh the Emby library after a sync that changed files</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Tells Emby the Movies or Shows folder changed once a sync has actually added
+                            or removed files, so new content appears without waiting for a scheduled scan.
+                            A sync that changed nothing triggers nothing. Useful when real-time monitoring
+                            is off for these libraries — watching the folder can stop a drive from ever
+                            spinning down. Turn off if you would rather Emby scan only on its own schedule.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.5em;">
+                        <label>
                             <input class="chkRefreshDispatcharrEpisodes" type="checkbox" is="emby-checkbox" />
                             <span>Refresh Dispatcharr episode data (all duplicate copies)</span>
                         </label>

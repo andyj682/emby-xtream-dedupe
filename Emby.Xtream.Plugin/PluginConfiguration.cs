@@ -123,6 +123,15 @@ namespace Emby.Xtream.Plugin
         public int SyncParallelism { get; set; } = 3;
         public bool CleanupOrphans { get; set; } = true;
 
+        /// <summary>
+        /// After a sync that added or removed files, tell Emby the corresponding library
+        /// folder changed so new content appears without waiting for a scheduled scan.
+        /// Only fires when something actually changed, so an unchanged sync stays silent.
+        /// Mainly for libraries with real-time monitoring switched off — a common choice,
+        /// since watching the folder stops the disk ever spinning down.
+        /// </summary>
+        public bool RefreshEmbyLibraryAfterSync { get; set; } = true;
+
         // When enabled, after each series sync the plugin calls XC get_series_info for every
         // Dispatcharr relation (per provider AND per category) of each curated show — not just
         // the one representative kept after collapse — purely to trigger Dispatcharr's

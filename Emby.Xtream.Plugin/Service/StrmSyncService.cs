@@ -11,6 +11,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Emby.Xtream.Plugin.Client.Models;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Logging;
 using STJ = System.Text.Json;
 
@@ -465,6 +466,56 @@ namespace Emby.Xtream.Plugin.Service
             config.SeriesEpisodeHashesJson = string.Empty;
             saveConfig?.Invoke();
             return true;
+        }
+
+        /// <summary>
+        /// Tells Emby that a library folder changed, so newly written content appears without
+        /// waiting for a scheduled scan.
+        ///
+        /// Only called when the sync actually added or removed files: an unchanged run must not
+        /// trigger a scan, or every no-op sync would spin the library (and the disk) for nothing.
+        /// The path is the library root this sync writes to — <c>{StrmLibraryPath}/Movies</c> or
+        /// <c>/Shows</c> — which is what the user adds to Emby as a library, and which also
+        /// covers Multiple/Custom folder mode since those write category subfolders beneath it.
+        ///
+        /// Reports the change rather than forcing a full validation: Emby coalesces the report
+        /// and refreshes just that subtree, where a full library validation would scan
+        /// everything including libraries this plugin has nothing to do with.
+        /// </summary>
+        private void NotifyEmbyLibraryChanged(
+            PluginConfiguration config, string rootFolderName, int added, int deleted)
+        {
+            if (!config.RefreshEmbyLibraryAfterSync) return;
+            if (added <= 0 && deleted <= 0) return;
+
+            // Null outside a running Emby (unit tests construct the service directly).
+            var host = Plugin.InstanceOrNull?.ApplicationHost;
+            if (host == null) return;
+
+            var path = Path.Combine(config.StrmLibraryPath ?? string.Empty, rootFolderName);
+
+            try
+            {
+                var monitor = host.Resolve<ILibraryMonitor>();
+                if (monitor == null)
+                {
+                    _logger.Warn(
+                        "Library refresh: Emby's library monitor was not available — '{0}' will be picked up by the next scheduled scan",
+                        path);
+                    return;
+                }
+
+                monitor.ReportFileSystemChanged(path);
+                _logger.Info(
+                    "Library refresh: notified Emby that '{0}' changed ({1} added, {2} removed)",
+                    path, added, deleted);
+            }
+            catch (Exception ex)
+            {
+                // Never fail a sync over this — the files are already written correctly, and
+                // Emby's scheduled scan remains the backstop.
+                _logger.Warn("Library refresh failed for '{0}': {1}", path, ex.Message);
+            }
         }
 
         /// <summary>
@@ -961,6 +1012,8 @@ namespace Emby.Xtream.Plugin.Service
 
                 _logger.Info("Movie STRM sync completed: {0} written, {1} skipped, {2} failed",
                     _movieProgress.Completed - _movieProgress.Skipped, _movieProgress.Skipped, _movieProgress.Failed);
+
+                NotifyEmbyLibraryChanged(config, "Movies", _movieProgress.Added, _movieProgress.Deleted);
             }
             catch (Exception ex)
             {
@@ -1674,6 +1727,10 @@ namespace Emby.Xtream.Plugin.Service
                     noHashSeries.Count > 0
                         ? string.Format(CultureInfo.InvariantCulture, ", {0} with no episode hash", noHashSeries.Count)
                         : string.Empty);
+
+                // Episode counts, not series counts: a series can be "written" while every
+                // episode file already matched, which changes nothing on disk for Emby to find.
+                NotifyEmbyLibraryChanged(config, "Shows", _episodeProgress.Added, _episodeProgress.Deleted);
             }
             catch (Exception ex)
             {

@@ -504,6 +504,8 @@ function (BaseView, loading) {
             view.querySelector('.txtStrmLibraryPath').value = config.StrmLibraryPath || '/config/xtream';
             validateStrmPath(view);
             view.querySelector('.chkSmartSkipExisting').checked = config.SmartSkipExisting !== false;
+            // Default on for configs saved before this setting existed.
+            view.querySelector('.chkRefreshEmbyLibraryAfterSync').checked = config.RefreshEmbyLibraryAfterSync !== false;
             view.querySelector('.chkRefreshDispatcharrEpisodes').checked = !!config.RefreshDispatcharrEpisodes;
             view.querySelector('.txtSyncParallelism').value = config.SyncParallelism || 3;
             view.querySelector('.txtXtreamRequestsPerSecond').value = config.XtreamRequestsPerSecond || 0;
@@ -619,6 +621,7 @@ function (BaseView, loading) {
             // Sync settings
             config.StrmLibraryPath = view.querySelector('.txtStrmLibraryPath').value.replace(/\/+$/, '') || '/config/xtream';
             config.SmartSkipExisting = view.querySelector('.chkSmartSkipExisting').checked;
+            config.RefreshEmbyLibraryAfterSync = view.querySelector('.chkRefreshEmbyLibraryAfterSync').checked;
             config.RefreshDispatcharrEpisodes = view.querySelector('.chkRefreshDispatcharrEpisodes').checked;
             config.SyncParallelism = parseInt(view.querySelector('.txtSyncParallelism').value, 10) || 3;
             config.XtreamRequestsPerSecond = parseInt(view.querySelector('.txtXtreamRequestsPerSecond').value, 10) || 0;
