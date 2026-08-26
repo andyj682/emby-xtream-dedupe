@@ -1215,6 +1215,13 @@ namespace Emby.Xtream.Plugin.Service
                 var storedHashes = DeserializeEpisodeHashes(config.SeriesEpisodeHashesJson);
                 var updatedHashes = new ConcurrentDictionary<string, string>();
                 int hashSkippedCount = 0;
+                // Split the skip total by reason. One number for "skipped" hides the
+                // difference between "never fetched, delta said unchanged" and "fetched,
+                // episodes identical" — which is exactly the distinction you need when a
+                // series is not getting the episodes you expect.
+                int preFetchSkippedCount = 0;
+                int unmappedSkippedCount = 0;
+                int writtenCount = 0;
 
                 // Pre-fetch directory index: subFolder → {strippedSeriesName → fullDirPath}
                 // Built once before the parallel loop (one readdir per unique subfolder, no per-task races).
@@ -1265,6 +1272,7 @@ namespace Emby.Xtream.Plugin.Service
 
                         if (subFolder == null)
                         {
+                            Interlocked.Increment(ref unmappedSkippedCount);
                             Interlocked.Increment(ref _seriesProgress.Skipped);
                             Interlocked.Increment(ref _seriesProgress.Completed);
                             ReportTaskProgress(_seriesProgress, taskProgress);
@@ -1299,6 +1307,7 @@ namespace Emby.Xtream.Plugin.Service
                                     string carryHash;
                                     if (storedHashes.TryGetValue(seriesKey, out carryHash))
                                         updatedHashes[seriesKey] = carryHash;
+                                    Interlocked.Increment(ref preFetchSkippedCount);
                                     Interlocked.Increment(ref _seriesProgress.Skipped);
                                     Interlocked.Increment(ref _seriesProgress.Completed);
                                     ReportTaskProgress(_seriesProgress, taskProgress);
@@ -1529,6 +1538,10 @@ namespace Emby.Xtream.Plugin.Service
                                 if (addedSeriesTitles.Count < 20) addedSeriesTitles.Add(cleanedName);
                             }
                         }
+                        // Counted here rather than derived as Completed-Skipped-Failed: not
+                        // every path keeps those three in step, and a series that returned an
+                        // empty payload reaches Completed without writing anything.
+                        Interlocked.Increment(ref writtenCount);
                         Interlocked.Increment(ref _seriesProgress.Completed);
                         ReportTaskProgress(_seriesProgress, taskProgress);
                     }
@@ -1606,8 +1619,49 @@ namespace Emby.Xtream.Plugin.Service
                 if (hashSkippedCount > 0)
                     _logger.Info("Episode hash skip: {0} series unchanged (episode IDs identical to previous sync)", hashSkippedCount);
 
-                _logger.Info("Series STRM sync completed: {0} written, {1} skipped, {2} failed",
-                    _seriesProgress.Completed - _seriesProgress.Skipped, _seriesProgress.Skipped, _seriesProgress.Failed);
+                // Every series should leave an episode hash behind: computed after a fetch,
+                // or carried forward by the pre-fetch skip. One that leaves neither was
+                // never fetched AND has no record of what episodes it should hold, yet the
+                // run still reports success — the shape of silent gap that is otherwise only
+                // findable by diffing the hash map against the catalogue by hand.
+                var noHashSeries = new List<string>();
+                foreach (var s in allSeries)
+                {
+                    if (!updatedHashes.ContainsKey(s.SeriesId.ToString(CultureInfo.InvariantCulture)))
+                    {
+                        noHashSeries.Add(string.Format(
+                            CultureInfo.InvariantCulture, "'{0}' (id={1})", s.Name, s.SeriesId));
+                    }
+                }
+
+                if (noHashSeries.Count > 0)
+                {
+                    _logger.Warn(
+                        "{0} series finished with no episode hash recorded — neither fetched nor skip-carried, so their episodes were not verified this run: {1}{2}",
+                        noHashSeries.Count,
+                        string.Join(", ", noHashSeries.Take(20)),
+                        noHashSeries.Count > 20 ? ", …" : string.Empty);
+                }
+
+                // Report what actually happened. The old line derived "written" as
+                // Completed-Skipped, which counted failures as writes (the failure path
+                // increments Completed too) — a run with 604 failures reported 877 written.
+                // Writes are now counted at the write itself, and the skip total is split by
+                // reason so "never fetched" and "fetched, episodes identical" are separable.
+                _logger.Info(
+                    "Series STRM sync completed: {0} series — {1} written, {2} skipped ({3} unchanged, {4} episode-hash{5}), {6} failed{7}",
+                    _seriesProgress.Total,
+                    writtenCount,
+                    _seriesProgress.Skipped,
+                    preFetchSkippedCount,
+                    hashSkippedCount,
+                    unmappedSkippedCount > 0
+                        ? string.Format(CultureInfo.InvariantCulture, ", {0} unmapped category", unmappedSkippedCount)
+                        : string.Empty,
+                    _seriesProgress.Failed,
+                    noHashSeries.Count > 0
+                        ? string.Format(CultureInfo.InvariantCulture, ", {0} with no episode hash", noHashSeries.Count)
+                        : string.Empty);
             }
             catch (Exception ex)
             {

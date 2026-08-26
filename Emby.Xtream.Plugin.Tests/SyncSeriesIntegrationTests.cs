@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Threading.Tasks;
 using Emby.Xtream.Plugin.Service;
+using Emby.Xtream.Plugin.Tests.Fakes;
 using Xunit;
 
 namespace Emby.Xtream.Plugin.Tests
@@ -427,6 +428,53 @@ namespace Emby.Xtream.Plugin.Tests
 
             Assert.Equal(0, changed);
             Assert.True(File.Exists(foreign), "A file the plugin did not write must be left alone");
+        }
+
+        // -----------------------------------------------------------------
+        // Silent-gap diagnostic: a series that leaves no episode hash behind
+        // -----------------------------------------------------------------
+
+        /// <summary>
+        /// Sets up a series that is delta-unchanged with files on disk but has no stored
+        /// episode hash — the state that hid a real missing-episode bug for hours, because
+        /// the sync reported complete success while never verifying the series at all.
+        /// </summary>
+        private void SeedSkippedSeriesWithoutHash(PluginConfiguration config, string storedHashesJson)
+        {
+            config.SmartSkipExisting = true;
+            config.LastSeriesSyncTimestamp = 5000;      // ahead of the series' own timestamp
+            config.SeriesEpisodeHashesJson = storedHashesJson;
+
+            SeedEpisode("Test Show", "Season 01", "Test Show - S01E01.strm");
+            Handler.RespondWith("action=get_series",
+                SeriesListJson(Series(seriesId: 1, name: "Test Show", lastModified: "2000")));
+        }
+
+        [Fact]
+        public async Task SeriesSkippedWithNoStoredHash_IsWarnedAbout()
+        {
+            var config = DefaultConfig();
+            SeedSkippedSeriesWithoutHash(config, string.Empty);
+
+            var logger = new RecordingLogger();
+            await new StrmSyncService(logger, HttpClient).SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.Contains(logger.Warnings,
+                w => w.Contains("no episode hash recorded") && w.Contains("id=1"));
+        }
+
+        [Fact]
+        public async Task SeriesSkippedWithStoredHash_IsNotWarnedAbout()
+        {
+            // The same skip, but the hash is carried forward — the ordinary case, which
+            // must stay quiet or the warning is noise on every sync.
+            var config = DefaultConfig();
+            SeedSkippedSeriesWithoutHash(config, "{\"1\":\"deadbeef\"}");
+
+            var logger = new RecordingLogger();
+            await new StrmSyncService(logger, HttpClient).SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.DoesNotContain(logger.Warnings, w => w.Contains("no episode hash recorded"));
         }
 
         [Fact]
