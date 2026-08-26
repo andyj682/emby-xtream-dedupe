@@ -8,6 +8,33 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-25
+
+### Added
+
+- **The Emby library is refreshed after a sync that changed files.** New content used to
+  wait for Emby's next scheduled scan, which could be hours. The sync now tells Emby that
+  the Movies or Shows folder changed, and only when it actually added or removed something
+  — a sync that changed nothing triggers nothing. Particularly useful with real-time
+  monitoring switched off, a common choice since watching the folder can stop a drive
+  spinning down. Emby coalesces the notification, so content appears a minute or two after
+  the sync rather than instantly. New "Refresh the Emby library after a sync that changed
+  files" toggle in Sync Settings, on by default.
+- **Series that quietly do nothing are now named in the log.** A series whose provider
+  returns no episodes, with no files already on disk, used to finish in complete silence
+  while the sync reported success. It now says so and suggests excluding it, which also
+  saves the retry attempts it costs on every run. A second warning covers the more general
+  case: any series that ends a sync with no record of the episodes it should hold.
+
+### Fixed
+
+- **The sync summary no longer counts failures as writes.** "Written" was derived by
+  subtracting skips from completions, and the failure path counted towards both — so a run
+  where 604 series failed reported 877 written when it had written 273. Writes are now
+  counted where the write happens. The skip total is also split by reason, separating
+  "never fetched, unchanged since last sync" from "fetched, episodes identical", which are
+  different answers when a series isn't picking up episodes you expect.
+
 ## [1.2.0] - 2026-08-25
 
 ### Changed
@@ -100,7 +127,8 @@ Xtream `.strm` generator, tuned for Dispatcharr-proxied providers.
 Built on upstream firestaerter3/emby-xtream (MIT); all upstream install, Live TV, Dispatcharr
 integration, and credential-safety features are included.
 
-[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.2.0...HEAD
+[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.3.0...HEAD
+[1.3.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.2.0...dedupe-v1.3.0
 [1.2.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.1.1...dedupe-v1.2.0
 [1.1.1]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.1.0...dedupe-v1.1.1
 [1.1.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/v1.0.0...dedupe-v1.1.0
