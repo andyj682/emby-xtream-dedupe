@@ -1365,6 +1365,17 @@ namespace Emby.Xtream.Plugin.Service
                                     series.Name, series.SeriesId, strandedStrms.Length);
                                 Interlocked.Increment(ref _seriesProgress.Failed);
                             }
+                            else
+                            {
+                                // No episodes and nothing on disk: nothing to write and nothing
+                                // to protect, so this branch used to return in complete silence
+                                // — the series simply vanished from the run. Most often a film
+                                // sitting in the series catalogue, or a title the provider has
+                                // not populated. Say so; excluding it stops the retry cost.
+                                _logger.Warn(
+                                    "Series '{0}' (id={1}) returned no episodes and has no files on disk — nothing to write. Exclude it to stop re-checking every sync.",
+                                    series.Name, series.SeriesId);
+                            }
 
                             Interlocked.Increment(ref _seriesProgress.Completed);
                             ReportTaskProgress(_seriesProgress, taskProgress);
@@ -1620,10 +1631,11 @@ namespace Emby.Xtream.Plugin.Service
                     _logger.Info("Episode hash skip: {0} series unchanged (episode IDs identical to previous sync)", hashSkippedCount);
 
                 // Every series should leave an episode hash behind: computed after a fetch,
-                // or carried forward by the pre-fetch skip. One that leaves neither was
-                // never fetched AND has no record of what episodes it should hold, yet the
-                // run still reports success — the shape of silent gap that is otherwise only
-                // findable by diffing the hash map against the catalogue by hand.
+                // or carried forward by the pre-fetch skip. One that leaves neither ended the
+                // run with no record of what episodes it should hold — it was skipped without
+                // a stored hash to carry, or it returned early (an empty payload with nothing
+                // on disk). Either way the run still reports success, and the gap is otherwise
+                // only findable by diffing the hash map against the catalogue by hand.
                 var noHashSeries = new List<string>();
                 foreach (var s in allSeries)
                 {
@@ -1637,7 +1649,7 @@ namespace Emby.Xtream.Plugin.Service
                 if (noHashSeries.Count > 0)
                 {
                     _logger.Warn(
-                        "{0} series finished with no episode hash recorded — neither fetched nor skip-carried, so their episodes were not verified this run: {1}{2}",
+                        "{0} series finished with no episode hash recorded, so their episodes were not verified this run: {1}{2}",
                         noHashSeries.Count,
                         string.Join(", ", noHashSeries.Take(20)),
                         noHashSeries.Count > 20 ? ", …" : string.Empty);
