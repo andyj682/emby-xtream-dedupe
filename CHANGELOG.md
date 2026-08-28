@@ -8,6 +8,8 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-28
+
 ### Added
 
 - **New "Only sync movies and series you have reviewed" option in Sync Settings, off by default.** Normally anything
