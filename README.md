@@ -45,13 +45,23 @@ on top of the existing per-title exclusion:
   the de-dup list; both edit the same exclusion list, so switching is lossless, and your choice
   is remembered.
 - **Title-level series exclusion** — Dispatcharr gives the same show a distinct ID per category,
-  so excluding it in one place can leave copies elsewhere. The de-dup view extends your exclusions
-  to cover every copy of a title when you open it. *(Applies when you open the review view and
-  save; a sync that skips it won't auto-exclude brand-new duplicate copies.)*
+  so excluding it in one place can leave copies elsewhere. The sync applies your exclusions to a
+  title's whole group of duplicate copies, not just the IDs you ticked, so a copy that appears
+  later under a fresh ID is skipped without any action from you. This is based on the fact that Dispatcharr uses the exact same title for the series for every merged copy of it. Titles that Dispatcharr hasn't merged and have different names will appear as different items in the review interface.
+- **Only sync movies and series you have reviewed** — normally anything you have not excluded gets
+  synced, which is fine until a provider adds content in bulk; one addition during development was
+  5,974 movies overnight. With this option on, a title is written only once you have reviewed it or
+  excluded it, so new arrivals wait in the de-dup view instead of landing in your library.
+  If a title already on disk reappears with a different ID it is automatically marked as reviewed
+  and continues to sync. For series, an existing record of their episodes counts as recognition too,
+  so a rename is fine as long as the ID is stable. Turning on **metadata IDs in folder names** makes
+  this recognition considerably more reliable. If the reviewed-list setting is ever unreadable the
+  option disables itself for that run and says so in the log, rather than treating every title as
+  unreviewed and holding back your whole library.
 - **Sync robustness for duplicates** — cross-listed series collapse to one folder instead of
   writing duplicate per-episode files, and series whose episode list returns empty under load are
   retried so a batch of new titles lands in one sync.
-- **Dispatcharr episode refresh on sync** *(opt-in)* — Dispatcharr fetches a series' episode
+- **Dispatcharr episode refresh on sync** — Dispatcharr fetches a series' episode
   streams lazily, so alternate versions (e.g. a 4K copy listed under another category) can stay
   invisible to its stream selection. Enable this and each sync nudges Dispatcharr to refresh
   episodes for every copy of the series you sync — not just the one written to disk — so all your
@@ -249,9 +259,44 @@ Download the latest DLL from [Releases](../../releases/latest), replace the file
 | **Smart Skip** | On | Skip existing STRM files during sync |
 | **Sync Parallelism** | 3 | Concurrent operations during sync (1-10) |
 | **Cleanup Orphans** | Off | Remove STRM files not in source |
+| **Only sync movies and series you have reviewed** | Off | Hold titles that are neither reviewed nor excluded instead of writing them. Titles already on disk are exempt and marked reviewed automatically. Works best with metadata IDs in folder names |
+| **Refresh Emby libraries after a sync** | On | Tell Emby a library changed once a sync has actually added or removed files |
 | **TMDB Folder Naming** | Off | Append `[tmdbid=X]` to movie/series folders |
 | **Fallback Lookup** | Off | Query Emby's metadata providers for missing IDs |
 | **Name Cleaning** | Off | Strip prefix tags and custom terms from titles |
+
+---
+
+## Diagnostics and recovery scripts
+
+`scripts/` holds standalone Python tools for answering "what does my live data actually say"
+without a rebuild or a deploy. They read the plugin's config XML and the provider's **list**
+endpoints only — never `get_series_info`, which trips Dispatcharr's gated episode refresh — so
+they are safe to run against a working setup. Nothing writes to the live config.
+
+| Script | What it answers |
+|---|---|
+| `catalogue-snapshot.py` | Records which provider ID was which title, today, plus a census of how many stored IDs no longer exist. Run it periodically; the others consume its output |
+| `audit-strm-links.py` | Which `.strm` files point at a stream ID the provider no longer has, split into "the title came back under a new ID" and "the content is gone" |
+| `analyse-new-arrivals.py` | Given two snapshots, splits a batch of new arrivals into already-excluded / already-reviewed / already-on-disk / genuinely new — i.e. how much of a review queue is actually new work |
+| `repair-id-churn.py` | Re-points exclusions and reviewed marks after a provider reassigns IDs. Dry run by default; `--write` emits a *candidate* config for you to diff and install yourself |
+| `find-crosslisted-series.py` | Finds a cross-listed series, reports titles that are only partly excluded, and can emit a minimal test config |
+| `xtream_catalogue.py` | Shared helpers (not run directly) |
+
+They assume Docker and a throwaway `python:3-alpine` container, e.g.:
+
+```bash
+docker run --rm --network container:emby --memory=512m \
+  -v /path/to/emby/config:/cfg:ro \
+  -v "$PWD/scripts":/scripts:ro \
+  -v "$HOME/xtream-snapshots":/out \
+  python:3-alpine python3 /scripts/catalogue-snapshot.py --out /out
+```
+
+`--network container:emby` matters if your Xtream base URL is a hostname on a Docker network —
+the default bridge cannot resolve it, and the failure looks like a DNS error rather than a
+credentials problem. Note also that snapshots contain titles, and the config XML they read
+contains your provider credentials in plaintext (see below), so keep both local.
 
 ---
 

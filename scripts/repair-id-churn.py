@@ -17,7 +17,7 @@ DRY RUN BY DEFAULT. It never touches the live config. ``--write`` emits a *candi
 to a path you choose, for you to diff and install yourself:
 
     docker stop emby
-    cp candidate.xml /volume2/docker/emby/config/plugins/configurations/<name>.xml
+    cp candidate.xml /path/to/emby/config/plugins/configurations/<name>.xml
     docker start emby
 
 Emby holds the config in memory and rewrites the file on its next save, so it must be
@@ -43,8 +43,8 @@ Usage:
 
 On the NAS:
   docker run --rm --network container:emby --memory=512m --cpus=1 \\
-    -v /volume2/docker/emby/config:/cfg:ro \\
-    -v "$HOME/xtream-config-backups":/out \\
+    -v /path/to/emby/config:/cfg:ro \\
+    -v "$HOME/xtream-snapshots":/out \\
     -v "$PWD/scripts":/scripts:ro \\
     python:3-alpine python3 /scripts/repair-id-churn.py --snapshot /out/catalogue-ids-YYYY-MM-DD.tsv
 """

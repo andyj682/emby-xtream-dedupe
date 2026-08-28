@@ -26,7 +26,7 @@ Usage:
 
 On the NAS:
   docker run --rm --network container:emby --memory=256m \\
-    -v /volume2/docker/emby/config:/cfg:ro -v "$PWD/scripts":/scripts:ro -v /tmp:/out \\
+    -v /path/to/emby/config:/cfg:ro -v "$PWD/scripts":/scripts:ro -v /tmp:/out \\
     python:3-alpine python3 /scripts/find-crosslisted-series.py --categories 8 \\
       --write-config /out/emby-test-config.xml
 """
@@ -328,7 +328,7 @@ on 1.3.0 you should instead see a get_series_info for %s.""" % (
 Then, on emby-test:
   1. docker stop emby-test
   2. copy this over emby-test's plugin config, named exactly like the live one
-     (/volume2/docker/emby-test/config/plugins/configurations/<same name>.xml)
+     (/path/to/emby-test/config/plugins/configurations/<same name>.xml)
   3. deploy the 1.3.0 DLL first, docker start emby-test, run the series sync.
   4. deploy the new DLL, restart, sync again.
   5. Do not open the plugin config page at any point — the de-dup view's heal would

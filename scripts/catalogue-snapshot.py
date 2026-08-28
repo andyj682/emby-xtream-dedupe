@@ -31,8 +31,8 @@ now-dead id used to be.
 
 On the NAS, mounting the config read-only and an output directory read-write:
   docker run --rm --network container:emby --memory=512m --cpus=1 \
-    -v /volume2/docker/emby/config:/cfg:ro \
-    -v "$HOME/xtream-config-backups":/out \
+    -v /path/to/emby/config:/cfg:ro \
+    -v "$HOME/xtream-snapshots":/out \
     -v "$PWD/scripts":/scripts:ro \
     python:3-alpine python3 /scripts/catalogue-snapshot.py --out /out
 """
