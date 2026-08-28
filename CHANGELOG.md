@@ -8,6 +8,27 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Fixed
+
+- **An excluded show no longer comes back when you enable another category.** Exclusions are
+  stored as provider series IDs, and your provider gives the same show a different ID in every
+  category it appears in — so excluding a show only covered the copies that existed at the time.
+  Enable a category later and the show arrived under a fresh ID and synced again. The de-dup view
+  already repaired this, but only if you opened it and saved, which a scheduled sync never does.
+  The sync already groups duplicate copies of a show that would share a folder, keeping one to
+  write; it now applies your exclusions to those whole groups instead of to individual IDs, so a
+  new copy of an excluded show is recognised as the same show and skipped. Nothing to migrate and
+  nothing new to tick — your existing exclusions gain this on the next sync. Copies whose names
+  differ ("WeCrashed" vs "We Crashed", or a quality prefix) are still separate titles and still
+  need excluding individually.
+- **A cross-listed series keeps the same copy as its representative between syncs.** When one show
+  is listed under several provider IDs, the sync writes one of them and skips the rest — but which
+  one depended on the order the provider happened to answer in. If it changed, the episode
+  bookkeeping was attached to the old ID, and the show could sit indefinitely with no record of
+  its episodes (and so never be checked for new ones) until some later sync happened to look at it
+  broadly. The choice is now fixed: whichever copy already has episode records keeps the job, and
+  otherwise the lowest ID wins.
+
 ## [1.3.0] - 2026-08-25
 
 ### Added

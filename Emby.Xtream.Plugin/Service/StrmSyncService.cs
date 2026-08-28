@@ -1136,18 +1136,69 @@ namespace Emby.Xtream.Plugin.Service
                         seriesFetch.FailedCategoryCount, seriesFetch.RequestedCategoryCount);
                 }
 
+                // Collapse key for every fetched series, built once up front: (target folder +
+                // cleaned name). Both the exclusion propagation immediately below and the collapse
+                // further down read it from here, so the two can never disagree about which copies
+                // are "the same show" — which is the property that makes the propagation safe.
+                // SeriesIds are unique within the fetched list, so the indexer is enough.
+                var collapseKeyBySeriesId = new Dictionary<int, string>();
+                foreach (var s in fetchedSeries)
+                {
+                    var keyCleaned = config.EnableContentNameCleaning
+                        ? ContentNameCleaner.CleanContentName(s.Name, config.ContentRemoveTerms)
+                        : s.Name;
+                    var keyFolder = BuildContentFolderPath(
+                        config.SeriesFolderMode, s.CategoryId, categoryNames, folderMappings, "Shows");
+                    collapseKeyBySeriesId[s.SeriesId] = (keyFolder ?? "null") + " " + SanitizeFileName(keyCleaned);
+                }
+
                 // Per-item exclusions (issue #57) — see the matching block in SyncMoviesAsync.
                 var excludedSeriesSet = ContentExclusionFilter.BuildSet(config.ExcludedSeriesIds);
+
+                // Path-A (ADR-016): exclusions are stored per SeriesId, but Dispatcharr issues a
+                // distinct SeriesId per (provider, category) for the same show. A category enabled
+                // after the exclusion was made therefore brings a fresh, un-blocklisted copy and the
+                // show silently starts syncing again — repaired today only when the user opens the
+                // de-dup view AND saves, which an unattended sync never does.
+                //
+                // Fix: propagate exclusion across the whole collapse group rather than matching bare
+                // ids. Safe because the group is exactly the set of copies the collapse merges into
+                // one folder, of which only the representative is ever written — so widening cannot
+                // suppress anything that would have appeared separately. Keyed on (folder + cleaned
+                // name), so Multiple/Custom folder mode keeps genuinely per-folder copies independent,
+                // and it matches the de-dup view's own name grouping exactly.
+                var excludedGroupKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (excludedSeriesSet.Count > 0)
+                {
+                    foreach (var s in fetchedSeries)
+                    {
+                        if (ContentExclusionFilter.IsExcluded(excludedSeriesSet, s.SeriesId))
+                        {
+                            excludedGroupKeys.Add(collapseKeyBySeriesId[s.SeriesId]);
+                        }
+                    }
+                }
+
                 var excludedSeriesItems = new List<Tuple<string, int?>>();
                 var excludedSeriesRaw = new List<SeriesInfo>();
                 var allSeries = fetchedSeries;
                 if (excludedSeriesSet.Count > 0)
                 {
+                    // Copies caught by the group rather than by their own id — the Path-A repair.
+                    // Logged separately because it is the only visible sign the propagation did
+                    // anything, and "skipping N of M" alone cannot show it.
+                    var groupOnlyCount = 0;
                     allSeries = new List<SeriesInfo>();
                     foreach (var s in fetchedSeries)
                     {
-                        if (ContentExclusionFilter.IsExcluded(excludedSeriesSet, s.SeriesId))
+                        var byId = ContentExclusionFilter.IsExcluded(excludedSeriesSet, s.SeriesId);
+                        if (byId || excludedGroupKeys.Contains(collapseKeyBySeriesId[s.SeriesId]))
                         {
+                            if (!byId)
+                            {
+                                groupOnlyCount++;
+                            }
+
                             var excludedName = config.EnableContentNameCleaning
                                 ? ContentNameCleaner.CleanContentName(s.Name, config.ContentRemoveTerms)
                                 : s.Name;
@@ -1162,6 +1213,12 @@ namespace Emby.Xtream.Plugin.Service
 
                     _logger.Info("Per-item exclusions: skipping {0} of {1} series",
                         excludedSeriesItems.Count, fetchedSeries.Count);
+                    if (groupOnlyCount > 0)
+                    {
+                        _logger.Info(
+                            "{0} of those are cross-listed copies of a show already on the blocklist that arrived under a fresh SeriesId",
+                            groupOnlyCount);
+                    }
                 }
 
                 // Collapse series that would land in the same folder under the same name.
@@ -1172,22 +1229,37 @@ namespace Emby.Xtream.Plugin.Service
                 // filename). Keeping one representative also skips redundant get_series_info
                 // calls. Keyed on (target folder + cleaned name), so Multiple/Custom-folder
                 // mode still keeps genuinely per-category copies in their separate folders.
-                // Excluded series are already filtered out above, so first-wins is safe here
-                // (no need to prefer a non-excluded representative).
+                // Excluded series are already filtered out above, so the representative pick
+                // below only has to be deterministic — it never has to avoid an excluded id.
+                //
+                // Episode hash cache: loaded before the collapse because the representative
+                // pick below prefers a candidate that already has a stored hash. Cleared
+                // alongside config.SeriesEpisodeHashesJson in the naming-flags reset further
+                // down, so the skip paths still see an empty cache on a forced re-sync.
+                var storedHashes = DeserializeEpisodeHashes(config.SeriesEpisodeHashesJson);
                 var refreshOnlyIds = new List<int>();
                 if (allSeries.Count > 1)
                 {
+                    // Order the candidates before the first-wins pick, so the representative is
+                    // stable across runs. Unordered, the pick follows the provider's own ordering
+                    // inside each get_series response, which is not guaranteed between runs — and
+                    // a flipped representative strands the series: the episode hash is keyed on
+                    // SeriesId, so the new id has no stored hash, the series is delta-unchanged,
+                    // it pre-fetch-skips, carries nothing, and stays in the no-hash state until
+                    // some later run happens to fetch broadly.
+                    //
+                    // Prefer a candidate that already has a stored hash so an established
+                    // representative never loses its place (even to a lower id appearing later),
+                    // then the lowest SeriesId as a deterministic tie-break for a fresh group.
+                    var collapseCandidates = allSeries
+                        .OrderBy(s => storedHashes.ContainsKey(s.SeriesId.ToString(CultureInfo.InvariantCulture)) ? 0 : 1)
+                        .ThenBy(s => s.SeriesId)
+                        .ToList();
                     var keptKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     var collapsedSeries = new List<SeriesInfo>(allSeries.Count);
-                    foreach (var s in allSeries)
+                    foreach (var s in collapseCandidates)
                     {
-                        var cleaned = config.EnableContentNameCleaning
-                            ? ContentNameCleaner.CleanContentName(s.Name, config.ContentRemoveTerms)
-                            : s.Name;
-                        var sanitized = SanitizeFileName(cleaned);
-                        var sf = BuildContentFolderPath(
-                            config.SeriesFolderMode, s.CategoryId, categoryNames, folderMappings, "Shows");
-                        var folderKey = (sf ?? "null") + " " + sanitized;
+                        var folderKey = collapseKeyBySeriesId[s.SeriesId];
                         if (keptKeys.Add(folderKey))
                         {
                             collapsedSeries.Add(s);
@@ -1222,6 +1294,9 @@ namespace Emby.Xtream.Plugin.Service
                     lastSeriesTs = 0;
                     maxSeriesTs = 0;
                     config.SeriesEpisodeHashesJson = string.Empty;
+                    // The cache is read above this point now (collapse representative pick), so
+                    // clear the in-memory copy too — the skip paths below must see it empty.
+                    storedHashes.Clear();
                 }
                 config.LastKnownEnableSeriesIdFolderNaming = config.EnableSeriesIdFolderNaming;
                 config.LastKnownEnableSeriesMetadataLookup = config.EnableSeriesMetadataLookup;
@@ -1264,8 +1339,7 @@ namespace Emby.Xtream.Plugin.Service
                 var writtenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var semaphore = new SemaphoreSlim(ResolveSyncParallelism(config));
 
-                // Episode hash cache: load stored hashes so we can skip file I/O for unchanged series
-                var storedHashes = DeserializeEpisodeHashes(config.SeriesEpisodeHashesJson);
+                // Episode hash cache (storedHashes) is loaded above, before the collapse.
                 var updatedHashes = new ConcurrentDictionary<string, string>();
                 int hashSkippedCount = 0;
                 // Split the skip total by reason. One number for "skipped" hides the

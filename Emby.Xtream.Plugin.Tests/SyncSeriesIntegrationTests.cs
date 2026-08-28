@@ -846,6 +846,96 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
+        // Collapse-group exclusion propagation — the Path-A fix (ADR-016)
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task ExcludedSeries_CrossListedCopyUnderNewId_AlsoExcluded()
+        {
+            // The Path-A quirk. Exclusions are stored per SeriesId, so a copy of an excluded
+            // show arriving under a fresh SeriesId — a category enabled after the exclusion was
+            // made — used to sync until the user opened the de-dup view and saved. Exclusion now
+            // propagates across the collapse group, so id=9 goes too even though only id=2 is on
+            // the blocklist. Its lastModified is deliberately the highest in the list: a
+            // group-excluded copy must still fold into the delta watermark, or the watermark
+            // stalls behind it.
+            var config = DefaultConfig();
+            config.ExcludedSeriesIds = new[] { 2 };
+
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Keep Show", lastModified: "1000"),
+                Series(seriesId: 2, name: "Drop Show", lastModified: "1000"),
+                Series(seriesId: 9, name: "Drop Show", lastModified: "5000")));
+            // Only the kept title's detail is registered: if id=9 is processed its fetch throws
+            // (unregistered URL), is caught, and counts as Failed — asserted 0 below.
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(Directory.Exists(Path.Combine(TempDir.Path, "Shows", "Keep Show")));
+            Assert.False(Directory.Exists(Path.Combine(TempDir.Path, "Shows", "Drop Show")));
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+            Assert.DoesNotContain(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=9"));
+            Assert.Equal(5000, config.LastSeriesSyncTimestamp);
+        }
+
+        [Fact]
+        public async Task ExcludedSeries_DifferentName_NotPropagated()
+        {
+            // Guard against over-reach, and the flip side of the safety argument: propagation
+            // covers exactly the collapse group, so a title the collapse would NOT merge is
+            // untouched. This is also the known near-duplicate limitation in test form — a
+            // provider-prefixed or differently-spelled copy still needs excluding by hand.
+            var config = DefaultConfig();
+            config.ExcludedSeriesIds = new[] { 2 };
+
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 2, name: "Drop Show", lastModified: "1000"),
+                Series(seriesId: 9, name: "Drop Show 4K", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=9", SeriesDetailJson(seriesId: 9));
+
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.False(Directory.Exists(Path.Combine(TempDir.Path, "Shows", "Drop Show")));
+            Assert.True(Directory.Exists(Path.Combine(TempDir.Path, "Shows", "Drop Show 4K")));
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+        }
+
+        [Fact]
+        public async Task ExcludedSeries_GroupPropagation_ReIncludeTakesEffect()
+        {
+            // Propagation is derived from the blocklist on every run and persists nothing of its
+            // own, so emptying the blocklist re-includes the whole group on the next sync — no
+            // second field to clear, no migration, no stale state to strand a re-inclusion.
+            var config = DefaultConfig();
+            config.ExcludedSeriesIds = new[] { 2 };
+
+            // Two syncs, so the detail rule must be registered before the multi-shot list
+            // sequence — "action=get_series" is a substring of "action=get_series_info".
+            var listJson = SeriesListJson(
+                Series(seriesId: 2, name: "Drop Show", lastModified: "1000"),
+                Series(seriesId: 9, name: "Drop Show", lastModified: "1000"));
+            Handler.RespondWith("action=get_series_info&series_id=2", SeriesDetailJson(seriesId: 2));
+            Handler.RespondWithSequence("action=get_series", new[] { listJson, listJson });
+
+            var dropDir = Path.Combine(TempDir.Path, "Shows", "Drop Show");
+
+            await MakeService().SyncSeriesAsync(config, None, SaveConfig);
+            Assert.False(Directory.Exists(dropDir));
+
+            // Re-included: the group collapses to one representative (id=2, the lowest with no
+            // stored hash) and writes once.
+            config.ExcludedSeriesIds = new int[0];
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(Directory.Exists(dropDir));
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+        }
+
+        // -----------------------------------------------------------------
         // Test 18: Collapse_CrossListedSameName_KeepsOneRepresentative
         // -----------------------------------------------------------------
 
@@ -897,6 +987,55 @@ namespace Emby.Xtream.Plugin.Tests
             Assert.True(File.Exists(EpisodeStrmPath("Show One", season: 1, episode: 1, title: "Episode Title")));
             Assert.True(File.Exists(EpisodeStrmPath("Show Two", season: 1, episode: 1, title: "Episode Title")));
             Assert.Equal(0, svc.SeriesProgress.Failed);
+        }
+
+        // -----------------------------------------------------------------
+        // Deterministic collapse representative
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task Collapse_PicksLowestSeriesId_WhateverTheListOrder()
+        {
+            // The representative used to be whichever copy the provider happened to list
+            // first, and the episode hash is keyed on SeriesId — so a flip left the new id
+            // with no stored hash, delta-unchanged, pre-fetch-skipping, carrying nothing, and
+            // stranded in the no-hash state. The list is deliberately in descending id order:
+            // the lowest id must win regardless.
+            var config = DefaultConfig();
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 9, name: "Dup Show", lastModified: "1000"),
+                Series(seriesId: 4, name: "Dup Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=4", SeriesDetailJson(seriesId: 4));
+
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(EpisodeStrmPath("Dup Show", season: 1, episode: 1, title: "Episode Title")));
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+            Assert.Contains(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=4"));
+            Assert.DoesNotContain(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=9"));
+        }
+
+        [Fact]
+        public async Task Collapse_PrefersRepresentativeThatAlreadyHasAnEpisodeHash()
+        {
+            // Lowest-id alone would still flip an established representative the first time a
+            // lower id shows up (a newly enabled category, another provider). A stored episode
+            // hash outranks the id tie-break, so id=9 keeps its place over id=4.
+            var config = DefaultConfig();
+            config.SeriesEpisodeHashesJson = "{\"9\":\"deadbeef\"}";
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 4, name: "Dup Show", lastModified: "1000"),
+                Series(seriesId: 9, name: "Dup Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=9", SeriesDetailJson(seriesId: 9));
+
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(EpisodeStrmPath("Dup Show", season: 1, episode: 1, title: "Episode Title")));
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+            Assert.Contains(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=9"));
+            Assert.DoesNotContain(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=4"));
         }
 
         // -----------------------------------------------------------------
