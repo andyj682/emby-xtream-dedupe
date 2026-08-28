@@ -846,6 +846,132 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
+        // Review gate — RequireReviewBeforeSync, series side (ADR-017)
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task ReviewGate_Series_Off_ByDefault_EverythingSyncs()
+        {
+            var config = DefaultConfig();
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "New Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+
+            await MakeService().SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(Directory.Exists(Path.Combine(TempDir.Path, "Shows", "New Show")));
+        }
+
+        [Fact]
+        public async Task ReviewGate_Series_UnreviewedAndNotOnDisk_HeldButNotExcluded()
+        {
+            var config = DefaultConfig();
+            config.RequireReviewBeforeSync = true;
+            config.ReviewedSeriesIdsJson = "[1]";
+
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Reviewed Show", lastModified: "1000"),
+                Series(seriesId: 2, name: "New Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(Directory.Exists(Path.Combine(TempDir.Path, "Shows", "Reviewed Show")));
+            Assert.False(Directory.Exists(Path.Combine(TempDir.Path, "Shows", "New Show")));
+            Assert.Empty(config.ExcludedSeriesIds);
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+            // Not registering id=2's detail is the assertion that it was never fetched: the gate
+            // sits before the detail call, which is the expensive one and the one that trips
+            // Dispatcharr's episode refresh.
+            Assert.DoesNotContain(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=2"));
+        }
+
+        [Fact]
+        public async Task ReviewGate_Series_UnreviewedButFolderOnDisk_SyncedAndMarkedReviewed()
+        {
+            var config = DefaultConfig();
+            config.RequireReviewBeforeSync = true;
+            config.ReviewedSeriesIdsJson = "[]";
+
+            Directory.CreateDirectory(Path.Combine(TempDir.Path, "Shows", "Established Show"));
+
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 7, name: "Established Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=7", SeriesDetailJson(seriesId: 7));
+
+            await MakeService().SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(EpisodeStrmPath("Established Show", season: 1, episode: 1)));
+            Assert.Contains("7", config.ReviewedSeriesIdsJson);
+        }
+
+        /// <summary>
+        /// The series-specific marker. Series carry no TMDB ID on the list payload, so a stored
+        /// episode hash — keyed on SeriesId — is the second piece of evidence that a show was
+        /// synced before. It survives the provider renaming the show, which folder-name matching
+        /// cannot.
+        /// </summary>
+        [Fact]
+        public async Task ReviewGate_Series_UnreviewedButHasStoredEpisodeHash_SyncedAndMarkedReviewed()
+        {
+            var config = DefaultConfig();
+            config.RequireReviewBeforeSync = true;
+            config.ReviewedSeriesIdsJson = "[]";
+            config.SeriesEpisodeHashesJson = "{\"9\":\"deadbeef\"}";
+
+            // Renamed by the provider, so nothing on disk matches the new name.
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 9, name: "Renamed Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=9", SeriesDetailJson(seriesId: 9));
+
+            await MakeService().SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(EpisodeStrmPath("Renamed Show", season: 1, episode: 1)));
+            Assert.Contains("9", config.ReviewedSeriesIdsJson);
+        }
+
+        /// <summary>
+        /// A held show must still advance the delta high-water mark. The series watermark is
+        /// accumulated inside the per-series loop (unlike movies, where it is computed over the
+        /// unfiltered catalogue afterwards), so gating before that update would freeze the
+        /// watermark behind whatever is waiting for review.
+        /// </summary>
+        [Fact]
+        public async Task ReviewGate_Series_HeldShow_StillAdvancesTheDeltaWatermark()
+        {
+            var config = DefaultConfig();
+            config.RequireReviewBeforeSync = true;
+            config.ReviewedSeriesIdsJson = "[1]";
+
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Reviewed Show", lastModified: "1000"),
+                Series(seriesId: 2, name: "Held Show", lastModified: "5000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+
+            await MakeService().SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.False(Directory.Exists(Path.Combine(TempDir.Path, "Shows", "Held Show")));
+            Assert.Equal(5000, config.LastSeriesSyncTimestamp);
+        }
+
+        [Fact]
+        public async Task ReviewGate_Series_UnparseableReviewedStore_StandsDownRatherThanHoldingEverything()
+        {
+            var config = DefaultConfig();
+            config.RequireReviewBeforeSync = true;
+            config.ReviewedSeriesIdsJson = "[1,2";
+
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Show One", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+
+            await MakeService().SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(Directory.Exists(Path.Combine(TempDir.Path, "Shows", "Show One")));
+        }
+
+        // -----------------------------------------------------------------
         // Collapse-group exclusion propagation — the Path-A fix (ADR-016)
         // -----------------------------------------------------------------
 

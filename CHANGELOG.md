@@ -10,18 +10,20 @@ starting at 1.0.0 — independent of upstream
 
 ### Added
 
-- **New "Only sync movies you have reviewed" option in Sync Settings, off by default.** Normally anything
+- **New "Only sync movies and series you have reviewed" option in Sync Settings, off by default.** Normally anything
   you haven't excluded gets synced, which is fine until your provider adds content in bulk —
   one overnight addition here was 5,974 titles, and they would all have landed in the library
-  before there was any chance to look at them. With this on, a movie is written once you have
+  before there was any chance to look at them. With this on, a title is written once you have
   reviewed it or excluded it, so new arrivals wait in the de-dup view instead. Holding a title
   is **not** the same as excluding it: nothing is added to your exclusion list, no folder is
-  removed, and it stays in the unreviewed list until you decide. A film you already have on
+  removed, and it stays in the unreviewed list until you decide. A title you already have on
   disk is never held — if your provider reissues it under a new ID, it is recognised from its
   folder, synced as before, and quietly marked reviewed under the new ID, so your review
-  decisions survive the provider renumbering things. If the reviewed-list setting is ever
-  unreadable the option switches itself off for that run and says so in the log, rather than
-  treating everything as unreviewed and holding your whole library back.
+  decisions survive the provider renumbering things. For series, an existing record of their
+  episodes counts as recognition too, so a series your provider has renamed is not withheld
+  either. If the reviewed-list setting is ever unreadable the option switches itself off for
+  that run and says so in the log, rather than treating everything as unreviewed and holding
+  your whole library back.
 
 ### Fixed
 

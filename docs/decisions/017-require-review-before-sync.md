@@ -2,7 +2,7 @@
 
 **Date**: 2026-08-27
 **Status**: ACCEPTED
-**Affects**: `PluginConfiguration.RequireReviewBeforeSync` (new), `StrmSyncService.SyncMoviesAsync`, new helpers `DeserializeIdSet` / `SerializeIdSet` / `BuildLibraryIdentityIndex`
+**Affects**: `PluginConfiguration.RequireReviewBeforeSync` (new), `StrmSyncService.SyncMoviesAsync`, `StrmSyncService.SyncSeriesCoreAsync`, new helpers `DeserializeIdSet` / `SerializeIdSet` / `BuildLibraryIdentityIndex`, `Configuration/Web/config.{html,js}`
 
 ---
 
@@ -113,8 +113,17 @@ the same swallow-and-overwrite shape that makes `parseReviewedSet` in `config.js
   changed matches neither marker. Such a folder is already orphaned by the rename itself,
   with or without this feature, so the gate does not create the exposure — but it does mean
   the title is not restored under its new name until reviewed.
-- The gate is movies-only for now. Series will use the folder's cleaned name rather than TMDB,
-  since series carry no TMDB ID on the `get_series` list payload (measured: 0 of 9,979).
+- **Series are covered by the same flag**, with different markers. They carry no TMDB ID on the
+  `get_series` list payload (measured: 0 of 9,979), so the exemption matches on the ID-stripped
+  folder name **or** a stored episode hash. The hash is keyed on `SeriesId` and therefore survives
+  the provider renaming a show, which folder-name matching cannot — and SeriesIds themselves
+  measured only 0.3% dead, which is what makes it a dependable second marker rather than a nicety.
+- **The series gate runs after the delta watermark update, deliberately.** The series high-water
+  mark is accumulated inside the per-series loop, unlike movies where it is computed over the
+  unfiltered catalogue afterwards. Gating before that update would freeze the watermark behind
+  whatever is waiting for review, so every later sync would re-process everything after it.
+- The series gate also sits before `FetchSeriesDetailAsync`, so a held show costs no detail call —
+  which matters beyond time, because that call trips Dispatcharr's gated episode refresh.
 - `SyncMoviesAsync` now reads and writes `Reviewed*`, which it never did before. The write is
   additive only — the gate never marks anything un-reviewed.
 - **New staleness in the de-dup view, and this feature caused it.** `instance.reviewedVodStreamIds`
@@ -124,9 +133,10 @@ the same swallow-and-overwrite shape that makes `parseReviewedSet` in `config.js
   reloaded. Harmless but confusing — it cost a debugging round during testing. Previously
   impossible, because nothing but the UI ever wrote the reviewed set. Worth having `loadDeduped`
   re-read the configuration alongside the titles; deferred to the UI-toggle change.
-- Tests: 7 integration cases covering off-by-default, held-not-excluded, the TMDB exemption,
-  the stripped-name exemption, failing open on an unparseable store, and an on-disk un-reviewed
-  title surviving orphan cleanup with the guard disabled.
+- Tests: 7 movie integration cases (off-by-default, held-not-excluded, the TMDB exemption, the
+  stripped-name exemption, failing open on an unparseable store, and an on-disk un-reviewed title
+  surviving orphan cleanup with the guard disabled) plus 6 series cases (the same shape, plus the
+  stored-episode-hash exemption and the watermark-still-advances property).
 
 ## Implementation references
 

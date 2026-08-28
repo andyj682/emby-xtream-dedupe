@@ -1558,6 +1558,41 @@ namespace Emby.Xtream.Plugin.Service
                     _logger.Info("Starting series STRM sync for {0} series", allSeries.Count);
                 }
 
+                // Review gate for series. Same flag as movies, same fail-open reading of an
+                // unparseable checkpoint — see SyncMoviesAsync and ADR-017.
+                var reviewGateOn = config.RequireReviewBeforeSync;
+                var reviewedSeriesSet = DeserializeIdSet(config.ReviewedSeriesIdsJson);
+                if (reviewGateOn && reviewedSeriesSet == null)
+                {
+                    _logger.Error(
+                        "ReviewedSeriesIdsJson could not be parsed, so \"only sync what you have reviewed\" is disabled for series this run. "
+                        + "Every show would otherwise look un-reviewed. Check the plugin configuration file.");
+                    reviewGateOn = false;
+                }
+
+                // Only the folder names matter here — the TMDB set the movie side leans on is
+                // unusable for series, which have no TMDB id on the list payload to compare
+                // against. Collected anyway; the call signature is shared.
+                var libraryTmdbIds = new HashSet<int>();
+                var libraryFolderNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (reviewGateOn)
+                {
+                    BuildLibraryIdentityIndex(config.StrmLibraryPath, "Shows", libraryTmdbIds, libraryFolderNames);
+                    _logger.Info(
+                        "Review gate on: {0} reviewed series ids, {1} shows already on disk, {2} with a stored episode hash",
+                        reviewedSeriesSet.Count, libraryFolderNames.Count, storedHashes.Count);
+                }
+
+                var heldForReview = 0;
+                var autoReviewed = new List<Tuple<int, string>>();
+                var heldTitles = new List<string>();
+                // Recorded by the gate itself rather than recomputed afterwards, so the two can
+                // never disagree about what was held. Used to exempt held series from the
+                // no-episode-hash diagnostic below: they have no hash because they were
+                // deliberately not fetched, which is the opposite of a silent gap.
+                var heldIds = new HashSet<int>();
+                const int HeldSampleSize = 15;
+
                 var writtenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var semaphore = new SemaphoreSlim(ResolveSyncParallelism(config));
 
@@ -1634,6 +1669,40 @@ namespace Emby.Xtream.Plugin.Service
                         if (seriesLm > 0)
                         {
                             lock (_historyLock) { if (seriesLm > maxSeriesTs) maxSeriesTs = seriesLm; }
+                        }
+
+                        // Review gate — see the matching block in SyncMoviesAsync and ADR-017.
+                        // Deliberately AFTER the watermark update above: a held series must still
+                        // advance the delta high-water mark, or it stalls behind whatever is
+                        // waiting for review. And before the detail fetch below, which is the
+                        // expensive call and the one that trips Dispatcharr's episode refresh.
+                        //
+                        // Series carry no TMDB id on the get_series list payload (measured 0 of
+                        // 9,979), so the movie side's TMDB match is unavailable here. Two markers
+                        // stand in: the id-stripped folder name, and a stored episode hash, which
+                        // is keyed on SeriesId and so survives the provider renaming a show.
+                        // SeriesIds themselves measured 0.3% dead, which is what makes the hash a
+                        // dependable second marker rather than a nicety.
+                        if (reviewGateOn && !reviewedSeriesSet.Contains(series.SeriesId))
+                        {
+                            var onDisk = libraryFolderNames.Contains(seriesName)
+                                || storedHashes.ContainsKey(series.SeriesId.ToString(CultureInfo.InvariantCulture));
+
+                            if (!onDisk)
+                            {
+                                Interlocked.Increment(ref heldForReview);
+                                lock (heldTitles)
+                                {
+                                    if (heldTitles.Count < HeldSampleSize) heldTitles.Add(cleanedName);
+                                }
+                                lock (heldIds) { heldIds.Add(series.SeriesId); }
+                                Interlocked.Increment(ref _seriesProgress.Skipped);
+                                Interlocked.Increment(ref _seriesProgress.Completed);
+                                ReportTaskProgress(_seriesProgress, taskProgress);
+                                return;
+                            }
+
+                            lock (autoReviewed) { autoReviewed.Add(Tuple.Create(series.SeriesId, cleanedName)); }
                         }
 
                         var isChangedSeries = lastSeriesTs == 0 || seriesLm > lastSeriesTs;
@@ -1943,6 +2012,44 @@ namespace Emby.Xtream.Plugin.Service
                         .ConfigureAwait(false);
                 }
 
+                if (reviewGateOn)
+                {
+                    // Additive only, as on the movie side: the gate never marks anything
+                    // un-reviewed, so folding in the shows it recognised lets the checkpoint
+                    // heal itself as the provider reshuffles ids.
+                    if (autoReviewed.Count > 0)
+                    {
+                        foreach (var entry in autoReviewed)
+                        {
+                            reviewedSeriesSet.Add(entry.Item1);
+                        }
+
+                        config.ReviewedSeriesIdsJson = SerializeIdSet(reviewedSeriesSet);
+                        saveConfig?.Invoke();
+
+                        var restored = autoReviewed
+                            .Select(e => e.Item2)
+                            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                            .Take(HeldSampleSize)
+                            .ToList();
+                        _logger.Info(
+                            "Review gate: {0} show(s) you already keep came back under a new SeriesId — synced and marked reviewed: {1}{2}",
+                            autoReviewed.Count,
+                            string.Join(", ", restored),
+                            autoReviewed.Count > restored.Count ? ", ..." : string.Empty);
+                    }
+
+                    if (heldForReview > 0)
+                    {
+                        heldTitles.Sort(StringComparer.OrdinalIgnoreCase);
+                        _logger.Info(
+                            "Review gate: {0} un-reviewed show(s) held out of the library. They are NOT excluded — review them in the de-dup view and they sync on the next run. For example: {1}{2}",
+                            heldForReview,
+                            string.Join(", ", heldTitles),
+                            heldForReview > heldTitles.Count ? ", ..." : string.Empty);
+                    }
+                }
+
                 // Remove folders for explicitly excluded series. Deliberately before orphan
                 // cleanup and independent of it — see RemoveExcludedContent remarks.
                 // Note both passes accumulate into Deleted, which therefore counts folders
@@ -1988,7 +2095,8 @@ namespace Emby.Xtream.Plugin.Service
                 var noHashSeries = new List<string>();
                 foreach (var s in allSeries)
                 {
-                    if (!updatedHashes.ContainsKey(s.SeriesId.ToString(CultureInfo.InvariantCulture)))
+                    if (!updatedHashes.ContainsKey(s.SeriesId.ToString(CultureInfo.InvariantCulture))
+                        && !heldIds.Contains(s.SeriesId))
                     {
                         noHashSeries.Add(string.Format(
                             CultureInfo.InvariantCulture, "'{0}' (id={1})", s.Name, s.SeriesId));
@@ -2016,9 +2124,14 @@ namespace Emby.Xtream.Plugin.Service
                     _seriesProgress.Skipped,
                     preFetchSkippedCount,
                     hashSkippedCount,
-                    unmappedSkippedCount > 0
+                    (unmappedSkippedCount > 0
                         ? string.Format(CultureInfo.InvariantCulture, ", {0} unmapped category", unmappedSkippedCount)
-                        : string.Empty,
+                        : string.Empty)
+                    // Held series must appear here or the breakdown does not add up to the skip
+                    // total, which is exactly the ambiguity this line was rewritten to remove.
+                    + (heldForReview > 0
+                        ? string.Format(CultureInfo.InvariantCulture, ", {0} awaiting review", heldForReview)
+                        : string.Empty),
                     _seriesProgress.Failed,
                     noHashSeries.Count > 0
                         ? string.Format(CultureInfo.InvariantCulture, ", {0} with no episode hash", noHashSeries.Count)

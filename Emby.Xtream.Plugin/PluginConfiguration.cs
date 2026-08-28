@@ -75,8 +75,10 @@ namespace Emby.Xtream.Plugin
         /// review queue rather than in the library.
         ///
         /// A title already on disk is exempt: the provider reassigning its id would otherwise
-        /// make an established film look un-reviewed and quietly withhold it. See the
-        /// library-identity index in <c>SyncMoviesAsync</c>.
+        /// make an established title look un-reviewed and quietly withhold it. Movies are
+        /// recognised by TMDB id or folder name; series, which carry no TMDB id on the
+        /// <c>get_series</c> list payload, by folder name or a stored episode hash. See the
+        /// library-identity index in <c>SyncMoviesAsync</c> / <c>SyncSeriesCoreAsync</c>.
         ///
         /// Holding is NOT excluding. A held title is never added to a blocklist and its
         /// folder is never removed.
