@@ -117,6 +117,13 @@ the same swallow-and-overwrite shape that makes `parseReviewedSet` in `config.js
   since series carry no TMDB ID on the `get_series` list payload (measured: 0 of 9,979).
 - `SyncMoviesAsync` now reads and writes `Reviewed*`, which it never did before. The write is
   additive only — the gate never marks anything un-reviewed.
+- **New staleness in the de-dup view, and this feature caused it.** `instance.reviewedVodStreamIds`
+  is populated once at page load (`config.js` ~488); the view's **Load** button re-fetches titles
+  but not the config. So a page left open across a sync judges fresh titles against a pre-sync
+  reviewed set, and every auto-reviewed title still shows "mark reviewed" until the page itself is
+  reloaded. Harmless but confusing — it cost a debugging round during testing. Previously
+  impossible, because nothing but the UI ever wrote the reviewed set. Worth having `loadDeduped`
+  re-read the configuration alongside the titles; deferred to the UI-toggle change.
 - Tests: 7 integration cases covering off-by-default, held-not-excluded, the TMDB exemption,
   the stripped-name exemption, failing open on an unparseable store, and an on-disk un-reviewed
   title surviving orphan cleanup with the guard disabled.
