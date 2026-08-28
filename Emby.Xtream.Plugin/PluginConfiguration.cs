@@ -66,6 +66,24 @@ namespace Emby.Xtream.Plugin
         public int[] ExcludedVodStreamIds { get; set; } = new int[0];
 
         /// <summary>
+        /// Hold un-reviewed titles out of the sync instead of writing them.
+        ///
+        /// Off by default, and deliberately so: the sync's normal contract is "anything not
+        /// excluded is written", and the reviewed-checkpoint is only a triage bookmark. With
+        /// this on, the contract inverts to opt-in — a title is written once it is reviewed
+        /// or excluded, so a provider adding thousands of titles overnight lands them in the
+        /// review queue rather than in the library.
+        ///
+        /// A title already on disk is exempt: the provider reassigning its id would otherwise
+        /// make an established film look un-reviewed and quietly withhold it. See the
+        /// library-identity index in <c>SyncMoviesAsync</c>.
+        ///
+        /// Holding is NOT excluding. A held title is never added to a blocklist and its
+        /// folder is never removed.
+        /// </summary>
+        public bool RequireReviewBeforeSync { get; set; }
+
+        /// <summary>
         /// Reviewed-checkpoint: JSON array of VOD StreamIds the user has marked
         /// "reviewed" in the de-duplicated view. Stored as a JSON string (not int[])
         /// because the set grows toward the full library size; the client keeps it in

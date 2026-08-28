@@ -100,6 +100,12 @@ namespace Emby.Xtream.Plugin.Service
             @" \[(?:tmdbid|tvdbid)=\d+\]$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+        // Same suffix, but capturing the TMDB id so an existing library folder can be read
+        // back as "the user already keeps this title" (see BuildLibraryIdentityIndex).
+        private static readonly Regex FolderTmdbIdRegex = new Regex(
+            @"\[tmdbid=(\d+)\]",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         // Matches the old title-bearing episode filename, capturing the part to keep:
         // "Show - S01E02 - Some Title" → "Show - S01E02". Lazy so a title that itself
         // contains an episode code ("Recap of S01E01") splits at the first code, not the last.
@@ -262,6 +268,113 @@ namespace Emby.Xtream.Plugin.Service
             {
                 var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString()));
                 return BitConverter.ToString(bytes).Replace("-", string.Empty).ToLowerInvariant();
+            }
+        }
+
+        /// <summary>
+        /// Reads a reviewed-checkpoint store (a JSON array of ids).
+        /// </summary>
+        /// <returns>
+        /// The ids, or <c>null</c> when the field holds something that will not parse.
+        /// Null and empty are deliberately distinguishable: a store that failed to read is
+        /// not a store that says "nothing is reviewed", and a caller gating content on it
+        /// must be able to stand down rather than withhold the whole catalogue.
+        /// </returns>
+        internal static HashSet<int> DeserializeIdSet(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new HashSet<int>();
+            }
+
+            try
+            {
+                var ids = STJ.JsonSerializer.Deserialize<List<long>>(json);
+                if (ids == null)
+                {
+                    return null;
+                }
+
+                var set = new HashSet<int>();
+                foreach (var id in ids)
+                {
+                    if (id > 0 && id <= int.MaxValue)
+                    {
+                        set.Add((int)id);
+                    }
+                }
+
+                return set;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Writes a reviewed-checkpoint store back out as a JSON array.
+        /// </summary>
+        internal static string SerializeIdSet(HashSet<int> ids)
+        {
+            if (ids == null || ids.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var ordered = new List<int>(ids);
+            ordered.Sort();
+            return STJ.JsonSerializer.Serialize(ordered);
+        }
+
+        /// <summary>
+        /// Indexes an existing STRM library tree by the identity its folder names carry: the
+        /// TMDB ID from a <c>[tmdbid=N]</c> suffix, and the ID-stripped folder name.
+        /// </summary>
+        /// <remarks>
+        /// This is the record of what the user has previously chosen to keep, and it outlives
+        /// the provider IDs those choices were stored against — which is what makes it usable
+        /// as an exemption for <see cref="PluginConfiguration.RequireReviewBeforeSync"/>.
+        ///
+        /// Both markers are collected on purpose. TMDB alone would miss folders written before
+        /// <see cref="PluginConfiguration.EnableTmdbFolderNaming"/> was switched on, and those
+        /// are exactly the titles that must not be withheld: a held title's files are not added
+        /// to the written set, so orphan cleanup would treat them as stale and delete them.
+        /// Matching on the stripped name as well means anything actually on disk is recognised.
+        /// </remarks>
+        internal static void BuildLibraryIdentityIndex(
+            string libraryPath, string rootFolder, HashSet<int> tmdbIds, HashSet<string> folderNames)
+        {
+            var root = Path.Combine(libraryPath, rootFolder);
+            if (!Directory.Exists(root))
+            {
+                return;
+            }
+
+            foreach (var dir in Directory.GetDirectories(root, "*", SearchOption.AllDirectories))
+            {
+                var leaf = Path.GetFileName(dir);
+                if (string.IsNullOrEmpty(leaf))
+                {
+                    continue;
+                }
+
+                var match = FolderTmdbIdRegex.Match(leaf);
+                if (match.Success)
+                {
+                    int id;
+                    if (int.TryParse(match.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out id)
+                        && id > 0)
+                    {
+                        tmdbIds.Add(id);
+                    }
+                }
+
+                var stripped = StripFolderIdSuffix(leaf);
+                if (!string.IsNullOrEmpty(stripped))
+                {
+                    folderNames.Add(stripped);
+                }
             }
         }
 
@@ -755,6 +868,44 @@ namespace Emby.Xtream.Plugin.Service
                             : string.Empty);
                 }
 
+                // Review gate. Off by default; when on, a title that is neither reviewed nor
+                // already on disk is held rather than written, so a provider's overnight
+                // additions land in the review queue instead of the library.
+                var reviewGateOn = config.RequireReviewBeforeSync;
+                var reviewedVodSet = DeserializeIdSet(config.ReviewedVodStreamIdsJson);
+                if (reviewGateOn && reviewedVodSet == null)
+                {
+                    // The store did not parse. Standing down is the only safe reading: treating
+                    // an unreadable checkpoint as "nothing is reviewed" would withhold the whole
+                    // catalogue on the strength of a field we failed to read.
+                    _logger.Error(
+                        "ReviewedVodStreamIdsJson could not be parsed, so \"require review before sync\" is disabled for this run. "
+                        + "Every title would otherwise look un-reviewed. Check the plugin configuration file.");
+                    reviewGateOn = false;
+                }
+
+                // What the user already keeps, keyed on identity rather than provider id — the
+                // exemption that stops the gate withholding an established film whose id the
+                // provider reassigned. Also the reason a held title never has files to protect
+                // from orphan cleanup: anything on disk matches here and syncs normally.
+                var libraryTmdbIds = new HashSet<int>();
+                var libraryFolderNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (reviewGateOn)
+                {
+                    BuildLibraryIdentityIndex(config.StrmLibraryPath, "Movies", libraryTmdbIds, libraryFolderNames);
+                    _logger.Info(
+                        "Review gate on: {0} reviewed movie ids, {1} titles already on disk ({2} with a TMDB id in the folder name)",
+                        reviewedVodSet.Count, libraryFolderNames.Count, libraryTmdbIds.Count);
+                }
+
+                var heldForReview = 0;
+                var autoReviewed = new List<Tuple<int, string>>();
+                // A sample of what was held. The gate's whole effect is content NOT appearing,
+                // so a bare count gives no way to tell "held the 5,000 new titles" from "held
+                // your entire library because the identity index came up empty".
+                var heldTitles = new List<string>();
+                const int HeldSampleSize = 15;
+
                 _logger.Info("Starting movie STRM sync for {0} streams", allStreams.Count);
 
                 var writtenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -781,6 +932,39 @@ namespace Emby.Xtream.Plugin.Service
                         {
                             Interlocked.Increment(ref _movieProgress.Failed);
                             return;
+                        }
+
+                        // Review gate, before the TMDB resolve below so a held title never costs
+                        // a fallback lookup. Exempt when the user already keeps this title:
+                        // matched on the provider's TMDB id, else on the folder name the sync
+                        // would write. A re-addition under a new StreamId is therefore restored
+                        // rather than withheld, and its new id is recorded as reviewed so the
+                        // checkpoint heals itself instead of drifting.
+                        //
+                        // Held is not excluded: nothing is added to a blocklist and no folder is
+                        // removed. And a held title has no files to protect — anything on disk
+                        // matched the index above and took the exempt path.
+                        if (reviewGateOn && !reviewedVodSet.Contains(movie.StreamId))
+                        {
+                            int providerTmdb;
+                            var hasTmdb = IsValidTmdbId(movie.TmdbId)
+                                && int.TryParse(movie.TmdbId.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out providerTmdb)
+                                && libraryTmdbIds.Contains(providerTmdb);
+
+                            if (!hasTmdb && !libraryFolderNames.Contains(movieName))
+                            {
+                                Interlocked.Increment(ref heldForReview);
+                                lock (heldTitles)
+                                {
+                                    if (heldTitles.Count < HeldSampleSize) heldTitles.Add(cleanedName);
+                                }
+                                Interlocked.Increment(ref _movieProgress.Skipped);
+                                Interlocked.Increment(ref _movieProgress.Completed);
+                                ReportTaskProgress(_movieProgress, taskProgress);
+                                return;
+                            }
+
+                            lock (autoReviewed) { autoReviewed.Add(Tuple.Create(movie.StreamId, cleanedName)); }
                         }
 
                         // Two distinct skip probes, picked by the flag combination:
@@ -969,6 +1153,44 @@ namespace Emby.Xtream.Plugin.Service
                 });
 
                 await Task.WhenAll(tasks).ConfigureAwait(false);
+
+                if (reviewGateOn)
+                {
+                    // Fold the exempted re-additions into the checkpoint, so a title the user
+                    // already keeps stays recognised under its new id without them re-reviewing
+                    // it. Only ever adds; the gate never marks anything un-reviewed.
+                    if (autoReviewed.Count > 0)
+                    {
+                        foreach (var entry in autoReviewed)
+                        {
+                            reviewedVodSet.Add(entry.Item1);
+                        }
+
+                        config.ReviewedVodStreamIdsJson = SerializeIdSet(reviewedVodSet);
+                        saveConfig?.Invoke();
+
+                        var restored = autoReviewed
+                            .Select(e => e.Item2)
+                            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                            .Take(HeldSampleSize)
+                            .ToList();
+                        _logger.Info(
+                            "Review gate: {0} title(s) you already keep came back under a new StreamId — synced and marked reviewed: {1}{2}",
+                            autoReviewed.Count,
+                            string.Join(", ", restored),
+                            autoReviewed.Count > restored.Count ? ", ..." : string.Empty);
+                    }
+
+                    if (heldForReview > 0)
+                    {
+                        heldTitles.Sort(StringComparer.OrdinalIgnoreCase);
+                        _logger.Info(
+                            "Review gate: {0} un-reviewed title(s) held out of the library. They are NOT excluded — review them in the de-dup view and they sync on the next run. For example: {1}{2}",
+                            heldForReview,
+                            string.Join(", ", heldTitles),
+                            heldForReview > heldTitles.Count ? ", ..." : string.Empty);
+                    }
+                }
 
                 // Remove folders for explicitly excluded movies. Deliberately before orphan
                 // cleanup and independent of it — see RemoveExcludedContent remarks.

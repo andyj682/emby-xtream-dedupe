@@ -287,6 +287,142 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
+        // Review gate — RequireReviewBeforeSync (ADR-017)
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task ReviewGate_Off_ByDefault_EverythingSyncs()
+        {
+            // The gate inverts the sync's normal contract, so it must stay opt-in.
+            var config = DefaultConfig();
+            RegisterVodStreams(VodStreamsJson(
+                VodStream(streamId: 1, name: "Unreviewed Movie", added: 1000)));
+
+            await MakeService().SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(MovieStrmPath("Unreviewed Movie")));
+        }
+
+        [Fact]
+        public async Task ReviewGate_UnreviewedAndNotOnDisk_HeldButNotExcluded()
+        {
+            var config = DefaultConfig();
+            config.RequireReviewBeforeSync = true;
+            config.ReviewedVodStreamIdsJson = "[1]";
+            RegisterVodStreams(VodStreamsJson(
+                VodStream(streamId: 1, name: "Reviewed Movie", added: 1000),
+                VodStream(streamId: 2, name: "New Movie", added: 1000)));
+
+            var svc = MakeService();
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(MovieStrmPath("Reviewed Movie")));
+            Assert.False(File.Exists(MovieStrmPath("New Movie")));
+            // Held is not excluded: the blocklist must be untouched, or the de-dup view would
+            // show the title as dealt with and RemoveExcludedContent would delete its folder.
+            Assert.Empty(config.ExcludedVodStreamIds);
+            Assert.Equal(0, svc.MovieProgress.Failed);
+        }
+
+        [Fact]
+        public async Task ReviewGate_UnreviewedButTmdbIdOnDisk_SyncedAndMarkedReviewed()
+        {
+            // A title the user already keeps, back under a new StreamId. Withholding it would
+            // strip an established film out of the library; instead it syncs and its new id is
+            // folded into the checkpoint so the drift heals itself.
+            var config = DefaultConfig();
+            config.RequireReviewBeforeSync = true;
+            config.EnableTmdbFolderNaming = true;
+            config.ReviewedVodStreamIdsJson = "[]";
+
+            var existing = Path.Combine(TempDir.Path, "Movies", "Old Name [tmdbid=603]");
+            Directory.CreateDirectory(existing);
+            File.WriteAllText(Path.Combine(existing, "Old Name [tmdbid=603].strm"), "http://fake-xtream/movie/user/pass/99.mkv");
+
+            RegisterVodStreams(VodStreamsJson(
+                VodStream(streamId: 42, name: "Renamed Title", added: 1000, tmdbId: "603")));
+
+            await MakeService().SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(MovieStrmPath("Renamed Title [tmdbid=603]")));
+            Assert.Contains("42", config.ReviewedVodStreamIdsJson);
+        }
+
+        [Fact]
+        public async Task ReviewGate_UnreviewedButFolderNameOnDisk_Synced()
+        {
+            // The legacy case: a folder written before TMDB folder naming was enabled carries no
+            // [tmdbid=], so only the stripped name identifies it. Missing this would hold a title
+            // whose files are on disk, and a held title's files are not in the written set — so
+            // orphan cleanup would then delete them.
+            var config = DefaultConfig();
+            config.RequireReviewBeforeSync = true;
+            config.ReviewedVodStreamIdsJson = "[]";
+
+            var existing = Path.Combine(TempDir.Path, "Movies", "Legacy Movie");
+            Directory.CreateDirectory(existing);
+            File.WriteAllText(Path.Combine(existing, "Legacy Movie.strm"), "http://fake-xtream/movie/user/pass/7.mkv");
+
+            RegisterVodStreams(VodStreamsJson(
+                VodStream(streamId: 55, name: "Legacy Movie", added: 1000)));
+
+            await MakeService().SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(MovieStrmPath("Legacy Movie")));
+            Assert.Contains("55", config.ReviewedVodStreamIdsJson);
+        }
+
+        [Fact]
+        public async Task ReviewGate_UnparseableReviewedStore_StandsDownRatherThanHoldingEverything()
+        {
+            // Reading an unreadable checkpoint as "nothing is reviewed" would withhold the entire
+            // catalogue on the strength of a field we failed to parse. Fail open, loudly.
+            var config = DefaultConfig();
+            config.RequireReviewBeforeSync = true;
+            config.ReviewedVodStreamIdsJson = "[1,2,3";
+            RegisterVodStreams(VodStreamsJson(
+                VodStream(streamId: 1, name: "Movie One", added: 1000),
+                VodStream(streamId: 2, name: "Movie Two", added: 1000)));
+
+            await MakeService().SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(MovieStrmPath("Movie One")));
+            Assert.True(File.Exists(MovieStrmPath("Movie Two")));
+        }
+
+        /// <summary>
+        /// The failure mode this whole design guards against: a held title's files are never
+        /// added to the written set, so if an on-disk title were ever held, orphan cleanup would
+        /// delete the library out from under the user. Exercised with the orphan guard disabled
+        /// (threshold 0) so cleanup genuinely runs.
+        /// </summary>
+        [Fact]
+        public async Task ReviewGate_OnDiskUnreviewedTitle_SurvivesOrphanCleanup()
+        {
+            var config = DefaultConfig();
+            config.RequireReviewBeforeSync = true;
+            config.CleanupOrphans = true;
+            config.OrphanSafetyThreshold = 0.0;
+            config.ReviewedVodStreamIdsJson = "[]";
+
+            // Written by an earlier sync, and never reviewed.
+            var existing = MovieStrmPath("Established Movie");
+            Directory.CreateDirectory(Path.GetDirectoryName(existing));
+            File.WriteAllText(existing, "http://fake-xtream/movie/user/pass/8.mkv");
+
+            RegisterVodStreams(VodStreamsJson(
+                VodStream(streamId: 8, name: "Established Movie", added: 1000),
+                VodStream(streamId: 9, name: "Brand New Movie", added: 1000)));
+
+            var svc = MakeService();
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(existing), "an on-disk title must never be held, or cleanup eats it");
+            Assert.False(File.Exists(MovieStrmPath("Brand New Movie")));
+            Assert.Equal(0, svc.MovieProgress.Failed);
+        }
+
+        // -----------------------------------------------------------------
         // Per-item exclusion (issue #57)
         // -----------------------------------------------------------------
 
