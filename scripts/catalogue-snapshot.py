@@ -12,10 +12,17 @@ This is that writing-down. Run it periodically; ``repair-id-churn.py`` consumes 
 output after an event. It only helps forward: an ID that is already dead, with no
 snapshot covering it, is unrecoverable.
 
-Read-only against the config and the provider. Two list calls, no get_series_info.
+Read-only against the config and the provider. List calls only, no get_series_info.
+
+Fetches PER-CATEGORY whenever the config has a category selection, because that is what
+the plugin does and, for series, catalogue-wide sees only about half the SeriesIds that
+exist (measured: 9,981 catalogue-wide vs 21,252 across 94 selected categories). That
+costs one call per category. `--catalogue-wide` forces the old fast-but-undercounting
+behaviour; do not use it for snapshots that repair-id-churn.py will consume.
 
 Usage:
   python3 scripts/catalogue-snapshot.py [--out DIR] [--keep N] [--date LABEL] [--force]
+                                        [--catalogue-wide]
 
 ``--date`` sets the filename label, so a second snapshot on the same day can be taken
 without clobbering the first (``--date 2026-08-27-post``). Overwriting an existing
@@ -39,7 +46,7 @@ import xtream_catalogue as xc  # noqa: E402
 
 
 def parse_args(argv):
-    out_dir, keep, stamp, force = "/out", 12, None, False
+    out_dir, keep, stamp, force, catalogue_wide = "/out", 12, None, False, False
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -51,11 +58,13 @@ def parse_args(argv):
             stamp = argv[i + 1]; i += 2
         elif arg == "--force":
             force = True; i += 1
+        elif arg == "--catalogue-wide":
+            catalogue_wide = True; i += 1
         elif arg in ("-h", "--help"):
             print(__doc__); raise SystemExit(0)
         else:
             raise SystemExit("Unrecognised argument: %s" % arg)
-    return out_dir, keep, stamp, force
+    return out_dir, keep, stamp, force, catalogue_wide
 
 
 def prune(out_dir, keep):
@@ -76,7 +85,7 @@ def prune(out_dir, keep):
 
 
 def main(argv):
-    out_dir, keep, stamp, force = parse_args(argv)
+    out_dir, keep, stamp, force, catalogue_wide = parse_args(argv)
     if not os.path.isdir(out_dir):
         raise SystemExit("Output directory does not exist: %s (mount it read-write)" % out_dir)
 
@@ -86,18 +95,28 @@ def main(argv):
     print("config : %s" % config_path)
     print("base   : %s" % base)
 
+    selected = {
+        "movie": [int(i.text) for i in root.findall("SelectedVodCategoryIds/int") if i.text],
+        "series": [int(i.text) for i in root.findall("SelectedSeriesCategoryIds/int") if i.text],
+    }
+
     rows = []
     for kind in ("movie", "series"):
-        fetched = xc.fetch_catalogue(base, user, password, kind)
-        with_tmdb = sum(1 for _, tmdb, _ in fetched if tmdb)
+        scope = None if catalogue_wide else (selected[kind] or None)
+        if scope:
+            print("%-7s: fetching %d selected categories..." % (kind, len(scope)))
+        fetched = xc.fetch_catalogue(base, user, password, kind, category_ids=scope)
+        with_tmdb = sum(1 for r in fetched if r[1])
         pct = (100.0 * with_tmdb / len(fetched)) if fetched else 0.0
-        print("%-7s: %6d entries, %6d with a usable TMDB id (%.0f%%)" % (kind, len(fetched), with_tmdb, pct))
-        rows.extend((kind, item_id, tmdb, name) for item_id, tmdb, name in fetched)
+        print("%-7s: %6d distinct ids, %6d with a usable TMDB id (%.0f%%)%s"
+              % (kind, len(fetched), with_tmdb, pct,
+                 "" if scope else "   [catalogue-wide]"))
+        rows.extend((kind, r[0], r[1], r[2], r[3]) for r in fetched)
 
     # Store sizes go in the log, not the file — the rolling config backups already hold
     # the authoritative copy, and the counts make a drop visible historically.
     stores = xc.read_all_stores(root)
-    live_ids = {k: {i for kind, i, _, _ in rows if kind == k} for k in ("movie", "series")}
+    live_ids = {k: {r[1] for r in rows if r[0] == k} for k in ("movie", "series")}
     print()
     for element, kind, _ in xc.ID_STORES:
         stored = stores[element]

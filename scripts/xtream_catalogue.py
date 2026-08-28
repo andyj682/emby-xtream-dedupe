@@ -28,7 +28,7 @@ import xml.etree.ElementTree as ET
 
 DEFAULT_CONFIG_GLOB = "/cfg/plugins/configurations/*Xtream*.xml"
 
-SNAPSHOT_HEADER = "#kind\tid\ttmdb\tname"
+SNAPSHOT_HEADER = "#kind\tid\ttmdb\tname\tcategory"
 
 # (config element, which catalogue it indexes, how it is stored in the XML)
 ID_STORES = (
@@ -133,25 +133,48 @@ def read_all_stores(root):
     return {element: read_store(root, element, storage) for element, _, storage in ID_STORES}
 
 
-def fetch_catalogue(base, user, password, kind, timeout=300):
-    """One list call. Returns [(id, tmdb, name)] with ids coerced to int."""
-    url = base + "/player_api.php?" + urllib.parse.urlencode({
-        "username": user, "password": password, "action": CATALOGUE_ACTION[kind]})
+def _fetch_list(base, user, password, kind, category_id, timeout):
+    params = {"username": user, "password": password, "action": CATALOGUE_ACTION[kind]}
+    if category_id is not None:
+        params["category_id"] = category_id
+    url = base + "/player_api.php?" + urllib.parse.urlencode(params)
     with urllib.request.urlopen(url, timeout=timeout) as response:
-        payload = json.load(response) or []
+        return json.load(response) or []
 
+
+def fetch_catalogue(base, user, password, kind, category_ids=None, timeout=300):
+    """Returns [(id, tmdb, name, category_id)], deduplicated by id.
+
+    ``category_ids`` makes this fetch per-category, which is what the plugin itself does
+    whenever a selection is configured — and for series it is not merely equivalent, it is
+    NECESSARY. Measured 2026-08-27: a catalogue-wide ``get_series`` returned 9,981 entries
+    (roughly one per show) while the same account's 94 selected categories returned 21,252
+    DISTINCT SeriesIds (one per show *per category*). Snapshotting catalogue-wide therefore
+    saw 47% of the ids that exist, and any consumer comparing stored ids against it counts
+    thousands of live ids as dead.
+
+    Movies do not have this problem — a cross-listed movie shares one StreamId across
+    categories — but fetching per-category is harmless there and keeps the two symmetric.
+
+    category_id is the first category an id was seen in, not an exhaustive list: a movie
+    with one StreamId across several categories collapses to one row here.
+    """
     id_field = CATALOGUE_ID_FIELD[kind]
     tmdb_field = CATALOGUE_TMDB_FIELD[kind]
-    rows = []
-    for entry in payload:
-        try:
-            item_id = int(entry.get(id_field) or 0)
-        except (TypeError, ValueError):
-            continue
-        if item_id <= 0:
-            continue
-        rows.append((item_id, parse_tmdb(entry.get(tmdb_field)), str(entry.get("name") or "")))
-    return rows
+    scopes = list(category_ids) if category_ids else [None]
+
+    seen = {}
+    for category_id in scopes:
+        for entry in _fetch_list(base, user, password, kind, category_id, timeout):
+            try:
+                item_id = int(entry.get(id_field) or 0)
+            except (TypeError, ValueError):
+                continue
+            if item_id <= 0 or item_id in seen:
+                continue
+            seen[item_id] = (item_id, parse_tmdb(entry.get(tmdb_field)),
+                             str(entry.get("name") or ""), category_id)
+    return list(seen.values())
 
 
 def normalise_name(name):
@@ -174,13 +197,20 @@ def identity(tmdb, name, tmdb_only=False):
 
 
 def write_snapshot(path, rows):
-    """rows: iterable of (kind, id, tmdb, name). Tabs and newlines stripped from names."""
+    """rows: iterable of (kind, id, tmdb, name) or (kind, id, tmdb, name, category).
+
+    The category column was added after the first snapshots were taken. Readers take the
+    first four fields and ignore the rest, so old files stay readable and new ones stay
+    readable by old readers.
+    """
     written = 0
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(SNAPSHOT_HEADER + "\n")
-        for kind, item_id, tmdb, name in rows:
+        for row in rows:
+            kind, item_id, tmdb, name = row[0], row[1], row[2], row[3]
+            category = row[4] if len(row) > 4 and row[4] is not None else ""
             clean = str(name or "").replace("\t", " ").replace("\r", " ").replace("\n", " ")
-            handle.write("%s\t%d\t%s\t%s\n" % (kind, item_id, tmdb or "", clean))
+            handle.write("%s\t%d\t%s\t%s\t%s\n" % (kind, item_id, tmdb or "", clean, category))
             written += 1
     return written
 

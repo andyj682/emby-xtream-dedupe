@@ -80,7 +80,7 @@ class StoreResult(object):
 def build_live_index(rows, tmdb_only):
     """identity -> sorted list of current IDs carrying it."""
     index = {}
-    for item_id, tmdb, name in rows:
+    for item_id, tmdb, name in ((r[0], r[1], r[2]) for r in rows):
         ident = xc.identity(tmdb, name, tmdb_only)
         if ident is None:
             continue
@@ -260,13 +260,22 @@ def main(argv):
 
     snapshot = xc.read_snapshot(args.snapshot)
 
+    selected = {
+        "movie": [int(i.text) for i in root.findall("SelectedVodCategoryIds/int") if i.text],
+        "series": [int(i.text) for i in root.findall("SelectedSeriesCategoryIds/int") if i.text],
+    }
+
     live_rows, live_ids, live_index, live_names = {}, {}, {}, {}
     for kind in ("movie", "series"):
-        rows = xc.fetch_catalogue(base, user, password, kind)
+        # Per-category, matching the snapshot writer. Catalogue-wide undercounts series ids
+        # badly (see xtream_catalogue.fetch_catalogue), and undercounting "live" here would
+        # make this script call live ids dead and propose re-points for them.
+        rows = xc.fetch_catalogue(base, user, password, kind,
+                                  category_ids=selected[kind] or None)
         live_rows[kind] = rows
-        live_ids[kind] = {item_id for item_id, _, _ in rows}
+        live_ids[kind] = {r[0] for r in rows}
         live_index[kind] = build_live_index(rows, args.tmdb_only)
-        live_names[kind] = {item_id: name for item_id, _, name in rows}
+        live_names[kind] = {r[0]: r[2] for r in rows}
         snap_count = sum(1 for k, _ in snapshot if k == kind)
         print("%-7s: %6d in catalogue now, %6d in snapshot" % (kind, len(rows), snap_count))
 

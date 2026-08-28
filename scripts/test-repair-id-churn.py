@@ -55,19 +55,20 @@ SNAPSHOT_ROWS = [
     ("series", 200, 0, "Show A"),
 ]
 
+# (id, tmdb, name, category) — fetch_catalogue returns the category it was first seen in.
 LIVE_MOVIES = [
-    (900, 501, "Alpha"),           # Alpha, renumbered
-    (902, 503, "Gamma"),           # Gamma, renumbered
-    (903, 504, "Delta"),           # Delta, renumbered
-    (904, 0, "Epsilon"),           # Epsilon, renumbered, no tmdb
-    (105, 505, "Zeta"),            # unchanged
-    (910, 999, "Something New"),   # genuinely new
+    (900, 501, "Alpha", 1),        # Alpha, renumbered
+    (902, 503, "Gamma", 1),        # Gamma, renumbered
+    (903, 504, "Delta", 1),        # Delta, renumbered
+    (904, 0, "Epsilon", 1),        # Epsilon, renumbered, no tmdb
+    (105, 505, "Zeta", 1),         # unchanged
+    (910, 999, "Something New", 2),  # genuinely new
 ]
 
 LIVE_SERIES = [
-    (800, 0, "Show A"),            # Show A, renumbered, category 1
-    (801, 0, "Show A"),            # Show A, renumbered, category 2
-    (850, 0, "Show B"),            # unrelated
+    (800, 0, "Show A", 1),         # Show A, renumbered, category 1
+    (801, 0, "Show A", 2),         # Show A, renumbered, category 2
+    (850, 0, "Show B", 1),         # unrelated
 ]
 
 EXCLUDED_VOD = [100, 101, 102, 104, 105]
@@ -111,7 +112,7 @@ def main():
         xc.write_snapshot(snapshot_path, SNAPSHOT_ROWS)
 
         original_fetch = xc.fetch_catalogue
-        xc.fetch_catalogue = lambda base, user, pw, kind, timeout=300: (
+        xc.fetch_catalogue = lambda base, user, pw, kind, category_ids=None, timeout=300: (
             list(LIVE_MOVIES) if kind == "movie" else list(LIVE_SERIES))
         try:
             rc = repair.main([
@@ -158,7 +159,7 @@ def main():
 
         # Refusing to overwrite the live config is the one guard whose failure is destructive.
         try:
-            xc.fetch_catalogue = lambda base, user, pw, kind, timeout=300: (
+            xc.fetch_catalogue = lambda base, user, pw, kind, category_ids=None, timeout=300: (
                 list(LIVE_MOVIES) if kind == "movie" else list(LIVE_SERIES))
             repair.main(["--snapshot", snapshot_path, "--config-glob", config_path,
                          "--write", config_path])
