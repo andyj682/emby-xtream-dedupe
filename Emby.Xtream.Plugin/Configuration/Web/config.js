@@ -506,6 +506,8 @@ function (BaseView, loading) {
             view.querySelector('.chkSmartSkipExisting').checked = config.SmartSkipExisting !== false;
             // Default on for configs saved before this setting existed.
             view.querySelector('.chkRefreshEmbyLibraryAfterSync').checked = config.RefreshEmbyLibraryAfterSync !== false;
+            // Opt-in, so default OFF — note the !== false idiom above is for on-by-default flags.
+            view.querySelector('.chkRequireReviewBeforeSync').checked = !!config.RequireReviewBeforeSync;
             view.querySelector('.chkRefreshDispatcharrEpisodes').checked = !!config.RefreshDispatcharrEpisodes;
             view.querySelector('.txtSyncParallelism').value = config.SyncParallelism || 3;
             view.querySelector('.txtXtreamRequestsPerSecond').value = config.XtreamRequestsPerSecond || 0;
@@ -622,6 +624,7 @@ function (BaseView, loading) {
             config.StrmLibraryPath = view.querySelector('.txtStrmLibraryPath').value.replace(/\/+$/, '') || '/config/xtream';
             config.SmartSkipExisting = view.querySelector('.chkSmartSkipExisting').checked;
             config.RefreshEmbyLibraryAfterSync = view.querySelector('.chkRefreshEmbyLibraryAfterSync').checked;
+            config.RequireReviewBeforeSync = view.querySelector('.chkRequireReviewBeforeSync').checked;
             config.RefreshDispatcharrEpisodes = view.querySelector('.chkRefreshDispatcharrEpisodes').checked;
             config.SyncParallelism = parseInt(view.querySelector('.txtSyncParallelism').value, 10) || 3;
             config.XtreamRequestsPerSecond = parseInt(view.querySelector('.txtXtreamRequestsPerSecond').value, 10) || 0;
@@ -1509,6 +1512,7 @@ function updateEpgVisibility(view) {
                 dataKey: 'dedupedSeries',
                 excludeKey: 'excludedSeriesIds',
                 reviewedKey: 'reviewedSeriesIds',
+                reviewedJsonKey: 'ReviewedSeriesIdsJson',
                 catsKey: 'loadedSeriesCategories'
             };
         }
@@ -1519,6 +1523,7 @@ function updateEpgVisibility(view) {
             dataKey: 'dedupedVod',
             excludeKey: 'excludedVodStreamIds',
             reviewedKey: 'reviewedVodStreamIds',
+            reviewedJsonKey: 'ReviewedVodStreamIdsJson',
             catsKey: 'loadedVodCategories'
         };
     }
@@ -1621,6 +1626,26 @@ function updateEpgVisibility(view) {
         return healedTitles;
     }
 
+    // The sync can now add to the reviewed set on its own — the review gate marks a title
+    // reviewed when it recognises one already on disk coming back under a new provider id.
+    // So the copy captured at page load goes stale, and every such title keeps reading
+    // "mark reviewed" until the page is reloaded.
+    //
+    // Union the server's ids in rather than replacing the page's copy. The sync only ever
+    // ADDS to that set, so a union picks up its changes while preserving marks made here and
+    // not yet saved. Deliberately does not touch the exclusion list, which the sync never
+    // writes — re-reading that would silently discard pending exclusion edits.
+    //
+    // Accepted edge: un-reviewing a title here and then pressing Load, without saving in
+    // between, re-marks it reviewed.
+    function mergeServerReviewed(instance, cfg, freshConfig) {
+        if (!freshConfig || !cfg.reviewedJsonKey) return;
+        var serverSet = parseReviewedSet(freshConfig[cfg.reviewedJsonKey]);
+        if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
+        var local = instance[cfg.reviewedKey];
+        Object.keys(serverSet).forEach(function (id) { local[id] = true; });
+    }
+
     function loadDeduped(instance, type) {
         var cfg = dedupedConfig(type);
         var view = instance.view;
@@ -1630,19 +1655,43 @@ function updateEpgVisibility(view) {
         statusEl.style.color = '';
         statusEl.textContent = 'Loading…';
 
+        // Refresh the reviewed set first, then the titles. A failure here is non-fatal: the
+        // page's own copy is still usable, so fall through to loading titles either way.
+        ApiClient.getPluginConfiguration(pluginId).then(function (fresh) {
+            mergeServerReviewed(instance, cfg, fresh);
+            loadDedupedTitles(instance, type);
+        }, function () {
+            loadDedupedTitles(instance, type);
+        });
+    }
+
+    function loadDedupedTitles(instance, type) {
+        var cfg = dedupedConfig(type);
+        var view = instance.view;
+        var statusEl = view.querySelector('.' + cfg.prefix + 'DedupedStatus');
+        var controlsEl = view.querySelector('.' + cfg.prefix + 'DedupedControls');
+
         ApiClient.getJSON(ApiClient.getUrl(cfg.endpoint)).then(function (items) {
             instance[cfg.dataKey] = items || [];
             statusEl.style.color = '#52B54B';
             statusEl.textContent = 'Loaded ' + instance[cfg.dataKey].length + ' unique titles';
 
-            // Extend any partial exclusions to whole titles (covers duplicate copies from
-            // categories added since the last review), then tell the user to save.
+            // Extend any partial exclusions to whole titles (covers duplicate copies that
+            // showed up since the last review).
+            //
+            // The sync now propagates exclusion across a title's whole collapse group on its
+            // own, so this no longer has to happen for the right thing to be synced — saving
+            // only tidies the stored id list. The wording says so; it used to read "Save to
+            // keep", which implied the exclusion would otherwise be lost. A show gains an
+            // extra SeriesId every day or two (new category placement or provider relation),
+            // so this notice recurs indefinitely and should not read as a chore.
             var healed = healPartialExclusions(instance, type);
             var healEl = view.querySelector('.' + cfg.prefix + 'DedupedHealNotice');
             if (healEl) {
                 if (healed > 0) {
-                    healEl.textContent = 'Re-applied your exclusions to ' + healed +
-                        (healed === 1 ? ' title' : ' titles') + ' with new duplicate copies — Save to keep.';
+                    healEl.textContent = 'Extended your exclusions to ' + healed +
+                        (healed === 1 ? ' title' : ' titles') + ' with new duplicate copies. ' +
+                        'Syncs already skip these — saving just tidies the stored list.';
                     healEl.style.display = '';
                 } else {
                     healEl.style.display = 'none';

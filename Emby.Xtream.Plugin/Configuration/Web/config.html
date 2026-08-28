@@ -522,28 +522,14 @@
 
                     <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.5em;">
                         <label>
-                            <input class="chkRefreshEmbyLibraryAfterSync" type="checkbox" is="emby-checkbox" />
-                            <span>Refresh the Emby library after a sync that changed files</span>
+                            <input class="chkRequireReviewBeforeSync" type="checkbox" is="emby-checkbox" />
+                            <span>Only sync movies you have reviewed</span>
                         </label>
                         <div class="fieldDescription checkboxFieldDescription">
-                            Tells Emby the Movies or Shows folder changed once a sync has actually added
-                            or removed files, so new content appears without waiting for a scheduled scan.
-                            A sync that changed nothing triggers nothing. Useful when real-time monitoring
-                            is off for these libraries — watching the folder can stop a drive from ever
-                            spinning down. Turn off if you would rather Emby scan only on its own schedule.
-                        </div>
-                    </div>
-
-                    <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.5em;">
-                        <label>
-                            <input class="chkRefreshDispatcharrEpisodes" type="checkbox" is="emby-checkbox" />
-                            <span>Refresh Dispatcharr episode data (all duplicate copies)</span>
-                        </label>
-                        <div class="fieldDescription checkboxFieldDescription">
-                            For Dispatcharr: after each series sync, ask Dispatcharr to refresh episode
-                            streams for every duplicate copy of a show (each provider/category), not just
-                            the one kept in your library — so 4K and alternate streams become selectable.
-                            Throttled to once per copy per 24h. Leave off for non-Dispatcharr providers.
+                            When on, movies are written on syncs only after you have reviewed them in the
+                            De-dup view and left them unexcluded. Movies already on disk are synced and
+                            marked reviewed automatically if they come back under a new ID (the "metadata ID
+                            in folder names" option helps here).
                         </div>
                     </div>
 
@@ -554,6 +540,28 @@
                         </label>
                         <div class="fieldDescription checkboxFieldDescription">
                             Writes Kodi-compatible NFO sidecars with TMDb/TVDb IDs alongside STRM files for instant Emby metadata matching. Skips if the file already exists.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.5em;">
+                        <label>
+                            <input class="chkRefreshEmbyLibraryAfterSync" type="checkbox" is="emby-checkbox" />
+                            <span>Refresh Emby libraries with added or removed files after a sync</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Useful if you don't use real-time monitoring for these libraries.
+                        </div>
+                    </div>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.5em;">
+                        <label>
+                            <input class="chkRefreshDispatcharrEpisodes" type="checkbox" is="emby-checkbox" />
+                            <span>Refresh Dispatcharr episode data</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            Asks Dispatcharr to refresh episode streams for every duplicate copy of a show
+                            (each provider/category) after a series sync, so that all copies are available
+                            to serve. Throttled to once per copy per 24h.
                         </div>
                     </div>
 

@@ -10,7 +10,7 @@ starting at 1.0.0 — independent of upstream
 
 ### Added
 
-- **New "Require review before sync" option for movies, off by default.** Normally anything
+- **New "Only sync movies you have reviewed" option in Sync Settings, off by default.** Normally anything
   you haven't excluded gets synced, which is fine until your provider adds content in bulk —
   one overnight addition here was 5,974 titles, and they would all have landed in the library
   before there was any chance to look at them. With this on, a movie is written once you have
@@ -25,6 +25,11 @@ starting at 1.0.0 — independent of upstream
 
 ### Fixed
 
+- **The De-dup view now notices review marks the sync made.** The sync can add to the reviewed
+  list on its own (the option above marks a returning film reviewed once it recognises it), and
+  the view was only reading that list when the page first opened — so those titles kept showing
+  as unreviewed until you reloaded. Pressing Load now picks them up. Anything you have marked or
+  excluded on the page but not yet saved is preserved.
 - **An excluded show no longer comes back when you enable another category.** Exclusions are
   stored as provider series IDs, and your provider gives the same show a different ID in every
   category it appears in — so excluding a show only covered the copies that existed at the time.
