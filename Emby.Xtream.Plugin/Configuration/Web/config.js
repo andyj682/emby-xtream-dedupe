@@ -621,7 +621,6 @@ function (BaseView, loading) {
             view.querySelector('.chkRefreshEmbyLibraryAfterSync').checked = config.RefreshEmbyLibraryAfterSync !== false;
             // Opt-in, so default OFF — note the !== false idiom above is for on-by-default flags.
             view.querySelector('.chkRequireReviewBeforeSync').checked = !!config.RequireReviewBeforeSync;
-            view.querySelector('.chkRefreshDispatcharrEpisodes').checked = !!config.RefreshDispatcharrEpisodes;
             view.querySelector('.txtSyncParallelism').value = config.SyncParallelism || 3;
             view.querySelector('.txtXtreamRequestsPerSecond').value = config.XtreamRequestsPerSecond || 0;
             view.querySelector('.chkCleanupOrphans').checked = !!config.CleanupOrphans;
@@ -752,7 +751,6 @@ function (BaseView, loading) {
             config.SmartSkipExisting = view.querySelector('.chkSmartSkipExisting').checked;
             config.RefreshEmbyLibraryAfterSync = view.querySelector('.chkRefreshEmbyLibraryAfterSync').checked;
             config.RequireReviewBeforeSync = view.querySelector('.chkRequireReviewBeforeSync').checked;
-            config.RefreshDispatcharrEpisodes = view.querySelector('.chkRefreshDispatcharrEpisodes').checked;
             config.SyncParallelism = parseInt(view.querySelector('.txtSyncParallelism').value, 10) || 3;
             config.XtreamRequestsPerSecond = parseInt(view.querySelector('.txtXtreamRequestsPerSecond').value, 10) || 0;
             config.CleanupOrphans = view.querySelector('.chkCleanupOrphans').checked;
@@ -1642,13 +1640,20 @@ function updateEpgVisibility(view) {
     // Movies are untouched by the change: AggregateVodByStreamId keys on StreamId, so a movie
     // row always carries exactly one id, and for a single-element array ANY is identical to
     // ALL. The same fact is what makes healPartialExclusions a no-op for them.
-    function isTitleReviewed(instance, cfg, ids) {
+    // excludedMap is an optional id->true lookup. Pass it from any caller that loops over
+    // titles: without it this falls back to indexOf on the raw exclusion ARRAY, which is 45,000+
+    // entries on a mature movie library — a linear scan per title, tens of thousands of times per
+    // render, on every keystroke in the search box. Every loop caller already builds exactly this
+    // map a few lines away for its own use, so passing it costs nothing and removes the scan.
+    function isTitleReviewed(instance, cfg, ids, excludedMap) {
         if (!ids || ids.length === 0) return false;
         var reviewed = instance[cfg.reviewedKey] || {};
-        var excluded = instance[cfg.excludeKey] || [];
+        var excludedList = excludedMap ? null : (instance[cfg.excludeKey] || []);
         for (var i = 0; i < ids.length; i++) {
             if (reviewed[ids[i]]) return true;
-            if (excluded.indexOf(ids[i]) !== -1) return true;
+            if (excludedMap
+                ? excludedMap[ids[i]]
+                : excludedList.indexOf(ids[i]) !== -1) return true;
         }
         return false;
     }
@@ -1902,10 +1907,79 @@ function updateEpgVisibility(view) {
         for (var i = 0; i < ids.length; i++) {
             html += '<label style="display:flex; align-items:flex-start; cursor:pointer; line-height:1.3;">';
             html += '<input type="checkbox" class="' + cfg.prefix + 'DedupedCatCheckbox" data-category-id="' + ids[i] + '" checked style="margin-right:0.35em; margin-top:0.15em; flex:0 0 auto;" />';
-            html += '<span>' + escapeHtml(nameById[ids[i]] || ('Category ' + ids[i])) + '</span>';
+            // The count lives INSIDE the name span, not beside it. As a flex sibling it was laid
+            // out as its own column, so a long category name that wrapped pushed the count to the
+            // top-right of the row, detached from the text. Nested, it flows as part of the label
+            // and simply follows the last word. Its own element still, so updating it never has
+            // to re-parse or re-escape the name; nowrap keeps "(368)" from breaking apart.
+            // Filled in by updateDedupedCatFilterCounts, not here: the count depends on the search
+            // and tri-state filters, which change without the filter list being rebuilt.
+            html += '<span>' + escapeHtml(nameById[ids[i]] || ('Category ' + ids[i]))
+                + ' <span class="' + cfg.prefix + 'DedupedCatCount" data-category-id="' + ids[i]
+                + '" style="opacity:0.6; white-space:nowrap;"></span></span>';
             html += '</label>';
         }
         listEl.innerHTML = html || '<div style="opacity:0.5;">No categories.</div>';
+    }
+
+    // Per-category tallies for the filter list, on their own basis: search + the tri-state
+    // Show/Reviewed filters, but deliberately NOT the category filter itself. Counting within
+    // the category filter would be circular — unticking a category would zero its own count, and
+    // you could never tick it back on an informed basis. So each row answers a fixed question:
+    // "how many titles would this category contribute, given everything else you have selected".
+    //
+    // These OVERLAP by design. A title cross-listed in several categories is counted in each, so
+    // they sum to more than the title count. The question being answered is "where is my review
+    // backlog concentrated", not "how does the total divide up" — the UI hint says so.
+    //
+    // Deliberately ONE function feeding both the full render and the in-place bulk refresh. A
+    // third display element computed two different ways is exactly what made the count line
+    // appear to change on its own; not repeating that here.
+    function computeDedupedCatCounts(instance, type) {
+        var cfg = dedupedConfig(type);
+        var view = instance.view;
+        var searchEl = view.querySelector('.' + cfg.prefix + 'DedupedSearch');
+        var search = ((searchEl && searchEl.value) || '').toLowerCase();
+        var showFilter = instance[cfg.prefix + 'DedupedShowFilter'] || 'all';
+        var reviewedFilter = instance[cfg.prefix + 'DedupedReviewedFilter'] || 'all';
+        var excluded = {};
+        (instance[cfg.excludeKey] || []).forEach(function (id) { excluded[id] = true; });
+
+        var counts = {};
+        var data = instance[cfg.dataKey] || [];
+        for (var i = 0; i < data.length; i++) {
+            var t = data[i];
+            if (search && (t.Name || '').toLowerCase().indexOf(search) < 0) continue;
+            var isRev = isTitleReviewed(instance, cfg, t.Ids, excluded);
+            var ids = t.Ids || [];
+            var allExcluded = ids.length > 0;
+            for (var k = 0; k < ids.length; k++) {
+                if (!excluded[ids[k]]) { allExcluded = false; break; }
+            }
+            if (showFilter === 'included' && allExcluded) continue;
+            if (showFilter === 'excluded' && !allExcluded) continue;
+            if (reviewedFilter === 'reviewed' && !isRev) continue;
+            if (reviewedFilter === 'unreviewed' && isRev) continue;
+            var cats = t.Categories || [];
+            for (var c = 0; c < cats.length; c++) {
+                counts[cats[c]] = (counts[cats[c]] || 0) + 1;
+            }
+        }
+        return counts;
+    }
+
+    // Writes those tallies into the filter list. A category with no matches shows (0) rather than
+    // being blanked or hidden: "this one is done" is exactly the signal you want when working
+    // through a review backlog category by category. No-ops safely before the list is built.
+    function updateDedupedCatFilterCounts(instance, type) {
+        var cfg = dedupedConfig(type);
+        var spans = instance.view.querySelectorAll('.' + cfg.prefix + 'DedupedCatCount');
+        if (!spans.length) return;
+        var counts = computeDedupedCatCounts(instance, type);
+        for (var i = 0; i < spans.length; i++) {
+            var cid = parseInt(spans[i].getAttribute('data-category-id'), 10);
+            spans[i].textContent = '(' + (counts[cid] || 0) + ')';
+        }
     }
 
     // Reads the ticked category-filter checkboxes. none=none: an empty result shows nothing
@@ -1968,7 +2042,7 @@ function updateEpgVisibility(view) {
             // Cache reviewed + excluded state on the title so rendering, the count line, and
             // the hide-worklist filters all agree and none recomputes it per row. A title is
             // excluded when every one of its ids is in the blocklist (mirrors the checkbox).
-            t._reviewed = isTitleReviewed(instance, cfg, t.Ids);
+            t._reviewed = isTitleReviewed(instance, cfg, t.Ids, excluded);
             var tIds = t.Ids || [];
             var allExcluded = tIds.length > 0;
             for (var e2 = 0; e2 < tIds.length; e2++) {
@@ -1988,6 +2062,7 @@ function updateEpgVisibility(view) {
             if (reviewedFilter === 'unreviewed' && t._reviewed) continue;
             matches.push(t);
         }
+        updateDedupedCatFilterCounts(instance, type);
         // Remember the full filtered set so bulk actions apply to all matches, not just
         // the capped rows that are rendered, and the scoped set so the count line can be
         // re-tallied on the same basis without a full re-render.
@@ -2096,6 +2171,7 @@ function updateEpgVisibility(view) {
         // scroll or yank rows out from under the cursor. Hide filters cull on next render.
         var row = cb.closest ? cb.closest('.exclusionItemRow') : null;
         if (row) restyleDedupedRow(instance, type, row, ids);
+        refreshDedupedTallies(instance, type);
     }
 
     // Sets the right-side reviewed toggle's appearance for a row: hidden when excluded
@@ -2120,7 +2196,7 @@ function updateEpgVisibility(view) {
         for (var i = 0; i < ids.length; i++) {
             if (!excludedSet[ids[i]]) { allExcluded = false; break; }
         }
-        var reviewed = isTitleReviewed(instance, cfg, ids);
+        var reviewed = isTitleReviewed(instance, cfg, ids, excludedSet);
         var cb = row.querySelector('.dedupedItemCheckbox');
         if (cb) cb.checked = !allExcluded;
         var nameEl = row.querySelector('.dedupedItemName');
@@ -2145,6 +2221,7 @@ function updateEpgVisibility(view) {
             else reviewed[ids[i]] = true;
         }
         if (row) restyleDedupedRow(instance, type, row, ids);
+        refreshDedupedTallies(instance, type);
     }
 
     // Writes the de-dup count line ("M of N titles (R reviewed, X excluded)"), offering a
@@ -2195,7 +2272,7 @@ function updateEpgVisibility(view) {
             var allExcluded = ids.length > 0;
             for (var k = 0; k < ids.length; k++) { if (!excludedSet[ids[k]]) { allExcluded = false; break; } }
             if (allExcluded) excludedCount++;
-            if (isTitleReviewed(instance, cfg, ids)) reviewedCount++;
+            if (isTitleReviewed(instance, cfg, ids, excludedSet)) reviewedCount++;
         }
         writeDedupedCountLine(cfg, countEl, matches.length, scoped.length, reviewedCount, excludedCount,
             instance[cfg.prefix + 'DedupedShowAll']);
@@ -2281,7 +2358,16 @@ function updateEpgVisibility(view) {
                 restyleDedupedRow(instance, type, rows[r], parseItemIds(rows[r].getAttribute('data-item-ids')));
             }
         }
+        refreshDedupedTallies(instance, type);
+    }
+
+    // Every derived number the view shows, refreshed together. Both are computed from
+    // reviewed/excluded state, so any edit — one title or a whole batch — invalidates both, and
+    // updating one without the other is how displays start disagreeing. Single point of call so
+    // that cannot drift.
+    function refreshDedupedTallies(instance, type) {
         updateDedupedCountLine(instance, type);
+        updateDedupedCatFilterCounts(instance, type);
     }
 
     // "Mark all matching reviewed" — adds every id in the current filtered match set (all

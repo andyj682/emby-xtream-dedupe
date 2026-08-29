@@ -561,18 +561,6 @@
                         </div>
                     </div>
 
-                    <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.5em;">
-                        <label>
-                            <input class="chkRefreshDispatcharrEpisodes" type="checkbox" is="emby-checkbox" />
-                            <span>Refresh Dispatcharr episode data</span>
-                        </label>
-                        <div class="fieldDescription checkboxFieldDescription">
-                            Asks Dispatcharr to refresh episode streams for every duplicate copy of a show
-                            (each provider/category) after a series sync, so that all copies are available
-                            to serve. Throttled to once per copy per 24h.
-                        </div>
-                    </div>
-
                     <!-- Auto-Sync Schedule -->
                     <h3 class="sectionTitle" style="font-size:0.95em; margin-top:1.2em;">Auto-Sync Schedule</h3>
                     <div class="checkboxContainer checkboxContainer-withDescription">
@@ -888,7 +876,7 @@
                                             <span style="opacity:0.7;">Filter this list by category:</span>
                                             <button type="button" class="vodDedupedCatAll" style="cursor:pointer;">All</button>
                                             <button type="button" class="vodDedupedCatNone" style="cursor:pointer;">None</button>
-                                            <span style="opacity:0.55;">(view filter only — doesn't change what syncs; unticking all hides the list)</span>
+                                            <span style="opacity:0.55;">(view filter only — doesn't change what syncs; unticking all hides the list. Counts follow your search and Show/Reviewed filters; a title listed in several categories counts in each.)</span>
                                         </div>
                                         <div class="vodDedupedCatFilterList" style="max-height:160px; overflow-y:auto; border:1px solid rgba(128,128,128,0.15); border-radius:4px; padding:0.4em; display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:0.1em 1em;"></div>
                                     </div>
@@ -1068,7 +1056,7 @@
                                             <span style="opacity:0.7;">Filter this list by category:</span>
                                             <button type="button" class="seriesDedupedCatAll" style="cursor:pointer;">All</button>
                                             <button type="button" class="seriesDedupedCatNone" style="cursor:pointer;">None</button>
-                                            <span style="opacity:0.55;">(view filter only — doesn't change what syncs; unticking all hides the list)</span>
+                                            <span style="opacity:0.55;">(view filter only — doesn't change what syncs; unticking all hides the list. Counts follow your search and Show/Reviewed filters; a title listed in several categories counts in each.)</span>
                                         </div>
                                         <div class="seriesDedupedCatFilterList" style="max-height:160px; overflow-y:auto; border:1px solid rgba(128,128,128,0.15); border-radius:4px; padding:0.4em; display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:0.1em 1em;"></div>
                                     </div>

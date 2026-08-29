@@ -8,6 +8,42 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Added
+
+- **The de-dup view's category filter now shows how many titles each category contributes.**
+  With the Reviewed filter set to Unreviewed, this turns one undifferentiated backlog into a
+  breakdown you can plan against — you can see which categories your unreviewed titles are
+  actually in and work through them one at a time, and a category showing (0) is one you've
+  finished. The counts follow your search and Show/Reviewed filters but deliberately ignore the
+  category ticks themselves, so unticking a category doesn't blank its own count and you can
+  always tick it back knowing what's behind it. A title listed in several categories counts in
+  each, so the numbers overlap rather than dividing the total up.
+
+### Fixed
+
+- **Reviewing or excluding a single title now updates the counts immediately.** Previously the
+  count line only caught up on the next search, filter change or reload, so it could sit there
+  disagreeing with what you'd just done.
+
+### Removed
+
+- **The "Refresh Dispatcharr episode data" setting has been removed.** It asked Dispatcharr to
+  refresh episode data for the duplicate copies of a show that don't get written to disk. Testing
+  since showed it cannot affect anything you actually watch: where Dispatcharr has linked a show's
+  copies together, the normal sync already refreshes all of them, and where it hasn't, the copies
+  are separate records whose episodes nothing in your library points at. Leaving it switched on
+  also made a server-side sweep permanently slower for no benefit. **If you had it enabled**, the
+  replacement is a server-side episode sweep such as
+  [dispatcharr_vod_episode_sweep](https://github.com/andyj682/dispatcharr_vod_episode_sweep) —
+  see the new "Related projects" section in the README. Full reasoning in ADR-018.
+
+### Changed
+
+- **The README now says plainly that a `.strm` generator alone will not keep episodes up to date.**
+  Nothing in a normal sync makes Dispatcharr look for new episodes of shows you already have, so
+  without a server-side sweep they can silently never appear. That surprises people, and it is a
+  property of how this works rather than a bug, so it now has its own section.
+
 ## [1.4.1] - 2026-08-28
 
 ### Fixed

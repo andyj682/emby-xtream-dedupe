@@ -158,12 +158,6 @@ namespace Emby.Xtream.Plugin.Service
         internal int SeriesDetailMaxAttempts = 3;
         internal int SeriesDetailRetryBaseDelayMs = 500;
 
-        // Re-poke window for RefreshDispatcharrEpisodes: a relation is re-refreshed at most once per
-        // this interval. NEW relations (not yet in the log) are always poked on first sight; existing
-        // ones are re-checked weekly — enough to catch a stream added to a relation, without the
-        // daily churn a short window causes. Internal so tests can force/skip pokes.
-        internal long DispatcharrRefreshThrottleSeconds = 7 * 24 * 60 * 60;
-
         // Single-flight gates. Each sync replaces its progress object wholesale and shares a
         // written-path set, so two overlapping runs of the same kind corrupt each other's state.
         // Movies and series are gated separately because they touch different roots and are
@@ -427,126 +421,6 @@ namespace Emby.Xtream.Plugin.Service
             if (hashes == null || hashes.IsEmpty)
                 return string.Empty;
             return STJ.JsonSerializer.Serialize(hashes);
-        }
-
-        internal static Dictionary<string, long> DeserializeRefreshLog(string json)
-        {
-            if (string.IsNullOrWhiteSpace(json))
-                return new Dictionary<string, long>();
-            try
-            {
-                return STJ.JsonSerializer.Deserialize<Dictionary<string, long>>(json)
-                       ?? new Dictionary<string, long>();
-            }
-            catch
-            {
-                return new Dictionary<string, long>();
-            }
-        }
-
-        // Pokes XC get_series_info for each collapsed-away relation purely to trigger Dispatcharr's
-        // per-relation episode refresh (side effect); the response body is discarded. Throttled per
-        // relation via DispatcharrEpisodeRefreshLogJson so we never make a call Dispatcharr would
-        // just answer from cache. Best-effort: failures are swallowed and retried next sync.
-        private async Task RefreshDispatcharrEpisodesAsync(
-            List<int> relationIds, PluginConfiguration config, Action saveConfig, CancellationToken cancellationToken)
-        {
-            var log = DeserializeRefreshLog(config.DispatcharrEpisodeRefreshLogJson);
-            var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-
-            var due = new List<int>();
-            var seen = new HashSet<int>();
-            var throttled = 0;
-            foreach (var id in relationIds)
-            {
-                if (!seen.Add(id)) continue;
-                long last;
-                if (log.TryGetValue(id.ToString(CultureInfo.InvariantCulture), out last)
-                    && nowUnix - last < DispatcharrRefreshThrottleSeconds)
-                {
-                    throttled++;
-                    continue;
-                }
-                due.Add(id);
-            }
-
-            var succeeded = 0;
-            if (due.Count > 0)
-            {
-                // Surface this as its own phase so a heavy (e.g. weekly) refresh pass reads as
-                // progress instead of a hung 100% "Writing STRM files".
-                _seriesProgress.Phase = "Refreshing Dispatcharr episode data";
-                var refreshed = new ConcurrentDictionary<int, long>();
-                var semaphore = new SemaphoreSlim(ResolveSyncParallelism(config));
-                var tasks = due.Select(async id =>
-                {
-                    await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    try
-                    {
-                        if (await PokeSeriesEpisodeRefreshAsync(id, config, cancellationToken).ConfigureAwait(false))
-                            refreshed[id] = nowUnix;
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                });
-                await Task.WhenAll(tasks).ConfigureAwait(false);
-
-                // Record only successful pokes (a failed one stays un-throttled → retries next sync).
-                foreach (var kv in refreshed)
-                    log[kv.Key.ToString(CultureInfo.InvariantCulture)] = kv.Value;
-                succeeded = refreshed.Count;
-            }
-
-            // Prune only EXPIRED entries (last poke older than the throttle window). Dropping them
-            // changes no behaviour (they'd re-poke anyway) but bounds the log; keeping still-valid
-            // entries preserves throttle memory for siblings that aren't in THIS sync's scope —
-            // delta + exclusions mean the sibling set varies from sync to sync, so pruning to the
-            // current set would wipe the throttle almost every run.
-            var pruned = new Dictionary<string, long>();
-            foreach (var kv in log)
-                if (nowUnix - kv.Value < DispatcharrRefreshThrottleSeconds)
-                    pruned[kv.Key] = kv.Value;
-
-            config.DispatcharrEpisodeRefreshLogJson = pruned.Count == 0
-                ? string.Empty
-                : STJ.JsonSerializer.Serialize(pruned);
-            saveConfig?.Invoke();
-
-            // Always log a one-line summary so a sync's refresh outcome is visible and the throttle
-            // is observable: sync 1 shows refreshed>0, an immediate sync 2 shows skipped>0.
-            _logger.Info(
-                "Dispatcharr episode refresh: {0} sibling relation(s) in scope, {1} refreshed, {2} skipped (throttled <24h), {3} failed",
-                seen.Count, succeeded, throttled, due.Count - succeeded);
-        }
-
-        // Fires get_series_info for one relation to trigger Dispatcharr's episode refresh side
-        // effect. Returns true if the call completed (2xx). The body is intentionally NOT read —
-        // ResponseHeadersRead means we get headers once the (synchronous) refresh has run, without
-        // downloading the episode JSON we don't need (the main loop fetches that for reps).
-        private async Task<bool> PokeSeriesEpisodeRefreshAsync(
-            int seriesId, PluginConfiguration config, CancellationToken cancellationToken)
-        {
-            var url = string.Format(
-                CultureInfo.InvariantCulture,
-                "{0}/player_api.php?username={1}&password={2}&action=get_series_info&series_id={3}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty),
-                Uri.EscapeDataString(config.Password ?? string.Empty), seriesId);
-            try
-            {
-                using (var resp = await _httpClient
-                    .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                    .ConfigureAwait(false))
-                {
-                    return resp.IsSuccessStatusCode;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Warn("Episode refresh poke failed for series_id {0}: {1}", seriesId, ex.Message);
-                return false;
-            }
         }
 
         public SyncProgress MovieProgress => _movieProgress;
@@ -1489,7 +1363,6 @@ namespace Emby.Xtream.Plugin.Service
                 // alongside config.SeriesEpisodeHashesJson in the naming-flags reset further
                 // down, so the skip paths still see an empty cache on a forced re-sync.
                 var storedHashes = DeserializeEpisodeHashes(config.SeriesEpisodeHashesJson);
-                var refreshOnlyIds = new List<int>();
                 if (allSeries.Count > 1)
                 {
                     // Order the candidates before the first-wins pick, so the representative is
@@ -1515,13 +1388,6 @@ namespace Emby.Xtream.Plugin.Service
                         if (keptKeys.Add(folderKey))
                         {
                             collapsedSeries.Add(s);
-                        }
-                        else if (config.RefreshDispatcharrEpisodes)
-                        {
-                            // Collapsed-away sibling: a distinct M3USeriesRelation (other provider
-                            // or category) for the same show. The main loop never fetches its
-                            // episodes, so poke get_series_info for it below purely to refresh.
-                            refreshOnlyIds.Add(s.SeriesId);
                         }
                     }
 
@@ -2031,18 +1897,12 @@ namespace Emby.Xtream.Plugin.Service
 
                 await Task.WhenAll(tasks).ConfigureAwait(false);
 
-                // Keep Dispatcharr's per-relation episode data fresh for the copies that
-                // output-collapse hid. Episode refresh in Dispatcharr is per M3USeriesRelation
-                // (per provider AND per category), so the representative processed above refreshed
-                // only one relation; cross-listed siblings' episode streams stay invisible to
-                // Dispatcharr's stream selection until something calls get_series_info for them.
-                // Opt-in, throttled to once per relation per 24h (mirrors Dispatcharr's own gate).
-                if (config.RefreshDispatcharrEpisodes)
-                {
-                    await RefreshDispatcharrEpisodesAsync(refreshOnlyIds, config, saveConfig, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-
+                // Keeping Dispatcharr's own episode data fresh is deliberately NOT this plugin's
+                // job — see ADR-018. A server-side sweep owns that, and a sync-time poke of
+                // collapsed-away siblings turned out to be inert: get_series_info already returns
+                // the union across the relations behind one series record, and a sibling that
+                // Dispatcharr has NOT linked to that record is a separate series whose episodes
+                // nothing in the library points at.
                 if (reviewGateOn)
                 {
                     // Additive only, as on the movie side: the gate never marks anything

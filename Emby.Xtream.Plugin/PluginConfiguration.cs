@@ -152,13 +152,6 @@ namespace Emby.Xtream.Plugin
         /// </summary>
         public bool RefreshEmbyLibraryAfterSync { get; set; } = true;
 
-        // When enabled, after each series sync the plugin calls XC get_series_info for every
-        // Dispatcharr relation (per provider AND per category) of each curated show — not just
-        // the one representative kept after collapse — purely to trigger Dispatcharr's
-        // per-relation episode refresh so its stream selection sees the full candidate set.
-        // Throttled to once per relation per 24h (see DispatcharrEpisodeRefreshLogJson).
-        public bool RefreshDispatcharrEpisodes { get; set; }
-
         /// <summary>Max requests/second to the Xtream provider. 0 = disabled (no throttle).</summary>
         public int XtreamRequestsPerSecond { get; set; } = 0;
 
@@ -192,13 +185,6 @@ namespace Emby.Xtream.Plugin
         /// Used to skip per-episode file I/O when the episode list hasn't changed.
         /// </summary>
         public string SeriesEpisodeHashesJson { get; set; } = string.Empty;
-
-        /// <summary>
-        /// JSON dictionary mapping series_id → last episode-refresh poke time (Unix seconds).
-        /// Throttles RefreshDispatcharrEpisodes to one get_series_info per relation per 24h,
-        /// mirroring Dispatcharr's own gate so no poke is a wasted cached call.
-        /// </summary>
-        public string DispatcharrEpisodeRefreshLogJson { get; set; } = string.Empty;
 
         // Tracks which folder naming flags were active during the last series sync.
         // A change triggers automatic full re-sync so the pre-fetch skip can't match stale paths.

@@ -61,14 +61,46 @@ on top of the existing per-title exclusion:
 - **Sync robustness for duplicates** — cross-listed series collapse to one folder instead of
   writing duplicate per-episode files, and series whose episode list returns empty under load are
   retried so a batch of new titles lands in one sync.
-- **Dispatcharr episode refresh on sync** — Dispatcharr fetches a series' episode
-  streams lazily, so alternate versions (e.g. a 4K copy listed under another category) can stay
-  invisible to its stream selection. Enable this and each sync nudges Dispatcharr to refresh
-  episodes for every copy of the series you sync — not just the one written to disk — so all your
-  providers' streams become available for Dispatcharr to serve. Throttled to about once a week per
-  copy; covers only copies in the categories you sync. *(A newly-added series can take two syncs to
-  show all its episodes: Dispatcharr fills in episode data during the refresh, so the first pass may
-  write a partial list and the next completes it.)*
+## Related projects
+
+This plugin is one of four small projects that together run a Dispatcharr-backed VOD library in
+Emby. Each is useful on its own, but they were built to fit together, and one dependency is worth
+stating plainly before you rely on this one.
+
+- **[dispatcharr_vod_concurrency_fix](https://github.com/andyj682/dispatcharr_vod_concurrency_fix)**
+  — coalesces the near-simultaneous range requests some clients (notably Emby) make when playing
+  MKV VOD files, so they share one provider slot instead of failing over to a different file and
+  corrupting playback.
+- **[dispatcharr_vod_preferences](https://github.com/andyj682/dispatcharr_vod_preferences)**
+  — control over which VOD stream Dispatcharr serves through its proxy for a given title, which
+  clients cannot otherwise reach. Composable options to prefer better video or audio quality, or
+  to remember a specific stream or provider.
+- **[dispatcharr_vod_episode_sweep](https://github.com/andyj682/dispatcharr_vod_episode_sweep)**
+  — learns which VOD series a client syncs, then once a day refreshes all of each watched show's
+  provider and category relations, so new episodes stop going missing. Scoped to only the series
+  you sync; runs in the background.
+- **emby-xtream-dedupe** *(this repo)* — generates `.strm` files for Emby from a Dispatcharr
+  catalog, de-duplicating titles cross-listed across categories and holding new arrivals for
+  review before they reach your library.
+
+### A `.strm` generator alone will not keep your episodes up to date
+
+A `.strm` generator writes files for the episodes Dispatcharr already knows about. It does not —
+and cannot — make Dispatcharr go and look for new ones. Dispatcharr refreshes a series' episode
+data lazily, and nothing in a normal sync forces that refresh: a healthy, settled library makes no
+episode-detail calls at all, precisely because nothing has changed from its point of view.
+
+So without a server-side sweep, new episodes of shows you already have can simply never appear.
+The library looks healthy, the syncs report success, and the missing episodes are invisible
+because nothing ever asked for them.
+
+[dispatcharr_vod_episode_sweep](https://github.com/andyj682/dispatcharr_vod_episode_sweep) exists
+to close exactly that gap, and is designed to run alongside a `.strm` generator like this one. It
+learns which series a client actually syncs, so it stays scoped to your library rather than
+hammering the whole catalog, and refreshes every provider and category relation of each show
+once a day. Any equivalent server-side refresh will do — the requirement is that *something*
+periodically makes Dispatcharr re-check its providers for new episodes. If you run this plugin
+without one, treat missing episodes as expected rather than as a bug here.
 
 ## Features
 
