@@ -1944,6 +1944,12 @@ function updateEpgVisibility(view) {
         var reviewedFilter = instance[cfg.prefix + 'DedupedReviewedFilter'] || 'all';
 
         var matches = [];
+        // The SCOPED set: everything passing search + category, before the tri-state filters.
+        // This is the basis the reviewed/excluded tallies are counted on (see below), so it has
+        // to be remembered — updateDedupedCountLine used to re-tally over `matches` instead,
+        // which has the tri-state filters applied too, and the mismatch made a bulk action look
+        // like it had changed the counts when nothing had changed.
+        var scoped = [];
         var reviewedCount = 0;
         var excludedCount = 0;
         var data = instance[cfg.dataKey] || [];
@@ -1969,6 +1975,7 @@ function updateEpgVisibility(view) {
                 if (!excluded[tIds[e2]]) { allExcluded = false; break; }
             }
             t._excluded = allExcluded;
+            scoped.push(t);
             if (t._reviewed) reviewedCount++;
             if (t._excluded) excludedCount++;
             // Tri-state view filters (default All, counted above so totals ignore them).
@@ -1982,8 +1989,10 @@ function updateEpgVisibility(view) {
             matches.push(t);
         }
         // Remember the full filtered set so bulk actions apply to all matches, not just
-        // the capped rows that are rendered.
+        // the capped rows that are rendered, and the scoped set so the count line can be
+        // re-tallied on the same basis without a full re-render.
         instance[cfg.prefix + 'DedupedMatches'] = matches;
+        instance[cfg.prefix + 'DedupedScoped'] = scoped;
 
         var showAll = instance[cfg.prefix + 'DedupedShowAll'];
         var renderCap = showAll ? matches.length : DEDUPED_RENDER_CAP;
@@ -2021,7 +2030,13 @@ function updateEpgVisibility(view) {
 
         // Count line: "M of N titles (R reviewed, X excluded)", with a one-click "Show all"
         // when the match set exceeds the render cap. Shared with the sticky bulk-action path.
-        writeDedupedCountLine(cfg, countEl, matches.length, data.length, reviewedCount, excludedCount, showAll);
+        // Denominator is the SCOPED count, not the whole dataset, so all three numbers on the
+        // line share one basis: "M of S titles (R reviewed, X excluded)" reads as M shown out of
+        // S matching your search, of which R and X. Previously S was the full list while R and X
+        // were over the search-filtered subset, so with a search active the line silently mixed
+        // two populations. The full list size is not lost — the status line above still reports
+        // "Loaded N unique titles".
+        writeDedupedCountLine(cfg, countEl, matches.length, scoped.length, reviewedCount, excludedCount, showAll);
     }
 
     // Tri-state view filters for the de-dup list (session-only). kind = 'Show' | 'Reviewed'.
@@ -2135,42 +2150,54 @@ function updateEpgVisibility(view) {
     // Writes the de-dup count line ("M of N titles (R reviewed, X excluded)"), offering a
     // one-click "Show all" when the match set exceeds the render cap. Shared by renderDedupedList
     // and the sticky bulk-action path so both format the line identically.
-    function writeDedupedCountLine(cfg, countEl, matchLen, dataLen, reviewedCount, excludedCount, showAll) {
+    // `scopedLen` is the search + category set; `matchLen` is that set narrowed by the tri-state
+    // filters. The reviewed/excluded tallies are over SCOPED, so every branch prints scopedLen
+    // immediately before them — otherwise the parenthetical reads as though it described
+    // matchLen, which is what made "Showing 300 of 885 (9020 reviewed, 9020 excluded)"
+    // nonsensical. The capped branch never printed a basis at all.
+    function writeDedupedCountLine(cfg, countEl, matchLen, scopedLen, reviewedCount, excludedCount, showAll) {
         if (!countEl) return;
         var notes = [];
         if (reviewedCount > 0) notes.push(reviewedCount + ' reviewed');
         if (excludedCount > 0) notes.push(excludedCount + ' excluded');
         var suffix = notes.length ? ' (' + notes.join(', ') + ')' : '';
+        // Only worth restating the basis when the filters actually narrowed it; with no
+        // tri-state filter the two are the same number and repeating it just adds noise.
+        var basis = matchLen === scopedLen ? '' : ' from ' + scopedLen;
         if (matchLen > DEDUPED_RENDER_CAP && !showAll) {
-            countEl.innerHTML = 'Showing ' + DEDUPED_RENDER_CAP + ' of ' + matchLen + suffix +
+            countEl.innerHTML = 'Showing ' + DEDUPED_RENDER_CAP + ' of ' + matchLen + basis + ' titles' + suffix +
                 ' — <button type="button" class="' + cfg.prefix + 'DedupedShowAll" style="cursor:pointer;">Show all ' + matchLen + '</button> or refine your search';
         } else if (showAll && matchLen > DEDUPED_RENDER_CAP) {
-            countEl.textContent = 'Showing all ' + matchLen + ' of ' + dataLen + ' titles' + suffix;
+            countEl.textContent = 'Showing all ' + matchLen + basis + ' titles' + suffix;
         } else {
-            countEl.textContent = matchLen + ' of ' + dataLen + ' titles' + suffix;
+            countEl.textContent = matchLen + basis + ' titles' + suffix;
         }
     }
 
-    // Recomputes only the count line's reviewed/excluded tallies over the CURRENT match set
-    // (the visible rows), without re-filtering or re-rendering — for the sticky bulk path, where
-    // the rows stay put and only their state changed.
+    // Recomputes the count line without re-filtering or re-rendering — for the bulk paths, where
+    // the rows stay put and only their state changed. Must tally on exactly the same basis as
+    // renderDedupedList or the numbers appear to move when nothing has.
     function updateDedupedCountLine(instance, type) {
         var cfg = dedupedConfig(type);
         var countEl = instance.view.querySelector('.' + cfg.prefix + 'DedupedCount');
         if (!countEl) return;
         var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
-        var data = instance[cfg.dataKey] || [];
+        // Tally over the SCOPED set, matching renderDedupedList exactly. Tallying over `matches`
+        // here was the bug: matches has the tri-state filters applied as well, so switching to
+        // this writer changed the numbers on its own. Observed as the reviewed count moving
+        // 9,021 → 9,020 on a bulk click that provably modified nothing.
+        var scoped = instance[cfg.prefix + 'DedupedScoped'] || [];
         var excludedSet = {};
         (instance[cfg.excludeKey] || []).forEach(function (id) { excludedSet[id] = true; });
         var reviewedCount = 0, excludedCount = 0;
-        for (var i = 0; i < matches.length; i++) {
-            var ids = matches[i].Ids || [];
+        for (var i = 0; i < scoped.length; i++) {
+            var ids = scoped[i].Ids || [];
             var allExcluded = ids.length > 0;
             for (var k = 0; k < ids.length; k++) { if (!excludedSet[ids[k]]) { allExcluded = false; break; } }
             if (allExcluded) excludedCount++;
             if (isTitleReviewed(instance, cfg, ids)) reviewedCount++;
         }
-        writeDedupedCountLine(cfg, countEl, matches.length, data.length, reviewedCount, excludedCount,
+        writeDedupedCountLine(cfg, countEl, matches.length, scoped.length, reviewedCount, excludedCount,
             instance[cfg.prefix + 'DedupedShowAll']);
     }
 
@@ -2234,6 +2261,19 @@ function updateEpgVisibility(view) {
                 }
             }
         }
+        refreshDedupedRowsInPlace(instance, type);
+    }
+
+    // Restyles the rendered rows and refreshes the count line WITHOUT re-filtering or
+    // re-rendering, so a bulk action leaves its batch on screen. That matters because none of
+    // these actions is undoable from the page: if the rows vanish the moment you click, a
+    // mis-aimed bulk has no visible evidence left to correct. Bulk exclusion always behaved
+    // this way; the mark buttons used to call renderDedupedList and cull their own batch, which
+    // under the Unreviewed filter meant marking titles reviewed emptied the list instantly.
+    // The match set is left intact, so a follow-up bulk action still targets exactly what is
+    // on screen, and the next genuine refresh (search, category change, Load) culls it.
+    function refreshDedupedRowsInPlace(instance, type) {
+        var cfg = dedupedConfig(type);
         var listEl = instance.view.querySelector('.' + cfg.prefix + 'DedupedList');
         if (listEl) {
             var rows = listEl.querySelectorAll('.exclusionItemRow');
@@ -2246,9 +2286,9 @@ function updateEpgVisibility(view) {
 
     // "Mark all matching reviewed" — adds every id in the current filtered match set (all
     // matches, not just the capped rows) to the reviewed set. With the Reviewed: Unreviewed
-    // filter on, the match set IS the unreviewed worklist, so this clears it; otherwise it
-    // marks the whole filtered list reviewed. Does not change exclusions — reviewing is
-    // orthogonal to keep/exclude.
+    // filter on, the match set IS the unreviewed worklist, so this clears it. Does not change
+    // exclusions — reviewing is orthogonal to keep/exclude. The rows stay on screen showing
+    // their new state rather than being culled immediately; see refreshDedupedRowsInPlace.
     function bulkMarkReviewed(instance, type) {
         var cfg = dedupedConfig(type);
         var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
@@ -2259,13 +2299,14 @@ function updateEpgVisibility(view) {
             var ids = matches[i].Ids || [];
             for (var k = 0; k < ids.length; k++) { reviewed[ids[k]] = true; }
         }
-        renderDedupedList(instance, type);
+        refreshDedupedRowsInPlace(instance, type);
     }
 
     // "Mark all matching unreviewed" — the inverse: clears the reviewed set for every id in the
     // current filtered match set. Exclusions are untouched, so excluded titles stay reviewed
     // by derivation (re-include them to make them un-reviewable). Handy for undoing a bulk
-    // mark or re-surfacing a batch in the unreviewed worklist.
+    // mark or re-surfacing a batch in the unreviewed worklist — and because the batch stays on
+    // screen after either button, undoing one with the other now works without re-filtering.
     function bulkMarkUnreviewed(instance, type) {
         var cfg = dedupedConfig(type);
         var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
@@ -2276,7 +2317,7 @@ function updateEpgVisibility(view) {
             var ids = matches[i].Ids || [];
             for (var k = 0; k < ids.length; k++) { delete reviewed[ids[k]]; }
         }
-        renderDedupedList(instance, type);
+        refreshDedupedRowsInPlace(instance, type);
     }
 
     // ---- De-dup / Browse mode toggle ----

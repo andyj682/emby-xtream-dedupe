@@ -32,6 +32,13 @@ starting at 1.0.0 — independent of upstream
   work. The sync side already made this distinction; the config page was the last place that
   did not.
 
+- **The de-dup view's count line no longer appears to change on its own.** Two different pieces
+  of code wrote that line and counted on two different bases, so clicking a bulk action could
+  move the "reviewed" number even when the click provably changed nothing. The line also paired
+  a filtered count with unfiltered totals, so with a search or filter active its two halves were
+  describing different sets of titles. All the numbers on it now come from the same set, and the
+  line says which set that is when a filter has narrowed it.
+
 ### Changed
 
 - **Bulk actions in the de-dup view now ask before rewriting a very large batch.** "Mark all
@@ -40,6 +47,11 @@ starting at 1.0.0 — independent of upstream
   decision, with no way to undo it from the page. Batches over 500 titles now confirm first
   and say how many titles they will affect. Normal use — search for a show, act on a few — is
   unchanged.
+- **"Mark all matching reviewed" and its inverse now leave the titles on screen.** They used to
+  re-filter immediately, so with the Unreviewed filter on the batch you just marked vanished the
+  instant you clicked — which is exactly when you would want to check it, since none of these
+  actions can be undone from the page. They now behave like the bulk include/exclude buttons,
+  which have always kept the batch visible. The next search, filter change or reload clears it.
 
 ## [1.4.0] - 2026-08-28
 
