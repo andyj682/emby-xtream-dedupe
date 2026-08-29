@@ -106,6 +106,14 @@ namespace Emby.Xtream.Plugin.Service
             @"\[tmdbid=(\d+)\]",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+        // Season folders are written by this plugin as "Season {0:D2}" (see the episode write
+        // paths), so this matches a shape we control rather than guessing at what a user or
+        // another tool might have named things. Used ONLY to keep season subfolders out of the
+        // "N shows already on disk" count — never to decide what goes into the index.
+        private static readonly Regex SeasonFolderRegex = new Regex(
+            @"^Season \d+$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         // Matches the old title-bearing episode filename, capturing the part to keep:
         // "Show - S01E02 - Some Title" → "Show - S01E02". Lazy so a title that itself
         // contains an episode code ("Recap of S01E01") splits at the first code, not the last.
@@ -341,14 +349,29 @@ namespace Emby.Xtream.Plugin.Service
         /// are exactly the titles that must not be withheld: a held title's files are not added
         /// to the written set, so orphan cleanup would treat them as stale and delete them.
         /// Matching on the stripped name as well means anything actually on disk is recognised.
+        ///
+        /// The walk is deliberately recursive, and that is load-bearing rather than sloppy: in
+        /// single-folder mode a show sits at <c>Shows/&lt;Show&gt;</c>, but in Multiple/Custom
+        /// folder mode at <c>Shows/&lt;Category&gt;/&lt;Show&gt;</c>. A top-level-only walk would
+        /// index the category folders instead of the shows, every
+        /// <c>folderNames.Contains(seriesName)</c> would miss, and the review gate would withhold
+        /// shows that are sitting on disk. Recursing keeps the index folder-mode-agnostic.
         /// </remarks>
-        internal static void BuildLibraryIdentityIndex(
+        /// <returns>
+        /// The number of distinct title-level folder names indexed — <paramref name="folderNames"/>
+        /// less the season subfolders that recursing unavoidably picks up. Only the COUNT excludes
+        /// them; both sets are still populated exactly as before, so matching is unaffected. This
+        /// exists because the count is what gets logged as "N shows already on disk", and counting
+        /// the raw set overstated it (934 reported against 881 real shows on a live run).
+        /// </returns>
+        internal static int BuildLibraryIdentityIndex(
             string libraryPath, string rootFolder, HashSet<int> tmdbIds, HashSet<string> folderNames)
         {
+            var titleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var root = Path.Combine(libraryPath, rootFolder);
             if (!Directory.Exists(root))
             {
-                return;
+                return 0;
             }
 
             foreach (var dir in Directory.GetDirectories(root, "*", SearchOption.AllDirectories))
@@ -374,8 +397,14 @@ namespace Emby.Xtream.Plugin.Service
                 if (!string.IsNullOrEmpty(stripped))
                 {
                     folderNames.Add(stripped);
+                    if (!SeasonFolderRegex.IsMatch(stripped))
+                    {
+                        titleNames.Add(stripped);
+                    }
                 }
             }
+
+            return titleNames.Count;
         }
 
         internal static Dictionary<string, string> DeserializeEpisodeHashes(string json)
@@ -892,10 +921,11 @@ namespace Emby.Xtream.Plugin.Service
                 var libraryFolderNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 if (reviewGateOn)
                 {
-                    BuildLibraryIdentityIndex(config.StrmLibraryPath, "Movies", libraryTmdbIds, libraryFolderNames);
+                    var moviesOnDisk = BuildLibraryIdentityIndex(
+                        config.StrmLibraryPath, "Movies", libraryTmdbIds, libraryFolderNames);
                     _logger.Info(
                         "Review gate on: {0} reviewed movie ids, {1} titles already on disk ({2} with a TMDB id in the folder name)",
-                        reviewedVodSet.Count, libraryFolderNames.Count, libraryTmdbIds.Count);
+                        reviewedVodSet.Count, moviesOnDisk, libraryTmdbIds.Count);
                 }
 
                 var heldForReview = 0;
@@ -1577,10 +1607,11 @@ namespace Emby.Xtream.Plugin.Service
                 var libraryFolderNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 if (reviewGateOn)
                 {
-                    BuildLibraryIdentityIndex(config.StrmLibraryPath, "Shows", libraryTmdbIds, libraryFolderNames);
+                    var showsOnDisk = BuildLibraryIdentityIndex(
+                        config.StrmLibraryPath, "Shows", libraryTmdbIds, libraryFolderNames);
                     _logger.Info(
                         "Review gate on: {0} reviewed series ids, {1} shows already on disk, {2} with a stored episode hash",
-                        reviewedSeriesSet.Count, libraryFolderNames.Count, storedHashes.Count);
+                        reviewedSeriesSet.Count, showsOnDisk, storedHashes.Count);
                 }
 
                 var heldForReview = 0;
