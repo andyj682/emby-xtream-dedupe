@@ -8,6 +8,39 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Fixed
+
+- **Shows you have already reviewed no longer drift back into the unreviewed queue.** Your
+  provider gives the same show a separate ID in every category it appears in, and it gains a
+  new one every day or two as categories and provider relations shuffle. The de-dup view used
+  to require *every* one of a title's IDs to be reviewed, so each new ID quietly undid a
+  review you had already done — and because the drift never stops, the same handful of shows
+  reappeared in the queue every morning. A title now counts as reviewed once **any** of its
+  IDs is. Reviewing a title still records every ID it has, so nothing about the stored list
+  changes; only titles that gained an ID *after* you reviewed them are read differently.
+  Movies are unaffected either way — a movie has exactly one ID by construction. Syncing was
+  always correct here; this was the display catching up with it.
+- **The config page can no longer wipe your exclusion and reviewed lists when it fails to read
+  them.** If one of those four lists came back in a form the page could not parse, it was
+  treated as empty — and the next save, from any tab, wrote that emptiness back over the real
+  thing. On a mature install that is tens of thousands of decisions gone, with no error
+  message and nothing in the log. The page now tells the difference between "empty" and
+  "unreadable": an unreadable list produces a warning naming it — one you have to dismiss, plus
+  a banner that stays at the top of the page until the file is repaired — and is left strictly
+  alone on save rather than overwritten. If you have made review decisions on the page while a list is
+  unreadable, saving offers to replace the stored value rather than silently dropping your
+  work. The sync side already made this distinction; the config page was the last place that
+  did not.
+
+### Changed
+
+- **Bulk actions in the de-dup view now ask before rewriting a very large batch.** "Mark all
+  matching", "Select all matching" and their inverses apply to the entire filtered list, not
+  just the rows on screen — so with no search active, one click could rewrite every stored
+  decision, with no way to undo it from the page. Batches over 500 titles now confirm first
+  and say how many titles they will affect. Normal use — search for a show, act on a few — is
+  unchanged.
+
 ## [1.4.0] - 2026-08-28
 
 ### Added

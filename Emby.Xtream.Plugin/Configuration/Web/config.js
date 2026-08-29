@@ -421,10 +421,119 @@ function (BaseView, loading) {
 
     View.prototype.onPause = function () {};
 
+    // ---- Guarded stores ----
+    // The four fields holding every keep/exclude/review decision the user has ever made:
+    // two int[] blocklists and two JSON reviewed checkpoints, ~70,000 ids between them on a
+    // mature install. They all round-trip through this page — read into `instance` at load,
+    // written back out on every save, including saves that only touched an unrelated
+    // checkbox. So a store that fails to READ and then reads as "empty" is not a display
+    // bug: it is a silent, total loss of the user's decisions on the very next save.
+    //
+    // Table-driven so load, save and the overwrite prompt can never disagree about which
+    // fields are guarded. `label` is user-facing.
+    var GUARDED_STORES = [
+        { key: 'excludedVodStreamIds', configKey: 'ExcludedVodStreamIds', label: 'the movie exclusion list' },
+        { key: 'reviewedVodStreamIds', configKey: 'ReviewedVodStreamIdsJson', label: 'the movie reviewed list' },
+        { key: 'excludedSeriesIds', configKey: 'ExcludedSeriesIds', label: 'the series exclusion list' },
+        { key: 'reviewedSeriesIds', configKey: 'ReviewedSeriesIdsJson', label: 'the series reviewed list' }
+    ];
+
+    function findGuardedStore(key) {
+        for (var i = 0; i < GUARDED_STORES.length; i++) {
+            if (GUARDED_STORES[i].key === key) return GUARDED_STORES[i];
+        }
+        return null;
+    }
+
+    // The exclusion stores round-trip as int[], not JSON, so "absent" and "genuinely empty"
+    // are indistinguishable at this end and neither can be treated as a failure. Only a
+    // present-but-wrong SHAPE is — the one case that would otherwise slice() an empty list
+    // back out over a real one.
+    function parseExcludedList(value) {
+        if (value === null || value === undefined) return [];
+        if (!Array.isArray(value)) return null;
+        return value;
+    }
+
+    // Adopts one store into `instance`, recording whether it was readable. `parsed` is null
+    // when the field was present but unreadable; an unreadable store gets an EMPTY working
+    // copy so the page still functions, plus a flag that saveStore reads to leave the stored
+    // field alone. Absent or genuinely empty is not a failure and is not flagged.
+    function adoptStore(instance, key, parsed, emptyValue, problems) {
+        instance[key + 'OverwriteApproved'] = false;
+        if (parsed !== null) {
+            instance[key] = parsed;
+            instance[key + 'Unreadable'] = false;
+            return;
+        }
+        var store = findGuardedStore(key);
+        var label = store ? store.label : key;
+        instance[key] = emptyValue;
+        instance[key + 'Unreadable'] = true;
+        problems.push(label);
+        console.error('Xtream: ' + label + ' could not be read from the plugin configuration; '
+            + 'it will not be overwritten on save.');
+    }
+
+    // Writes one store back, unless it failed to load. Skipping the assignment IS the fix:
+    // saveConfig mutates a freshly fetched config object, so a field we never touch
+    // round-trips to the server unchanged. Overwriting stays possible, but only through the
+    // explicit prompt in approveStoreOverwrites.
+    function saveStore(instance, config, key, configKey, serialize) {
+        if (instance[key + 'Unreadable'] && !instance[key + 'OverwriteApproved']) return;
+        config[configKey] = serialize(instance[key]);
+    }
+
+    // Escape hatch, so "we refuse to overwrite it" does not also mean "the decisions you just
+    // made vanish without a word". An unreadable store loads EMPTY, so anything in the working
+    // copy was put there in this session — a precise signal for "there is something here worth
+    // saving", and the only case worth interrupting a save for. Declining still saves every
+    // other setting and leaves the stored field exactly as it is.
+    // Surfaces an unreadable store, on two surfaces on purpose. The blocking alert guarantees
+    // first contact — a toast fades whether or not anyone read it, which is exactly what
+    // happened when this was Dashboard.alert. The banner is the half that matters: the
+    // condition outlives the page view, it persists across reloads until the config file is
+    // repaired, and without it the symptom (every title reading unreviewed) has no visible
+    // explanation. Clearing it when there are no problems keeps it honest after a repair.
+    function showStoreGuardWarning(view, problems) {
+        var banner = view.querySelector('.storeGuardBanner');
+        if (!problems.length) {
+            if (banner) banner.style.display = 'none';
+            return;
+        }
+        var msg = 'Xtream could not read ' + problems.join(' and ') + ' from the plugin configuration.';
+        var detail = 'Those titles show here as unreviewed or included, but the stored lists are NOT being '
+            + 'overwritten — saving this page leaves them exactly as they are. Repair the plugin '
+            + 'configuration file before making review decisions.';
+        if (banner) {
+            banner.textContent = msg + ' ' + detail;
+            banner.style.display = '';
+        }
+        alert(msg + '\n\n' + detail);
+    }
+
+    function approveStoreOverwrites(instance) {
+        for (var i = 0; i < GUARDED_STORES.length; i++) {
+            var s = GUARDED_STORES[i];
+            instance[s.key + 'OverwriteApproved'] = false;
+            if (!instance[s.key + 'Unreadable']) continue;
+            var working = instance[s.key];
+            var count = Array.isArray(working) ? working.length : Object.keys(working || {}).length;
+            if (count === 0) continue;
+            instance[s.key + 'OverwriteApproved'] = confirm(
+                'Xtream: ' + s.label + ' could not be read from the plugin configuration, so it is '
+                + 'normally left untouched.\n\nThis page now holds ' + count + ' id(s) for that list. '
+                + 'One title can carry several ids, so that is not a count of the changes you made.\n\n'
+                + 'Replace the unreadable stored value with just those ' + count + ' id(s)?\n\n'
+                + 'Cancel keeps the stored value exactly as it is and discards these changes.');
+        }
+    }
+
     function loadConfig(instance) {
         loading.show();
         ApiClient.getPluginConfiguration(pluginId).then(function (config) {
             var view = instance.view;
+            var storeProblems = [];
 
             view.querySelector('.txtBaseUrl').value = config.BaseUrl || '';
             view.querySelector('.txtUsername').value = config.Username || '';
@@ -484,8 +593,10 @@ function (BaseView, loading) {
             view.querySelector('.selMovieFolderMode').value = movieMode;
             loadFolderEntries(view, 'movie', config.MovieFolderMappings || '', cachedVodCats);
             instance.selectedVodCategoryIds = config.SelectedVodCategoryIds || [];
-            instance.excludedVodStreamIds = config.ExcludedVodStreamIds || [];
-            instance.reviewedVodStreamIds = parseReviewedSet(config.ReviewedVodStreamIdsJson);
+            adoptStore(instance, 'excludedVodStreamIds',
+                parseExcludedList(config.ExcludedVodStreamIds), [], storeProblems);
+            adoptStore(instance, 'reviewedVodStreamIds',
+                parseReviewedSet(config.ReviewedVodStreamIdsJson), {}, storeProblems);
 
             // Series
             view.querySelector('.chkSyncSeries').checked = !!config.SyncSeries;
@@ -494,8 +605,10 @@ function (BaseView, loading) {
             view.querySelector('.selSeriesFolderMode').value = seriesMode;
             loadFolderEntries(view, 'series', config.SeriesFolderMappings || '', cachedSeriesCats);
             instance.selectedSeriesCategoryIds = config.SelectedSeriesCategoryIds || [];
-            instance.excludedSeriesIds = config.ExcludedSeriesIds || [];
-            instance.reviewedSeriesIds = parseReviewedSet(config.ReviewedSeriesIdsJson);
+            adoptStore(instance, 'excludedSeriesIds',
+                parseExcludedList(config.ExcludedSeriesIds), [], storeProblems);
+            adoptStore(instance, 'reviewedSeriesIds',
+                parseReviewedSet(config.ReviewedSeriesIdsJson), {}, storeProblems);
 
             // Update channel
             view.querySelector('.chkUseBetaChannel').checked = !!config.UseBetaChannel;
@@ -550,6 +663,12 @@ function (BaseView, loading) {
 
             loading.hide();
 
+            // Page-level, deliberately not the de-dup view's heal notice: an unreadable store
+            // is overwritten by ANY save from ANY tab, including by a user who never opens
+            // that view, so the warning has to be impossible to miss and has to arrive before
+            // the first save rather than after it.
+            showStoreGuardWarning(view, storeProblems);
+
             // Load cached categories from config (instant, no API call)
             loadCachedCategories(instance, config);
         }).catch(function (err) {
@@ -562,6 +681,10 @@ function (BaseView, loading) {
         loading.show();
         ApiClient.getPluginConfiguration(pluginId).then(function (config) {
             var view = instance.view;
+
+            // Before anything is written: settle whether an unreadable store may be replaced
+            // by this page's working copy. Only prompts when there is something to lose.
+            approveStoreOverwrites(instance);
 
             config.BaseUrl = view.querySelector('.txtBaseUrl').value.replace(/\/+$/, '');
             config.Username = view.querySelector('.txtUsername').value;
@@ -606,16 +729,20 @@ function (BaseView, loading) {
             config.MovieFolderMode = view.querySelector('.selMovieFolderMode').value;
             config.MovieFolderMappings = serializeFolderEntries(view, 'movie');
             config.SelectedVodCategoryIds = getSelectedVodCategoryIds(instance);
-            config.ExcludedVodStreamIds = instance.excludedVodStreamIds.slice();
-            config.ReviewedVodStreamIdsJson = serializeReviewedSet(instance.reviewedVodStreamIds);
+            saveStore(instance, config, 'excludedVodStreamIds', 'ExcludedVodStreamIds',
+                function (v) { return v.slice(); });
+            saveStore(instance, config, 'reviewedVodStreamIds', 'ReviewedVodStreamIdsJson',
+                serializeReviewedSet);
 
             // Series
             config.SyncSeries = view.querySelector('.chkSyncSeries').checked;
             config.SeriesFolderMode = view.querySelector('.selSeriesFolderMode').value;
             config.SeriesFolderMappings = serializeFolderEntries(view, 'series');
             config.SelectedSeriesCategoryIds = getSelectedSeriesCategoryIds(instance);
-            config.ExcludedSeriesIds = instance.excludedSeriesIds.slice();
-            config.ReviewedSeriesIdsJson = serializeReviewedSet(instance.reviewedSeriesIds);
+            saveStore(instance, config, 'excludedSeriesIds', 'ExcludedSeriesIds',
+                function (v) { return v.slice(); });
+            saveStore(instance, config, 'reviewedSeriesIds', 'ReviewedSeriesIdsJson',
+                serializeReviewedSet);
 
             // Update channel
             config.UseBetaChannel = view.querySelector('.chkUseBetaChannel').checked;
@@ -1465,18 +1592,27 @@ function updateEpgVisibility(view) {
     // The reviewed-checkpoint set is persisted as a JSON id array (it grows toward the
     // full library, so a JSON string beats a huge int[] round-tripping through config),
     // but the client keeps it as a Set (id->true) for O(1) membership tests.
+    //
+    // Returns null when the field holds something that will not parse, and {} only when it is
+    // genuinely absent or empty. That distinction is the whole point: this used to swallow the
+    // failure and hand back {}, which serializeReviewedSet then persisted as [] on the next
+    // save — one bad load silently discarding every stored decision, with no error and no log
+    // line. A non-array parse counted as a failure too, and was equally silent. Same
+    // null-vs-empty contract as StrmSyncService.DeserializeIdSet on the C# side; the two are
+    // the same decision and should stay recognisably so.
     function parseReviewedSet(json) {
+        if (!json) return {};
+        var arr;
+        try {
+            arr = JSON.parse(json);
+        } catch (e) {
+            return null;
+        }
+        if (!Array.isArray(arr)) return null;
         var set = {};
-        if (json) {
-            try {
-                var arr = JSON.parse(json);
-                if (Array.isArray(arr)) {
-                    for (var i = 0; i < arr.length; i++) {
-                        var n = parseInt(arr[i], 10);
-                        if (!isNaN(n)) { set[n] = true; }
-                    }
-                }
-            } catch (e) {}
+        for (var i = 0; i < arr.length; i++) {
+            var n = parseInt(arr[i], 10);
+            if (!isNaN(n)) { set[n] = true; }
         }
         return set;
     }
@@ -1487,20 +1623,49 @@ function updateEpgVisibility(view) {
         return JSON.stringify(ids);
     }
 
-    // A title is "reviewed" when every one of its provider ids is either in the reviewed
-    // set or already excluded — excluding a title implicitly reviews it (the derived
-    // union), which is why existing exclusions need no migration. Mirrors the "all ids
-    // excluded" rule used for the keep/exclude checkbox.
+    // A title is "reviewed" when ANY of its provider ids is in the reviewed set or already
+    // excluded — excluding a title implicitly reviews it (the derived union), which is why
+    // existing exclusions need no migration.
+    //
+    // ANY, not ALL. Series accumulate SeriesIds continuously: a show picks up a fresh one
+    // every day or two from a new category placement or provider relation, and under an ALL
+    // rule each new id dragged a title you reviewed last week back into this morning's
+    // unreviewed queue — permanently, since the drift never stops. The sync side is not
+    // affected either way (the review gate reads the stored set per SeriesId, server-side),
+    // so that was purely a daily nag, and this is the rule that ends it.
+    //
+    // Reviewing a row still writes EVERY id it knows about (toggleTitleReviewed below), so
+    // the stored set stays group-complete for anything actually reviewed; ANY only decides
+    // how ids that joined the group AFTERWARDS are read — and it reads them exactly the way
+    // the sync reads a late-arriving exclusion, inherited across the collapse group (ADR-016).
+    //
+    // Movies are untouched by the change: AggregateVodByStreamId keys on StreamId, so a movie
+    // row always carries exactly one id, and for a single-element array ANY is identical to
+    // ALL. The same fact is what makes healPartialExclusions a no-op for them.
     function isTitleReviewed(instance, cfg, ids) {
         if (!ids || ids.length === 0) return false;
         var reviewed = instance[cfg.reviewedKey] || {};
         var excluded = instance[cfg.excludeKey] || [];
         for (var i = 0; i < ids.length; i++) {
-            if (reviewed[ids[i]]) continue;
-            if (excluded.indexOf(ids[i]) !== -1) continue;
-            return false;
+            if (reviewed[ids[i]]) return true;
+            if (excluded.indexOf(ids[i]) !== -1) return true;
         }
-        return true;
+        return false;
+    }
+
+    // Reviewed-set membership only, ignoring the excluded ⇒ reviewed derivation. The toggle
+    // needs this and the display does not: under the ANY rule above, a PARTIALLY excluded row
+    // reads reviewed because of the excluded id, so a toggle deciding from isTitleReviewed
+    // could never clear the mark and would sit there looking stuck. Deciding from the marks
+    // alone keeps the control honest — it flips exactly what it is able to flip. (Fully
+    // excluded rows hide the toggle entirely, so only the partial case reaches here.)
+    function isTitleMarkedReviewed(instance, cfg, ids) {
+        if (!ids || ids.length === 0) return false;
+        var reviewed = instance[cfg.reviewedKey] || {};
+        for (var i = 0; i < ids.length; i++) {
+            if (reviewed[ids[i]]) return true;
+        }
+        return false;
     }
 
     function dedupedConfig(type) {
@@ -1641,6 +1806,11 @@ function updateEpgVisibility(view) {
     function mergeServerReviewed(instance, cfg, freshConfig) {
         if (!freshConfig || !cfg.reviewedJsonKey) return;
         var serverSet = parseReviewedSet(freshConfig[cfg.reviewedJsonKey]);
+        // Unreadable server-side: merge nothing, rather than throwing on Object.keys(null)
+        // and taking the Load button down with it. The page's own copy is still the best
+        // view available, and the load-time guard has already warned and already arranged
+        // for saveConfig to leave the stored field alone.
+        if (serverSet === null) return;
         if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
         var local = instance[cfg.reviewedKey];
         Object.keys(serverSet).forEach(function (id) { local[id] = true; });
@@ -1945,13 +2115,16 @@ function updateEpgVisibility(view) {
 
     // Toggles the reviewed bookmark for a single included title (the right-side control).
     // Excluded titles are reviewed-by-derivation and their toggle is hidden, so this only
-    // ever flips reviewed-set membership for an included title's ids.
+    // ever flips reviewed-set membership for an included title's ids. Decides from the marks
+    // alone (isTitleMarkedReviewed) rather than the derived union, so a partially excluded
+    // row's toggle still works — see the note there. Marking still writes every id in the
+    // row, which is what keeps the stored set group-complete under the ANY read rule.
     function toggleTitleReviewed(instance, type, ids, row) {
         if (!ids || !ids.length) return;
         var cfg = dedupedConfig(type);
         if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
         var reviewed = instance[cfg.reviewedKey];
-        var isRev = isTitleReviewed(instance, cfg, ids);
+        var isRev = isTitleMarkedReviewed(instance, cfg, ids);
         for (var i = 0; i < ids.length; i++) {
             if (isRev) delete reviewed[ids[i]];
             else reviewed[ids[i]] = true;
@@ -2006,6 +2179,20 @@ function updateEpgVisibility(view) {
     // batch visible (like single-exclude) — you can tick back the handful you want to keep before
     // the next refresh (search / category change / reload) culls the processed set. The match set
     // is left intact so a follow-up bulk action still targets exactly what's on screen.
+    // Every bulk action below applies to the whole filtered match set, not just the rendered
+    // rows — so with an empty search and the filters on "all", one click rewrites tens of
+    // thousands of stored decisions, and none of it is undoable from this page. Confirm once
+    // the batch is too large to be a considered edit. The normal case (search for a show,
+    // act on a handful) never sees a prompt.
+    var BULK_CONFIRM_THRESHOLD = 500;
+
+    function confirmBulk(count, what) {
+        if (count < BULK_CONFIRM_THRESHOLD) return true;
+        return confirm('Xtream: this will ' + what + ' for ' + count + ' titles.\n\n'
+            + 'That is the whole filtered list, not just the rows on screen, and it cannot be '
+            + 'undone from this page. Continue?');
+    }
+
     function bulkDedupedExclusion(instance, type, exclude) {
         var cfg = dedupedConfig(type);
         var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
@@ -2013,6 +2200,24 @@ function updateEpgVisibility(view) {
         if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
         var list = instance[cfg.excludeKey];
         var reviewed = instance[cfg.reviewedKey];
+
+        // Count what would actually change before touching anything: both branches below are
+        // no-ops for titles already in the target state, so matches.length would overstate the
+        // batch and make the prompt untrustworthy. This also preserves the existing property
+        // that "Select all matching" on an untouched category is a genuine no-op — it counts
+        // zero and prompts for nothing.
+        var affected = 0;
+        for (var m = 0; m < matches.length; m++) {
+            var mIds = matches[m].Ids || [];
+            for (var n = 0; n < mIds.length; n++) {
+                var mIdx = list.indexOf(mIds[n]);
+                if (exclude ? mIdx === -1 : mIdx !== -1) { affected++; break; }
+            }
+        }
+        if (!confirmBulk(affected, exclude
+            ? 'exclude titles from the library (folders already synced will be deleted)'
+            : 'put titles back into the library')) return;
+
         for (var i = 0; i < matches.length; i++) {
             var ids = matches[i].Ids || [];
             for (var k = 0; k < ids.length; k++) {
@@ -2049,6 +2254,7 @@ function updateEpgVisibility(view) {
         var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
         if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
         var reviewed = instance[cfg.reviewedKey];
+        if (!confirmBulk(matches.length, 'mark titles reviewed')) return;
         for (var i = 0; i < matches.length; i++) {
             var ids = matches[i].Ids || [];
             for (var k = 0; k < ids.length; k++) { reviewed[ids[k]] = true; }
@@ -2065,6 +2271,7 @@ function updateEpgVisibility(view) {
         var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
         if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
         var reviewed = instance[cfg.reviewedKey];
+        if (!confirmBulk(matches.length, 'clear the reviewed mark')) return;
         for (var i = 0; i < matches.length; i++) {
             var ids = matches[i].Ids || [];
             for (var k = 0; k < ids.length; k++) { delete reviewed[ids[k]]; }

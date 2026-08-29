@@ -296,6 +296,14 @@
                     .tabGeneric hr { display: none; }
                 </style>
 
+                <!-- Shown only when one of the stored decision lists could not be read (see
+                     adoptStore in config.js). Deliberately ABOVE the tab bar, so it is visible
+                     from every tab and stays visible for as long as the condition holds. A
+                     toast cannot do that: the condition outlives any single page view, and the
+                     symptom it explains — every title suddenly reading unreviewed — is
+                     otherwise inexplicable to whoever sees it next. -->
+                <div class="storeGuardBanner" style="display:none; margin-bottom:1.5em; padding:0.9em 1.1em; border:1px solid #cc0000; border-left:4px solid #cc0000; border-radius:4px; background:rgba(204,0,0,0.08); line-height:1.45;"></div>
+
                 <div class="configTabs" style="display:flex; gap:0; margin-bottom:1.5em; border-bottom:2px solid rgba(128,128,128,0.15);">
                     <button type="button" class="tabBtn tabBtnDashboard" data-tab="dashboard" onclick="var f=this.closest('.xtreamConfigForm'),p=f.querySelectorAll('.tabPanel'),b=f.querySelectorAll('.tabBtn'),i;for(i=0;i<p.length;i++)p[i].style.display='none';for(i=0;i<b.length;i++){b[i].style.opacity='0.7';b[i].style.borderBottomColor='transparent';}f.querySelector('.tabDashboard').style.display='block';this.style.opacity='1';this.style.borderBottomColor='#52B54B';"
                             style="padding:0.6em 1.5em; background:none; border:none; border-bottom:2px solid transparent; margin-bottom:-2px; cursor:pointer; color:inherit; font-size:1em; opacity:0.7;">
