@@ -39,6 +39,12 @@ starting at 1.0.0 — independent of upstream
   describing different sets of titles. All the numbers on it now come from the same set, and the
   line says which set that is when a filter has narrowed it.
 
+- **The "shows already on disk" line in the sync log no longer counts season folders.** It walks
+  the library recursively, so every `Season 01`, `Season 02` and so on was counted as though it
+  were a show — one run reported 934 shows against 881 real ones. Only the number was wrong;
+  nothing about which titles the review gate recognised has changed, and it still finds shows
+  however your folder mode nests them.
+
 ### Changed
 
 - **Bulk actions in the de-dup view now ask before rewriting a very large batch.** "Mark all
