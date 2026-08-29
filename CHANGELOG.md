@@ -8,6 +8,8 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-08-28
+
 ### Fixed
 
 - **Shows you have already reviewed no longer drift back into the unreviewed queue.** Your
@@ -223,7 +225,9 @@ Xtream `.strm` generator, tuned for Dispatcharr-proxied providers.
 Built on upstream firestaerter3/emby-xtream (MIT); all upstream install, Live TV, Dispatcharr
 integration, and credential-safety features are included.
 
-[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.3.0...HEAD
+[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.4.1...HEAD
+[1.4.1]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.4.0...dedupe-v1.4.1
+[1.4.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.3.0...dedupe-v1.4.0
 [1.3.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.2.0...dedupe-v1.3.0
 [1.2.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.1.1...dedupe-v1.2.0
 [1.1.1]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.1.0...dedupe-v1.1.1
