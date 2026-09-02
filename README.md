@@ -353,4 +353,8 @@ If credential exposure on disk is unacceptable for your environment, Dispatcharr
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+This is a fork, so the copyright notice carries two lines: one for
+[firestaerter3/emby-xtream](https://github.com/firestaerter3/emby-xtream), whose code this is built
+on and which declares MIT, and one for the additions made here. Both are under the same terms.

@@ -8,6 +8,14 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Added
+
+- **A `LICENSE` file.** The README and badge have always said MIT, but there was no license text
+  in the repository, which meant GitHub detected no license at all — the default for that is all
+  rights reserved, contradicting the badge. The MIT text is now present, with a copyright notice
+  naming both the upstream project this is built on and this fork's additions, under the same
+  terms.
+
 ## [1.5.0] - 2026-08-29
 
 ### Added
