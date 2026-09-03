@@ -1,5 +1,14 @@
-blank_issues_enabled: true
+# Blank issues are off deliberately. The bug template carries a REQUIRED checkbox asking the
+# reporter to strip credentials before pasting logs or configuration — and this plugin's config
+# XML holds provider credentials in plaintext, its .strm files embed them by design, and XC API
+# URLs carry username= and password= as query parameters. A blank issue skips that warning at
+# exactly the moment someone is about to paste one of those. The contact link below keeps a door
+# open for anything that is neither a bug nor a feature request.
+blank_issues_enabled: false
 contact_links:
   - name: Read the setup guide
     url: https://github.com/andyj682/emby-xtream-dedupe#installation
     about: Check installation and configuration steps before opening an issue.
+  - name: Questions and general discussion
+    url: https://github.com/andyj682/emby-xtream-dedupe/discussions
+    about: Not sure whether it's a bug? Ask here rather than opening an issue.
