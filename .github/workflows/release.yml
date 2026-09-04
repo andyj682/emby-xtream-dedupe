@@ -48,11 +48,17 @@ jobs:
           else
             RANGE="${PREV_TAG}..HEAD"
           fi
-          # Build notes from commit messages (skip merge commits)
+          # Build notes from commit messages (skip merge commits).
+          # `|| true` on the grep is load-bearing: grep exits 1 when it selects no lines, and
+          # run: blocks execute under `bash -e`, so an EMPTY commit range failed the whole step
+          # rather than producing an empty section. That happens whenever PREV_TAG resolves to
+          # the tag being built — which is what backfilling historical tags does, since the
+          # resolution above takes the second-newest tag overall rather than the one preceding
+          # this ref. An empty What's Changed is a fine outcome; a failed release is not.
           {
             echo "## What's Changed"
             echo ""
-            git log "$RANGE" --no-merges --pretty=format:"- %s" | grep -v "Co-Authored-By"
+            git log "$RANGE" --no-merges --pretty=format:"- %s" | grep -v "Co-Authored-By" || true
             echo ""
             echo ""
             echo ""
