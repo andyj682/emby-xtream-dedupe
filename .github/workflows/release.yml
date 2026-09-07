@@ -48,24 +48,60 @@ jobs:
           else
             RANGE="${PREV_TAG}..HEAD"
           fi
-          # Build notes from commit messages (skip merge commits).
-          # `|| true` on the grep is load-bearing: grep exits 1 when it selects no lines, and
-          # run: blocks execute under `bash -e`, so an EMPTY commit range failed the whole step
-          # rather than producing an empty section. That happens whenever PREV_TAG resolves to
-          # the tag being built — which is what backfilling historical tags does, since the
+          # This is a FORK, so the commit range after an upstream merge is mostly upstream's
+          # work. Listing it as bullets under "What's Changed" reads as though this fork wrote
+          # it, which is neither accurate nor fair to upstream. So the two are separated.
+          #
+          # --first-parent is what does it, and it needs no upstream remote (CI has none):
+          # upstream's commits enter as the SECOND parent of the merge commit, so walking only
+          # first parents excludes them by construction. No SHA lists, no heuristics, nothing
+          # to keep in sync.
+          UPSTREAM_REPO="firestaerter3/emby-xtream"
+          OURS=$(git log "$RANGE" --first-parent --no-merges --pretty=format:"- %s" | grep -v "Co-Authored-By" || true)
+
+          # Counts come from `git rev-list --count`, NOT `git log --pretty | wc -l`: the latter
+          # emits no trailing newline, so it undercounts by one. The subtraction below hides
+          # that most of the time (both terms are short by one) but not when the fork
+          # contributes zero commits, where it would silently report one commit too few.
+          TOTAL_NM=$(git rev-list --count --no-merges "$RANGE")
+          OURS_NM=$(git rev-list --count --first-parent --no-merges "$RANGE")
+          UPSTREAM_N=$((TOTAL_NM - OURS_NM))
+          UPSTREAM_MERGE=$(git log "$RANGE" --first-parent --merges --pretty=format:"%H" | head -1)
+          if [ -n "$UPSTREAM_MERGE" ]; then
+            UPSTREAM_SHA=$(git rev-parse --short "${UPSTREAM_MERGE}^2")
+          else
+            UPSTREAM_SHA=""
+          fi
+
+          # `|| true` on the grep above is load-bearing: grep exits 1 when it selects no lines,
+          # and run: blocks execute under `bash -e`, so an EMPTY commit range failed the whole
+          # step rather than producing an empty section. That happens whenever PREV_TAG resolves
+          # to the tag being built — which is what backfilling historical tags does, since the
           # resolution above takes the second-newest tag overall rather than the one preceding
           # this ref. An empty What's Changed is a fine outcome; a failed release is not.
           {
             echo "## What's Changed"
             echo ""
-            git log "$RANGE" --no-merges --pretty=format:"- %s" | grep -v "Co-Authored-By" || true
+            if [ -n "$OURS" ]; then
+              echo "$OURS"
+            else
+              echo "_No fork-specific changes in this release._"
+            fi
             echo ""
-            echo ""
+            if [ -n "$UPSTREAM_SHA" ]; then
+              echo ""
+              echo "## Upstream"
+              echo ""
+              echo "Merged with upstream [${UPSTREAM_REPO}](https://github.com/${UPSTREAM_REPO}) through \`${UPSTREAM_SHA}\`, bringing in ${UPSTREAM_N} commits of their work. Those changes are upstream's, not this fork's — see [their releases](https://github.com/${UPSTREAM_REPO}/releases) for what they cover."
+              echo ""
+            fi
             echo ""
             echo "## Downloads"
             echo ""
             echo "- **Emby 4.9.x** — \`Emby.Xtream.Plugin.dll\` (default for auto-update)"
             echo "- **Emby 4.10+** — \`Emby.Xtream.Plugin-4.10.dll\` (for 4.10.0.17+ beta only)"
+            echo ""
+            echo "This fork's own changes are described in plain language in [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md)."
             echo ""
             if [ -n "$PREV_TAG" ]; then
               echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ github.ref_name }}"
