@@ -16,6 +16,43 @@ starting at 1.0.0 — independent of upstream
   naming both the upstream project this is built on and this fork's additions, under the same
   terms.
 
+- **A "Video codec for Dispatcharr channels" setting**, in the Dispatcharr section of the plugin
+  config page. **Automatic (recommended)** is the default and is what fixes the playback problem
+  below; the other choices are escape hatches. **Use the codec Dispatcharr reports** restores the
+  old behavior if profile detection ever reads one of your profiles wrongly, and **Always H.264**
+  / **Always HEVC** are for setups where the plugin cannot reach your stream profiles at all but
+  you know what they output. Existing installs upgrade to Automatic without any config change.
+  Picked up from upstream.
+
+### Fixed
+
+- **Live TV channels no longer fail to play when your Dispatcharr stream profile re-encodes the
+  video.** Dispatcharr reports the codec it *receives* from your provider, which is not the codec
+  it *sends* to Emby if the profile transcodes. A channel arriving as HEVC and leaving as H.264
+  was therefore announced to Emby as HEVC, Emby chose the wrong decoder, and playback died before
+  it started. The plugin now reads the channel's stream profile to learn what it actually outputs,
+  and falls back to the reported codec for profiles that pass video through untouched — so
+  pass-through setups behave exactly as before. Resolution, frame rate, bitrate and audio details
+  are still taken from Dispatcharr either way; the more codec-specific details (profile, level,
+  bit depth, reference frames) are now only declared when the codec being announced really is the
+  one Dispatcharr reported, since they describe the incoming stream rather than the outgoing one.
+  Profile data is read during the normal channel refresh, not at the moment you tune, so this adds
+  nothing to the time it takes a channel to start. Picked up from upstream (issues #66 and #67).
+
+  *Not independently verified here: this fork's testing covers the `.strm` sync rather than Live
+  TV, so this fix rides on upstream's.*
+
+### Changed
+
+- **This fork's decision records now live in `docs/decisions/fork/` and are numbered separately**,
+  as ADR-F001, ADR-F002 and ADR-F003 — previously ADR-016, ADR-017 and ADR-018. Upstream and this
+  fork were both numbering decision records from the same sequence, so they had begun to collide:
+  upstream's own ADR-016 arrived alongside ours. Keeping the two sets apart means a reference like
+  "ADR-016" points at exactly one document again. Contributor-facing only; nothing about how the
+  plugin behaves changes. The 1.5.0 entry below has been repointed at the moved file so the link
+  still resolves; references in commit messages and git history keep the numbers they were
+  written with.
+
 ## [1.5.0] - 2026-08-29
 
 ### Added
