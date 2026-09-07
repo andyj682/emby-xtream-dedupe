@@ -1,4 +1,7 @@
-# ADR-016: Propagate Series Exclusion Across the Collapse Group
+# ADR-F001: Propagate Series Exclusion Across the Collapse Group
+
+*(Fork ADR. Numbered in the fork's own `F` sequence so it can never collide with an
+upstream ADR — see `docs/decisions/fork/README.md`. Was ADR-016 before 2026-09-07.)*
 
 **Date**: 2026-08-26
 **Status**: ACCEPTED

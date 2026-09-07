@@ -846,7 +846,7 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
-        // Review gate — RequireReviewBeforeSync, series side (ADR-017)
+        // Review gate — RequireReviewBeforeSync, series side (ADR-F002)
         // -----------------------------------------------------------------
 
         [Fact]
@@ -972,7 +972,7 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
-        // Collapse-group exclusion propagation — the Path-A fix (ADR-016)
+        // Collapse-group exclusion propagation — the Path-A fix (ADR-F001)
         // -----------------------------------------------------------------
 
         [Fact]
@@ -1206,7 +1206,7 @@ namespace Emby.Xtream.Plugin.Tests
         {
             // A collapsed-away sibling (id=2) — a distinct Dispatcharr series record for the same
             // show — must never be fetched; only the representative is. This assertion used to be
-            // conditional on RefreshDispatcharrEpisodes, which is gone (ADR-018). It is kept
+            // conditional on RefreshDispatcharrEpisodes, which is gone (ADR-F003). It is kept
             // UNCONDITIONAL so nothing quietly reintroduces a per-sibling call: that would spend
             // provider requests and permanently inflate the server-side sweep's learned set, for
             // records nothing in the library points at.

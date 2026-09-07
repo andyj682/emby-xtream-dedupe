@@ -1281,7 +1281,7 @@ namespace Emby.Xtream.Plugin.Service
                 // Per-item exclusions (issue #57) — see the matching block in SyncMoviesAsync.
                 var excludedSeriesSet = ContentExclusionFilter.BuildSet(config.ExcludedSeriesIds);
 
-                // Path-A (ADR-016): exclusions are stored per SeriesId, but Dispatcharr issues a
+                // Path-A (ADR-F001): exclusions are stored per SeriesId, but Dispatcharr issues a
                 // distinct SeriesId per (provider, category) for the same show. A category enabled
                 // after the exclusion was made therefore brings a fresh, un-blocklisted copy and the
                 // show silently starts syncing again — repaired today only when the user opens the
@@ -1455,7 +1455,7 @@ namespace Emby.Xtream.Plugin.Service
                 }
 
                 // Review gate for series. Same flag as movies, same fail-open reading of an
-                // unparseable checkpoint — see SyncMoviesAsync and ADR-017.
+                // unparseable checkpoint — see SyncMoviesAsync and ADR-F002.
                 var reviewGateOn = config.RequireReviewBeforeSync;
                 var reviewedSeriesSet = DeserializeIdSet(config.ReviewedSeriesIdsJson);
                 if (reviewGateOn && reviewedSeriesSet == null)
@@ -1568,7 +1568,7 @@ namespace Emby.Xtream.Plugin.Service
                             lock (_historyLock) { if (seriesLm > maxSeriesTs) maxSeriesTs = seriesLm; }
                         }
 
-                        // Review gate — see the matching block in SyncMoviesAsync and ADR-017.
+                        // Review gate — see the matching block in SyncMoviesAsync and ADR-F002.
                         // Deliberately AFTER the watermark update above: a held series must still
                         // advance the delta high-water mark, or it stalls behind whatever is
                         // waiting for review. And before the detail fetch below, which is the
@@ -1898,7 +1898,7 @@ namespace Emby.Xtream.Plugin.Service
                 await Task.WhenAll(tasks).ConfigureAwait(false);
 
                 // Keeping Dispatcharr's own episode data fresh is deliberately NOT this plugin's
-                // job — see ADR-018. A server-side sweep owns that, and a sync-time poke of
+                // job — see ADR-F003. A server-side sweep owns that, and a sync-time poke of
                 // collapsed-away siblings turned out to be inert: get_series_info already returns
                 // the union across the relations behind one series record, and a sibling that
                 // Dispatcharr has NOT linked to that record is a separate series whose episodes

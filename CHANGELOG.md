@@ -45,7 +45,8 @@ starting at 1.0.0 — independent of upstream
   also made a server-side sweep permanently slower for no benefit. **If you had it enabled**, the
   replacement is a server-side episode sweep such as
   [dispatcharr_vod_episode_sweep](https://github.com/andyj682/dispatcharr_vod_episode_sweep) —
-  see the new "Related projects" section in the README. Full reasoning in ADR-018.
+  see the new "Related projects" section in the README. Full reasoning in ADR-F003
+  (filed as ADR-018 at the time; renumbered 2026-09-07).
 
 ### Changed
 

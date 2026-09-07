@@ -287,7 +287,7 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
-        // Review gate — RequireReviewBeforeSync (ADR-017)
+        // Review gate — RequireReviewBeforeSync (ADR-F002)
         // -----------------------------------------------------------------
 
         [Fact]

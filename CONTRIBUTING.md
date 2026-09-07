@@ -56,6 +56,15 @@ Each ADR should cover: Context, Problem, Alternatives considered, Decision, and 
 
 Numbering: sequential, zero-padded to 3 digits (`001`, `002`, ...).
 
+**Fork ADRs go in `docs/decisions/fork/` and are cited as `ADR-F001`, `ADR-F002`, ...**
+Upstream and this fork both add ADRs, and a shared `001, 002, 003 …` sequence collides on
+every merge without git ever reporting a conflict — which quietly turns `see ADR-016` in a
+code comment into a reference to two different documents. Record a decision about
+de-duplication, the review gate, or anything else specific to this fork in the `fork/`
+subdirectory, in its own `F` sequence. Decisions about the shared plugin belong in
+`docs/decisions/` under upstream's numbering, and are worth proposing upstream. See
+[`docs/decisions/fork/README.md`](docs/decisions/fork/README.md).
+
 ---
 
 ## Development Workflow

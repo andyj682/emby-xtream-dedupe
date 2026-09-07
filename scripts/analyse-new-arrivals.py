@@ -160,7 +160,7 @@ def main(argv):
     print("=" * 78)
     print("Series carry no TMDB id on the list payload, so their arrivals cannot be")
     print("classified here - that is the same measured 0% coverage that ruled TMDB keying")
-    print("out for series exclusion (ADR-016). Series arrivals are covered instead by the")
+    print("out for series exclusion (ADR-F001). Series arrivals are covered instead by the")
     print("collapse-group propagation, which matches on name.")
     return 0
 

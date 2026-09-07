@@ -1,4 +1,7 @@
-# ADR-018: Retire the sync-time Dispatcharr episode refresh
+# ADR-F003: Retire the sync-time Dispatcharr episode refresh
+
+*(Fork ADR. Numbered in the fork's own `F` sequence so it can never collide with an
+upstream ADR — see `docs/decisions/fork/README.md`. Was ADR-018 before 2026-09-07.)*
 
 **Status:** Accepted (2026-08-29)
 

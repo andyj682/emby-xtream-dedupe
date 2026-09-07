@@ -1635,7 +1635,7 @@ function updateEpgVisibility(view) {
     // Reviewing a row still writes EVERY id it knows about (toggleTitleReviewed below), so
     // the stored set stays group-complete for anything actually reviewed; ANY only decides
     // how ids that joined the group AFTERWARDS are read — and it reads them exactly the way
-    // the sync reads a late-arriving exclusion, inherited across the collapse group (ADR-016).
+    // the sync reads a late-arriving exclusion, inherited across the collapse group (ADR-F001).
     //
     // Movies are untouched by the change: AggregateVodByStreamId keys on StreamId, so a movie
     // row always carries exactly one id, and for a single-element array ANY is identical to

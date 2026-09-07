@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Find a cross-listed series and emit a minimal emby-test config that exercises it.
 
-Testing the collapse-group exclusion propagation (ADR-016) needs a show that appears
+Testing the collapse-group exclusion propagation (ADR-F001) needs a show that appears
 under two or more SeriesIds with the same name, with only one of those ids on the
 blocklist. Constructing that by hand is awkward for one reason: you need to know which
 *categories* carry the show, and neither the config nor a catalogue snapshot records

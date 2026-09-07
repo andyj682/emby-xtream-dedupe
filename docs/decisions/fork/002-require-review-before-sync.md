@@ -1,4 +1,7 @@
-# ADR-017: Hold Un-Reviewed Titles Out of the Sync
+# ADR-F002: Hold Un-Reviewed Titles Out of the Sync
+
+*(Fork ADR. Numbered in the fork's own `F` sequence so it can never collide with an
+upstream ADR — see `docs/decisions/fork/README.md`. Was ADR-017 before 2026-09-07.)*
 
 **Date**: 2026-08-27
 **Status**: ACCEPTED
