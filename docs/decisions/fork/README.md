@@ -31,6 +31,7 @@ exists, and a bare `ADR-016` anywhere in the tree is unambiguously upstream's.
 | [ADR-F001](001-collapse-group-exclusion-propagation.md) | Propagate series exclusion across the collapse group | Accepted |
 | [ADR-F002](002-require-review-before-sync.md) | Hold un-reviewed titles out of the sync | Accepted |
 | [ADR-F003](003-retire-dispatcharr-episode-refresh.md) | Retire the sync-time Dispatcharr episode refresh | Accepted |
+| [ADR-F004](004-survive-provider-id-churn.md) | Survive provider ID churn inside the plugin | Accepted (not yet implemented) |
 
 ## History
 
