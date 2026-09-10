@@ -37,6 +37,17 @@ jobs:
       - name: Test
         run: dotnet test Emby.Xtream.Plugin.Tests/ --no-restore -v minimal --logger "trx;LogFileName=results.trx"
 
+      # The 4.10 DLL ships in every release and was never covered: the step above builds
+      # Debug, which is != Release_4_10, so only the 4.9 path ever ran. The two builds are
+      # not merely linked against different SDKs — Service/XtreamLiveStream.cs carries an
+      # `#if EMBY_4_10` branch that shipped without ever being compiled here, and the 4.10
+      # configuration also pulls System.Text.Json 8.x instead of 6.x.
+      #
+      # No --no-restore: Release_4_10 has its own PackageReferences, which the restore above
+      # (default configuration) did not fetch.
+      - name: Test (Emby 4.10 build)
+        run: dotnet test Emby.Xtream.Plugin.Tests/ -c Release_4_10 -v minimal --logger "trx;LogFileName=results-4.10.trx"
+
       - name: Build plugin
         run: cd Emby.Xtream.Plugin && bash build.sh
 

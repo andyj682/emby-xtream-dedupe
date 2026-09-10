@@ -8,6 +8,20 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Changed
+
+- **Clearer guidance on which DLL to install now that Emby 4.10 has left beta.** Each release
+  ships two builds, one for Emby 4.9.x and one for 4.10.0.17 and later, and the release page
+  described the second as beta-only — true when it was written, misleading now that 4.10 is the
+  general release. The README and the release notes now show both plainly, with the caveat that
+  they are not interchangeable and you should install one, not both.
+
+### Fixed
+
+- **The build-from-source instructions cloned the wrong repository.** They pointed at the
+  upstream project rather than this fork, so anyone following them built a plugin without any of
+  the de-duplication or review features. They also now mention how to produce the Emby 4.10 build.
+
 ### Added
 
 - **The sync now says which files it deleted, not just how many.** Orphan cleanup used to report

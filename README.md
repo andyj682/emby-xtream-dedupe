@@ -180,7 +180,16 @@ A configuration UI embedded in Emby's plugin settings with five tabs.
 
 ### Step 1: Download the Plugin
 
-Download `Emby.Xtream.Plugin.dll` from the [latest release](../../releases/latest).
+Download the DLL matching your Emby Server version from the [latest release](../../releases/latest):
+
+| Your Emby Server | Download |
+| --- | --- |
+| 4.9.x | `Emby.Xtream.Plugin.dll` |
+| 4.10.0.17 and later | `Emby.Xtream.Plugin-4.10.dll` |
+
+Emby 4.10 left beta and reached general release in September 2026, so most installs now want the
+second one. The two builds target different Emby SDKs and are not interchangeable — check your
+version under **Dashboard → Help → About** if you are unsure. **Install one, not both.**
 
 > Only the single DLL file is needed — no other dependencies.
 
@@ -190,12 +199,13 @@ Download `Emby.Xtream.Plugin.dll` from the [latest release](../../releases/lates
 Requires .NET SDK 6.0+:
 
 ```bash
-git clone https://github.com/firestaerter3/emby-xtream.git
-cd emby-xtream/Emby.Xtream.Plugin
+git clone https://github.com/andyj682/emby-xtream-dedupe.git
+cd emby-xtream-dedupe/Emby.Xtream.Plugin
 bash build.sh
 ```
 
-The compiled DLL will be at `Emby.Xtream.Plugin/out/Emby.Xtream.Plugin.dll`.
+The compiled DLL will be at `Emby.Xtream.Plugin/out/Emby.Xtream.Plugin.dll`. That is the 4.9.x
+build; for Emby 4.10 use `dotnet publish -c Release_4_10` from the repository root instead.
 
 </details>
 
