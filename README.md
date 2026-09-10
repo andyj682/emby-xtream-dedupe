@@ -334,8 +334,14 @@ they are safe to run against a working setup. Nothing writes to the live config.
 | `audit-strm-links.py` | Which `.strm` files point at a stream ID the provider no longer has, split into "the title came back under a new ID" and "the content is gone" |
 | `analyse-new-arrivals.py` | Given two snapshots, splits a batch of new arrivals into already-excluded / already-reviewed / already-on-disk / genuinely new — i.e. how much of a review queue is actually new work |
 | `repair-id-churn.py` | Re-points exclusions and reviewed marks after a provider reassigns IDs. Dry run by default; `--write` emits a *candidate* config for you to diff and install yourself |
+| `check-repair-safety.py` | Run before installing a `repair-id-churn.py` candidate: would any proposed exclusion land on a title that is currently on disk? Checks both the stream ID and the folder name, because exclusion is stored per ID but enforced per name |
+| `config-counts-canary.py` | How many exclusions and reviewed marks does a config actually contain? Works on the live config, a test rig's, or a repair candidate. Distinguishes "empty" from "unreadable", which look identical in a count and mean opposite things |
 | `find-crosslisted-series.py` | Finds a cross-listed series, reports titles that are only partly excluded, and can emit a minimal test config |
 | `xtream_catalogue.py` | Shared helpers (not run directly) |
+
+`config-counts-canary.py` is worth running on a schedule with `--log`: the four counts only mean
+something as a trend, and a silent drop is the failure you most want to catch early. It exits
+non-zero when a store is unreadable, so it works as a cron alarm.
 
 They assume Docker and a throwaway `python:3-alpine` container, e.g.:
 

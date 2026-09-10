@@ -8,6 +8,16 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Added
+
+- **Two new diagnostic scripts**, written while recovering from a provider that reissued every
+  stream ID in its catalog. `config-counts-canary.py` reports how many exclusions and reviewed
+  marks a config actually holds — on the live config, a test rig's, or a proposed repair — and
+  deliberately distinguishes "empty" from "unreadable", which look identical in a count and mean
+  opposite things. `check-repair-safety.py` runs before you install a `repair-id-churn.py`
+  candidate and refuses one that would exclude a title you currently have on disk, checking both
+  the stream ID and the folder name, because exclusions are stored per ID but enforced per name.
+
 ### Changed
 
 - **Clearer guidance on which DLL to install now that Emby 4.10 has left beta.** Each release
