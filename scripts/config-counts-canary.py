@@ -33,15 +33,6 @@ import xml.etree.ElementTree as ET
 INT_STORES = ["ExcludedVodStreamIds", "ExcludedSeriesIds"]
 JSON_STORES = ["ReviewedVodStreamIdsJson", "ReviewedSeriesIdsJson"]
 
-# Explicit, so the log line's labels stay stable. These get grepped and compared across
-# months; deriving them from the field names produced inconsistent shortenings.
-LOG_LABELS = {
-    "ExcludedVodStreamIds": "ExclVod",
-    "ExcludedSeriesIds": "ExclSeries",
-    "ReviewedVodStreamIdsJson": "RevVod",
-    "ReviewedSeriesIdsJson": "RevSeries",
-}
-
 
 def count_int_store(root, name):
     """int[] stores serialize as <Name><int>1</int>...</Name>. Absent element == empty."""
@@ -102,12 +93,15 @@ def main(argv):
         note = "" if status == "ok" else "   <- %s" % status
         print("  %-26s %10s%s" % (name, shown, note))
 
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    line = "%s  %s  %s" % (
+    # Full field names, local time, single-spaced — this format is load-bearing. An existing
+    # history file may already hold years of these lines, and the whole value of the log is the
+    # trend, so changing the labels would split it into two series that cannot be compared at
+    # exactly the moment someone needs to look back. Deliberately no path: the scheduled run is
+    # always the live config, and a varying trailing field makes the log harder to scan.
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    line = "%s %s" % (
         stamp,
-        "  ".join("%s=%s" % (LOG_LABELS[n], "UNPARSEABLE" if c is None else c)
-                  for n, c, _ in results),
-        path,
+        " ".join("%s=%s" % (n, "UNPARSEABLE" if c is None else c) for n, c, _ in results),
     )
     print("\n%s" % line)
 
