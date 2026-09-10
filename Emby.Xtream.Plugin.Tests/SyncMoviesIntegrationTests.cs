@@ -1,8 +1,10 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using Emby.Xtream.Plugin.Service;
+using Emby.Xtream.Plugin.Tests.Fakes;
 using Xunit;
 
 namespace Emby.Xtream.Plugin.Tests
@@ -579,6 +581,76 @@ namespace Emby.Xtream.Plugin.Tests
             await MakeService().SyncMoviesAsync(config, None, SaveConfig);
 
             Assert.Equal(5000, config.LastMovieSyncTimestamp);
+        }
+
+        // -----------------------------------------------------------------
+        // Orphan cleanup names what it deleted (ADR-F004 stage 1, backlog item 16)
+        // -----------------------------------------------------------------
+
+        /// <summary>Writes a movie STRM directly to disk, bypassing the sync.</summary>
+        private string SeedMovieStrm(string movieName)
+        {
+            var path = MovieStrmPath(movieName);
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllText(path, "http://fake-xtream/movie/user/pass/9999.mkv");
+            return path;
+        }
+
+        [Fact]
+        public async Task OrphanCleanup_NamesTheFilesItDeleted()
+        {
+            // A successful deletion was previously logged nowhere, at any level — only the count.
+            // That made "what did the sync just remove?" unanswerable after the fact, and it is
+            // exactly the question a churned provider id raises: a dead-id .strm is not in
+            // writtenPaths, so it is swept as an orphan even though the user still wants it.
+            var config = DefaultConfig();
+            config.CleanupOrphans = true;
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            SeedMovieStrm("Gone Movie A");
+            SeedMovieStrm("Gone Movie B");
+
+            var logger = new RecordingLogger();
+            await new StrmSyncService(logger, HttpClient).SyncMoviesAsync(config, None, SaveConfig);
+
+            var summary = logger.Infos.Single(i => i.Contains("orphaned STRM files"));
+
+            // Named, and relative to the library root rather than repeating it on every entry.
+            Assert.Contains("Gone Movie A" + Path.DirectorySeparatorChar + "Gone Movie A.strm", summary);
+            Assert.Contains("Gone Movie B" + Path.DirectorySeparatorChar + "Gone Movie B.strm", summary);
+
+            // The root appears once, in "from {root}" — not once per sample entry.
+            Assert.Equal(1, summary.Split(new[] { TempDir.Path }, StringSplitOptions.None).Length - 1);
+
+            // Two files is well under the sample cap, so nothing should claim truncation.
+            Assert.DoesNotContain(", ...", summary);
+        }
+
+        [Fact]
+        public async Task OrphanCleanup_TruncatesTheSampleAndSaysSo()
+        {
+            // The sample exists to make the log answerable, not to dump a library into it. Past
+            // the cap it must say it truncated — a silently-clipped list would be worse than a
+            // bare count, because it reads as complete.
+            var config = DefaultConfig();
+            config.CleanupOrphans = true;
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            for (var i = 0; i < 16; i++)
+            {
+                SeedMovieStrm(string.Format("Gone Movie {0:D2}", i));
+            }
+
+            var logger = new RecordingLogger();
+            await new StrmSyncService(logger, HttpClient).SyncMoviesAsync(config, None, SaveConfig);
+
+            var summary = logger.Infos.Single(i => i.Contains("orphaned STRM files"));
+
+            Assert.Contains("Removed 16 orphaned STRM files", summary);
+            Assert.Contains(", ...", summary);
+            // Sorted, so the sample is stable between runs rather than following readdir order.
+            Assert.Contains("Gone Movie 00", summary);
+            Assert.DoesNotContain("Gone Movie 15", summary);
         }
     }
 }

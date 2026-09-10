@@ -10,6 +10,24 @@ starting at 1.0.0 — independent of upstream
 
 ### Added
 
+- **The sync now says which files it deleted, not just how many.** Orphan cleanup used to report
+  a bare count — "Removed 360 orphaned STRM files" — and nothing anywhere recorded *which* ones,
+  at any log level. So a run that removed a few hundred episodes was impossible to explain after
+  the fact, and you could not tell a provider genuinely dropping a show from a title whose ID had
+  changed underneath it. The summary now lists up to 15 of the removed paths, relative to your
+  library folder, and says plainly when there were more.
+
+- **A diagnostic naming which copy of a duplicated show the sync actually used.** When the same
+  show appears under several IDs, the sync picks one to work from and ignores the rest. Which one
+  it picked was invisible from outside the plugin, which made a missing episode very hard to
+  investigate: the ID you can see from a catalogue listing is usually *not* the one the sync acts
+  on, so checking it tells you nothing. At Debug level the sync now logs the chosen ID and the
+  ones it set aside, for each show that collapses.
+
+## [1.6.0] - 2026-09-09
+
+### Added
+
 - **A `LICENSE` file.** The README and badge have always said MIT, but there was no license text
   in the repository, which meant GitHub detected no license at all — the default for that is all
   rights reserved, contradicting the badge. The MIT text is now present, with a copyright notice
@@ -309,7 +327,8 @@ Xtream `.strm` generator, tuned for Dispatcharr-proxied providers.
 Built on upstream firestaerter3/emby-xtream (MIT); all upstream install, Live TV, Dispatcharr
 integration, and credential-safety features are included.
 
-[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.5.0...HEAD
+[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.6.0...HEAD
+[1.6.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.5.0...dedupe-v1.6.0
 [1.5.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.4.1...dedupe-v1.5.0
 [1.4.1]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.4.0...dedupe-v1.4.1
 [1.4.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.3.0...dedupe-v1.4.0

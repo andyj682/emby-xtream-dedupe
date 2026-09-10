@@ -1382,12 +1382,27 @@ namespace Emby.Xtream.Plugin.Service
                         .ToList();
                     var keptKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     var collapsedSeries = new List<SeriesInfo>(allSeries.Count);
+                    // Which id won each group, and which lost. Recorded only to be logged: the
+                    // pick itself is unchanged.
+                    var representativeByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    var discardedByKey = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
                     foreach (var s in collapseCandidates)
                     {
                         var folderKey = collapseKeyBySeriesId[s.SeriesId];
                         if (keptKeys.Add(folderKey))
                         {
                             collapsedSeries.Add(s);
+                            representativeByKey[folderKey] = s.SeriesId;
+                        }
+                        else
+                        {
+                            if (!discardedByKey.TryGetValue(folderKey, out var discarded))
+                            {
+                                discarded = new List<int>();
+                                discardedByKey[folderKey] = discarded;
+                            }
+
+                            discarded.Add(s.SeriesId);
                         }
                     }
 
@@ -1395,6 +1410,29 @@ namespace Emby.Xtream.Plugin.Service
                     {
                         _logger.Info("Collapsed {0} cross-listed series entries into {1} unique titles before sync",
                             allSeries.Count, collapsedSeries.Count);
+
+                        // The id the sync actually ACTS on is invisible from outside the plugin,
+                        // and that cost an hour on a real missing-episode hunt. A catalogue-wide
+                        // get_series returns roughly one id per show, but the plugin fetches
+                        // per-category and a show carries several; only the representative is ever
+                        // compared to the delta watermark, fetched, or written. So a non-
+                        // representative id sitting above the watermark looks reassuring and means
+                        // nothing, and a correctly-skipped show is indistinguishable from a
+                        // wrongly-skipped one. This line is the mapping nothing else records.
+                        // Debug, because it is one line per collapsed group.
+                        foreach (var group in discardedByKey.OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+                        {
+                            if (!representativeByKey.TryGetValue(group.Key, out var representative))
+                            {
+                                continue;
+                            }
+
+                            group.Value.Sort();
+                            _logger.Debug(
+                                "Collapse: '{0}' -> representative SeriesId {1} (discarded: {2})",
+                                group.Key, representative, string.Join(", ", group.Value));
+                        }
+
                         allSeries = collapsedSeries;
                     }
                 }
@@ -3124,9 +3162,13 @@ namespace Emby.Xtream.Plugin.Service
             // before considering anything for deletion — a user's own STRM that the provider
             // never listed would otherwise look exactly like an orphan. Only orphan candidates
             // are read, so the cost stays proportional to deletions, not to library size.
+            // Ordered so the logged sample below is the same 15 paths on every run rather than
+            // whichever 15 the filesystem happened to enumerate first. Deletion order is
+            // otherwise irrelevant — the files are independent.
             var orphans = existingStrms
                 .Where(s => !validPaths.Contains(s))
                 .Where(s => StrmOwnership.IsOwnedStrm(s, config.BaseUrl, config.DispatcharrUrl))
+                .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             var foreignCount = existingStrms.Length - validPaths.Count - orphans.Count;
@@ -3155,6 +3197,15 @@ namespace Emby.Xtream.Plugin.Service
 
             var removed = 0;
 
+            // A successful deletion was previously logged nowhere, at any level — only the count
+            // was. So "the sync removed 360 episodes" was unanswerable after the fact: the files
+            // were gone and nothing recorded which ones. Worse, the class of damage this hides is
+            // exactly the dangerous one — a title whose provider id churned leaves a .strm that is
+            // not in writtenPaths, so it is deleted as an orphan even though the user still wants
+            // it (see ADR-F004). Keep a sample so the question is answerable next time.
+            const int DeletedSampleSize = 15;
+            var deletedSample = new List<string>();
+
             foreach (var strmFile in orphans)
             {
                 try
@@ -3163,6 +3214,10 @@ namespace Emby.Xtream.Plugin.Service
                     // above, so every path here is one this plugin wrote.
                     File.Delete(strmFile);
                     removed++;
+                    if (deletedSample.Count < DeletedSampleSize)
+                    {
+                        deletedSample.Add(RelativeToRoot(strmFile, rootPath));
+                    }
 
                     // Remove empty parent directories
                     var dir = Path.GetDirectoryName(strmFile);
@@ -3184,10 +3239,34 @@ namespace Emby.Xtream.Plugin.Service
 
             if (removed > 0)
             {
-                _logger.Info("Removed {0} orphaned STRM files from {1}", removed, rootPath);
+                // Already in order: `orphans` was sorted before the loop, so the sample is the
+                // same 15 paths on every run.
+                _logger.Info(
+                    "Removed {0} orphaned STRM files from {1}: {2}{3}",
+                    removed, rootPath,
+                    string.Join(", ", deletedSample),
+                    removed > deletedSample.Count ? ", ..." : string.Empty);
             }
 
             return removed;
+        }
+
+        /// <summary>
+        /// Trims the library root off a path so the deleted-file sample reads as
+        /// <c>Show Name [tmdbid=1]/Season 01/....strm</c> rather than repeating the root on
+        /// every entry. Falls back to the full path if it does not sit under the root.
+        /// </summary>
+        private static string RelativeToRoot(string fullPath, string rootPath)
+        {
+            if (!string.IsNullOrEmpty(rootPath)
+                && fullPath.StartsWith(rootPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return fullPath
+                    .Substring(rootPath.Length)
+                    .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            }
+
+            return fullPath;
         }
     }
 }

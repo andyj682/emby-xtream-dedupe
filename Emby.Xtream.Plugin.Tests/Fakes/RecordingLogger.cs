@@ -21,6 +21,14 @@ namespace Emby.Xtream.Plugin.Tests.Fakes
 
         public List<string> Infos { get; } = new List<string>();
 
+        /// <summary>
+        /// Debug output. Captured because some diagnostics are deliberately Debug-level —
+        /// the collapse representative is one line per collapsed group, too noisy for Info,
+        /// but it is the mapping that makes a wrongly-skipped series distinguishable from a
+        /// correctly-skipped one, so it still needs a test.
+        /// </summary>
+        public List<string> Debugs { get; } = new List<string>();
+
         private static string Format(string message, object[] paramList)
         {
             if (paramList == null || paramList.Length == 0)
@@ -55,7 +63,7 @@ namespace Emby.Xtream.Plugin.Tests.Fakes
 
         public void Error(string message, params object[] paramList) { }
 
-        public void Debug(string message, params object[] paramList) { }
+        public void Debug(string message, params object[] paramList) => Record(Debugs, message, paramList);
 
         public void Fatal(string message, params object[] paramList) { }
 

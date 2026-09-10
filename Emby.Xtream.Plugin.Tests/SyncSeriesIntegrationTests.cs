@@ -1226,5 +1226,52 @@ namespace Emby.Xtream.Plugin.Tests
             Assert.Equal(0, svc.SeriesProgress.Failed);
             Assert.DoesNotContain(Handler.ReceivedUrls, u => u.Contains("get_series_info&series_id=2"));
         }
+
+        // -----------------------------------------------------------------
+        // Collapse representative is logged (ADR-F004 stage 1, backlog item 18)
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task Collapse_LogsWhichSeriesIdBecameTheRepresentative()
+        {
+            // The id the sync ACTS on is invisible from outside the plugin: a catalogue-wide
+            // get_series returns roughly one id per show, but the plugin fetches per-category and
+            // a show carries several. Only the representative is compared to the delta watermark
+            // or fetched, so without this line a correctly-skipped show and a wrongly-skipped one
+            // look identical — which cost an hour on a real missing-episode hunt.
+            var config = DefaultConfig();
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 7, name: "Dup Show", lastModified: "1000"),
+                Series(seriesId: 42, name: "Dup Show", lastModified: "1000"),
+                Series(seriesId: 99, name: "Dup Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=7", SeriesDetailJson(seriesId: 7));
+
+            var logger = new RecordingLogger();
+            await new StrmSyncService(logger, HttpClient).SyncSeriesAsync(config, None, SaveConfig);
+
+            var line = Assert.Single(logger.Debugs.FindAll(d => d.StartsWith("Collapse: ")));
+            Assert.Contains("Dup Show", line);
+            // Lowest id wins the tie-break when no candidate has a stored hash, and BOTH losers
+            // must be named — reporting only one would still leave the mapping incomplete.
+            Assert.Contains("representative SeriesId 7", line);
+            Assert.Contains("discarded: 42, 99", line);
+        }
+
+        [Fact]
+        public async Task Collapse_LogsNothingWhenNothingCollapsed()
+        {
+            // One line per collapsed group is only tolerable because the ordinary case is silent.
+            var config = DefaultConfig();
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Show One", lastModified: "1000"),
+                Series(seriesId: 2, name: "Show Two", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", SeriesDetailJson(seriesId: 1));
+            Handler.RespondWith("action=get_series_info&series_id=2", SeriesDetailJson(seriesId: 2));
+
+            var logger = new RecordingLogger();
+            await new StrmSyncService(logger, HttpClient).SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.DoesNotContain(logger.Debugs, d => d.StartsWith("Collapse: "));
+        }
     }
 }
