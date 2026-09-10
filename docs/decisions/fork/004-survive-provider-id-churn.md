@@ -218,6 +218,51 @@ that plugin keeps running. Treat reconfiguring it as equivalent to a provider re
 - Orphan cleanup keeps its current behavior. Stage 1's logging means the next occurrence
   names the files, which is what makes the question answerable at all.
 
+## Follow-on that stage 3 enables: repair from inside the plugin
+
+Not part of stage 3, but it should be designed *with* stage 3 rather than retrofitted, so
+the store layout accounts for it. Recorded 2026-09-10.
+
+**Stage 3 removes the reason repair has to live outside the plugin.** `repair-id-churn.py`
+needs a pre-event `catalogue-snapshot.py` file because that snapshot is the only record of
+what a now-dead ID used to be. Once a decision carries its own TMDB, that record is already
+next to the decision: re-pointing becomes "for each dead stored ID, take its stored TMDB,
+find the live ID carrying that TMDB, add it" — computable at any moment from data the sync
+already holds, with no historical artifact, no cron, and no snapshot that someone had to
+remember to take.
+
+**The plugin also has better inputs for the safety checks than the script does.** Both
+guards — that no proposed exclusion may land on a title currently on disk, matched on stream
+ID *and* on folder name, since exclusions are stored per ID but enforced per name by
+`RemoveExcludedContent` — need the library index. `BuildLibraryIdentityIndex` builds exactly
+that on every sync; the script has to reconstruct it by walking the filesystem.
+
+**And it removes the two genuinely dangerous steps.** The current flow is: dry run, read the
+report, `--write` a candidate, canary the candidate, **stop Emby**, copy the file over the
+live configuration, start Emby. In-plugin, the write goes through the plugin's own
+configuration path — no hand-edited config file, no restart.
+
+Three properties to preserve if it is built:
+
+- **Keep the dry-run / apply split.** The script's best property is that it never touches
+  the live configuration by default. A panel that proposes and waits is the same contract.
+- **Show evidence, not a count.** "8,560 IDs will be re-pointed" cannot be reviewed. It needs
+  the script's `old → new (matched on) title` sample or the confirmation is theatre.
+- **Trigger on *resolvable* dead IDs, never on dead IDs.** A curated install carries tens of
+  thousands of dead IDs permanently — 27,674 of 61,698 movie exclusions on the install this
+  was measured against, benign for years. A prompt keyed on that is lit forever and ignored
+  within a week. The actionable signal is dead IDs that **resolve to a live title**: 8,560
+  during the 2026-09-09 event, near zero in steady state.
+
+Surface it with the `storeGuardBanner` pattern from ADR-F002's era — persistent, above the
+tab bar, stays until resolved — which this fork already settled on for "your data is at
+risk" conditions.
+
+**What stays external regardless:** series, which carry no TMDB on the `get_series` list
+payload and need the detail-learned cache first; and damage predating stage 3, where nothing
+was stored to resolve against. `repair-id-churn.py` keeps a real job — it stops being the
+*only* path.
+
 ## Implementation references
 
 - `Emby.Xtream.Plugin/Service/StrmSyncService.cs` (`CleanupOrphans`,
