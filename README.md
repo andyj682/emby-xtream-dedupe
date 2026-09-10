@@ -182,14 +182,26 @@ A configuration UI embedded in Emby's plugin settings with five tabs.
 
 Download the DLL matching your Emby Server version from the [latest release](../../releases/latest):
 
-| Your Emby Server | Download |
-| --- | --- |
-| 4.9.x | `Emby.Xtream.Plugin.dll` |
-| 4.10.0.17 and later | `Emby.Xtream.Plugin-4.10.dll` |
+| Your Emby Server | Download | Install as |
+| --- | --- | --- |
+| 4.9.x | `Emby.Xtream.Plugin.dll` | `Emby.Xtream.Plugin.dll` |
+| 4.10.0.17 and later | `Emby.Xtream.Plugin-4.10.dll` | **rename to `Emby.Xtream.Plugin.dll`** |
 
 Emby 4.10 left beta and reached general release in September 2026, so most installs now want the
 second one. The two builds target different Emby SDKs and are not interchangeable — check your
 version under **Dashboard → Help → About** if you are unsure. **Install one, not both.**
+
+> ### ⚠️ Rename the 4.10 download before installing it
+>
+> The two builds cannot share a filename in the same release, so the 4.10 one is published with a
+> `-4.10` suffix. **Emby names each plugin's settings file after the DLL**, so a file left as
+> `Emby.Xtream.Plugin-4.10.dll` gets its own separate settings file — the plugin loads, the
+> settings page opens, and **everything you had configured appears blank**, because your real
+> settings are still sitting in the file belonging to the other name.
+>
+> Nothing is lost when this happens and nothing warns you either. Rename the file to
+> `Emby.Xtream.Plugin.dll` before copying it in and your existing configuration is picked up
+> normally.
 
 > Only the single DLL file is needed — no other dependencies.
 

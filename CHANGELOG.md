@@ -18,6 +18,15 @@ starting at 1.0.0 — independent of upstream
 
 ### Fixed
 
+- **The Emby 4.10 download has to be renamed before you install it, and nothing said so.** Each
+  release ships two builds, and because they cannot share a filename the 4.10 one carries a
+  `-4.10` suffix. Emby names each plugin's settings file after the DLL, so installing it under
+  that name gives it a *separate* settings file: the plugin loads, the settings page opens, and
+  everything you had configured appears blank — no error, no warning. Nothing is actually lost,
+  but there was no way to know that. The README and the release page now say to rename it, and
+  explain why. **If you hit this, rename the file to `Emby.Xtream.Plugin.dll` and your
+  configuration comes back.**
+
 - **The build-from-source instructions cloned the wrong repository.** They pointed at the
   upstream project rather than this fork, so anyone following them built a plugin without any of
   the de-duplication or review features. They also now mention how to produce the Emby 4.10 build.
