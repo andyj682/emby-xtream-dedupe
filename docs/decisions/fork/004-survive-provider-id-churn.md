@@ -178,14 +178,29 @@ missed because the same event renamed every title. Those were held, never writte
 old `.strm` files were swept as orphans. TMDB cannot reach that cohort in cleanup any more
 than it can in the gate.
 
-**Merging is not the answer to it either, and the tempting inference is wrong.** Duplicate-row
-merging (`dispatcharr_vod_merge`) protects a title only when a second row exists
-*concurrently*. In this event the relations were deleted, the row was pruned with no
-counterpart, and a new row was created — there was nothing to match against at prune time.
-That is precisely why 58% survived (another provider held a relation on the same row) and the
-sole-provider 42% did not. **No amount of merging protects single-provider content from that
-provider re-issuing its IDs.** Merging remains the right fix for concurrent duplicates, which
-is a real and separate problem here.
+**Merging does not replace this, but the relationship is subtler than "it cannot help."**
+The distinction is between **row identity** and **title identity**:
+
+- **Row identity cannot be preserved at the Dispatcharr layer, ever.** No `Movie.id` or `uuid`
+  survives a prune-and-recreate. This is what makes persisted TMDB identity *our* job and only
+  ours, and it is why 58% survived (another provider held a relation on the same row) while the
+  sole-provider 42% did not.
+- **Title identity can be widened by merging.** With `tag_unique_movies` enabled,
+  `dispatcharr_vod_merge` injects a TMDB into the listing entry *before* the merge key is
+  computed, so even a sole-provider recreated row can arrive already carrying a stable TMDB —
+  which is exactly what this ADR's recovery keys on.
+
+**That distinction is the difference between the 8,560 recovered and the 1,113 residue**: the
+recovered rows arrived tagged; the residue did not. The two layers are complementary rather
+than alternatives. For this provider it would not have changed the outcome — 38 probed id-less
+relations returned zero detail TMDBs, and it supplies TMDB artwork on roughly 8% of entries —
+but that is a property of the provider's metadata, not a structural limit.
+
+**A merge-layer setting change is an ID-churn event.** Merges are re-derived at scan time
+rather than stored, so re-enabling `dry_run` or disabling a merge switch lets already-merged
+titles split apart again, minting new rows and new IDs; `tag_unique_movies` likewise changes
+IDs deliberately when it tags. Roughly 208 rows on the current instance exist only because
+that plugin keeps running. Treat reconfiguring it as equivalent to a provider re-ingest.
 
 **Consequences of the amendment:**
 
@@ -193,10 +208,13 @@ is a real and separate problem here.
   can carry a decision across a row being destroyed and recreated, so it does not depend on
   how well merging performs.
 - The ~1,113 id-less titles remain uncovered by TMDB. `dispatcharr_vod_merge` matches
-  `tmdb_id` → poster basename → **plot text** (the plot tier was not known when this ADR was
-  written). Whether the Emby plugin should implement any of that, or leave it to the layer
-  that already has it and sees more data, is **open** — a brief has gone to that session
-  asking for the marginal coverage of each tier against the id-less cohort specifically.
+  `tmdb_id` → poster basename → plot text, and its maintainer's measurements settle two
+  things: **the plot tier is inert for movies** (6 keys against ~43,000 poster keys — it is a
+  series mechanism, so do not build it), and any poster tier must be **byte-equality on a TMDB
+  asset basename with a uniqueness guard** — a key usable only if it maps to exactly one TMDB
+  library-wide, anything else permanently demoted to ambiguous. No fuzzy matching, on either
+  side. Whether the Emby plugin should implement a poster tier at all is **open** and hinges on
+  how many of the residue carry a usable poster key; expectation is low.
 - Orphan cleanup keeps its current behavior. Stage 1's logging means the next occurrence
   names the files, which is what makes the question answerable at all.
 
