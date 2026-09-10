@@ -155,6 +155,51 @@ the right surface.
   never re-point onto an ID that is currently on disk or reviewed-and-kept, and never
   match on name.
 
+## Amendment, 2026-09-09 (same day): stage 2 withdrawn
+
+Stage 1 shipped. **Stage 2 is withdrawn before implementation.** Reading the review gate's
+actual condition showed the guard would never fire, and could be actively wrong.
+
+**It tests the same thing the gate does.** The gate exempts an on-disk title when
+`libraryTmdbIds.Contains(providerTmdb)`, and `libraryTmdbIds` is built from the `[tmdbid=N]`
+in folder names. Stage 2's proposed condition — "the folder's TMDB is live in the catalog" —
+is that same comparison. Wherever it would rescue an orphan, the gate has already
+auto-reviewed and written the title, so no orphan exists. Wherever the gate misses, stage 2
+misses for the identical reason.
+
+**And it would retain files for excluded titles.** If a title is excluded but another live
+StreamId carries its TMDB, the guard would preserve content the user deliberately blocked —
+a regression, in service of a case that does not arise.
+
+**Why the gate missed the titles that motivated this.** Of the ~9,794 broken titles, ~1,113
+arrived from the provider with **no TMDB at all**. `hasTmdb` is then false regardless of what
+the folder says, so everything falls to `libraryFolderNames.Contains(movieName)` — which
+missed because the same event renamed every title. Those were held, never written, and their
+old `.strm` files were swept as orphans. TMDB cannot reach that cohort in cleanup any more
+than it can in the gate.
+
+**Merging is not the answer to it either, and the tempting inference is wrong.** Duplicate-row
+merging (`dispatcharr_vod_merge`) protects a title only when a second row exists
+*concurrently*. In this event the relations were deleted, the row was pruned with no
+counterpart, and a new row was created — there was nothing to match against at prune time.
+That is precisely why 58% survived (another provider held a relation on the same row) and the
+sole-provider 42% did not. **No amount of merging protects single-provider content from that
+provider re-issuing its IDs.** Merging remains the right fix for concurrent duplicates, which
+is a real and separate problem here.
+
+**Consequences of the amendment:**
+
+- **Stage 3 is unconditional and is now the only remaining stage.** It is the only layer that
+  can carry a decision across a row being destroyed and recreated, so it does not depend on
+  how well merging performs.
+- The ~1,113 id-less titles remain uncovered by TMDB. `dispatcharr_vod_merge` matches
+  `tmdb_id` → poster basename → **plot text** (the plot tier was not known when this ADR was
+  written). Whether the Emby plugin should implement any of that, or leave it to the layer
+  that already has it and sees more data, is **open** — a brief has gone to that session
+  asking for the marginal coverage of each tier against the id-less cohort specifically.
+- Orphan cleanup keeps its current behavior. Stage 1's logging means the next occurrence
+  names the files, which is what makes the question answerable at all.
+
 ## Implementation references
 
 - `Emby.Xtream.Plugin/Service/StrmSyncService.cs` (`CleanupOrphans`,
