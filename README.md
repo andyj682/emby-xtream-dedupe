@@ -212,12 +212,25 @@ Requires .NET SDK 6.0+:
 
 ```bash
 git clone https://github.com/andyj682/emby-xtream-dedupe.git
-cd emby-xtream-dedupe/Emby.Xtream.Plugin
-bash build.sh
+cd emby-xtream-dedupe
+bash build-dedupe.sh
 ```
 
-The compiled DLL will be at `Emby.Xtream.Plugin/out/Emby.Xtream.Plugin.dll`. That is the 4.9.x
-build; for Emby 4.10 use `dotnet publish -c Release_4_10` from the repository root instead.
+That builds **both** Emby targets, runs both test configurations, and checks the delete-site
+guard — the same things CI does. The DLLs land at:
+
+| Target | Path |
+| --- | --- |
+| Emby 4.9.x | `Emby.Xtream.Plugin/out/Emby.Xtream.Plugin.dll` |
+| Emby 4.10.0.17+ | `out_4_10/Emby.Xtream.Plugin.dll` |
+
+Both are already named `Emby.Xtream.Plugin.dll`, which is what Emby needs — only the published
+release asset carries the `-4.10` suffix, and that one has to be renamed on install.
+
+Expect the 4.10 test run to report **more** tests than the 4.9 one: a handful of them cover
+methods that only exist in that build.
+
+To build just the 4.9 target, `cd Emby.Xtream.Plugin && bash build.sh` still works.
 
 </details>
 

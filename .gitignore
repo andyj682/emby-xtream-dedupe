@@ -2,6 +2,9 @@
 bin/
 obj/
 out/
+# build-dedupe.sh publishes the Emby 4.10 target here. Named differently from out/ because both
+# builds exist side by side, which also means the out/ pattern does not cover it.
+out_4_10/
 
 # NuGet
 packages/
