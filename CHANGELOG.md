@@ -10,6 +10,16 @@ starting at 1.0.0 — independent of upstream
 
 ### Added
 
+- **Every sync now reports how many exclusions and reviewed marks you have.** These are the
+  expensive part of your setup — potentially tens of thousands of individual decisions that
+  cannot be reconstructed — and nothing used to show their size, so a store shrinking was
+  invisible until the review queue looked wrong weeks later. A single reading tells you little;
+  a line on every run gives you a trend, and an unexpected drop becomes obvious. The line
+  deliberately does not raise a warning: the plugin cannot tell a deliberate bulk change from
+  data loss, and crying wolf on a legitimate action would be worse than a number in the log. An
+  unreadable store is reported as `UNPARSEABLE` rather than as zero, because those look identical
+  in a count and mean opposite things.
+
 - **Two new diagnostic scripts**, written while recovering from a provider that reissued every
   stream ID in its catalog. `config-counts-canary.py` reports how many exclusions and reviewed
   marks a config actually holds — on the live config, a test rig's, or a proposed repair — and

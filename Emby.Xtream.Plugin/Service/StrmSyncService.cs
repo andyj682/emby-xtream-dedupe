@@ -317,6 +317,50 @@ namespace Emby.Xtream.Plugin.Service
         /// <summary>
         /// Writes a reviewed-checkpoint store back out as a JSON array.
         /// </summary>
+        /// <summary>
+        /// Reports the size of all four decision stores at the end of a sync (ADR-F005).
+        /// <para>
+        /// The exclusions and reviewed marks are the expensive, irreplaceable part of this
+        /// plugin's state — tens of thousands of individual decisions that cannot be
+        /// reconstructed. Nothing used to surface their size, so a store shrinking was
+        /// invisible until someone noticed the review queue looked wrong, which could be
+        /// weeks. The sync already reads every one of them, so a line per run costs nothing
+        /// and turns a single reading into a trend.
+        /// </para>
+        /// <para>
+        /// Deliberately does not warn or alarm on a drop. The plugin cannot tell a user
+        /// bulk-unexcluding several thousand titles from a store being eaten, and a false
+        /// alarm on a legitimate action is worse than a number in a log.
+        /// </para>
+        /// </summary>
+        private void LogDecisionStoreSizes(PluginConfiguration config)
+        {
+            _logger.Info(
+                "Decision stores: {0} excluded movies, {1} excluded series, {2} reviewed movies, {3} reviewed series",
+                config.ExcludedVodStreamIds?.Length ?? 0,
+                config.ExcludedSeriesIds?.Length ?? 0,
+                DescribeIdSetSize(config.ReviewedVodStreamIdsJson),
+                DescribeIdSetSize(config.ReviewedSeriesIdsJson));
+        }
+
+        /// <summary>
+        /// The count the plugin actually acts on, or <c>UNPARSEABLE</c>.
+        /// <para>
+        /// Reporting an unreadable store as 0 would be the whole bug: empty and unreadable
+        /// look identical in a number and mean opposite things — <see cref="DeserializeIdSet"/>
+        /// returns an empty set for the first and <c>null</c> for the second, and the sync
+        /// fails open on null. A store that reads 0 because it cannot be parsed is the single
+        /// most alarming thing this line can say, so it must not be able to say it quietly.
+        /// </para>
+        /// </summary>
+        private static string DescribeIdSetSize(string json)
+        {
+            var ids = DeserializeIdSet(json);
+            return ids == null
+                ? "UNPARSEABLE"
+                : ids.Count.ToString(CultureInfo.InvariantCulture);
+        }
+
         internal static string SerializeIdSet(HashSet<int> ids)
         {
             if (ids == null || ids.Count == 0)
@@ -1138,6 +1182,9 @@ namespace Emby.Xtream.Plugin.Service
 
                 _logger.Info("Movie STRM sync completed: {0} written, {1} skipped, {2} failed",
                     _movieProgress.Completed - _movieProgress.Skipped, _movieProgress.Skipped, _movieProgress.Failed);
+
+                // Logged after the write-back above, so the numbers are the post-sync state.
+                LogDecisionStoreSizes(config);
 
                 NotifyEmbyLibraryChanged(config, "Movies", _movieProgress.Added, _movieProgress.Deleted);
             }
@@ -2065,6 +2112,9 @@ namespace Emby.Xtream.Plugin.Service
                     noHashSeries.Count > 0
                         ? string.Format(CultureInfo.InvariantCulture, ", {0} with no episode hash", noHashSeries.Count)
                         : string.Empty);
+
+                // Logged after the write-back above, so the numbers are the post-sync state.
+                LogDecisionStoreSizes(config);
 
                 // Episode counts, not series counts: a series can be "written" while every
                 // episode file already matched, which changes nothing on disk for Emby to find.

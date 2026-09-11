@@ -626,6 +626,95 @@ namespace Emby.Xtream.Plugin.Tests
             Assert.DoesNotContain(", ...", summary);
         }
 
+        // -----------------------------------------------------------------
+        // Decision store sizes are reported every sync (ADR-F005)
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task SyncReportsTheSizeOfAllFourDecisionStores()
+        {
+            // The stores are the irreplaceable part of this plugin's state and nothing used to
+            // surface their size, so a shrink was invisible until the review queue looked wrong.
+            var config = DefaultConfig();
+            config.ExcludedVodStreamIds = new[] { 10, 11, 12 };
+            config.ExcludedSeriesIds = new[] { 20, 21 };
+            config.ReviewedVodStreamIdsJson = "[30,31,32,33]";
+            config.ReviewedSeriesIdsJson = "[40]";
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            var logger = new RecordingLogger();
+            await new StrmSyncService(logger, HttpClient).SyncMoviesAsync(config, None, SaveConfig);
+
+            var line = logger.Infos.Single(i => i.StartsWith("Decision stores:"));
+            Assert.Contains("3 excluded movies", line);
+            Assert.Contains("2 excluded series", line);
+            Assert.Contains("4 reviewed movies", line);
+            Assert.Contains("1 reviewed series", line);
+        }
+
+        [Fact]
+        public async Task SyncReportsAnUnreadableStoreAsUnparseableNotZero()
+        {
+            // The entire point of the line. DeserializeIdSet returns an empty set for a genuinely
+            // empty store and null for one it cannot read, and the sync fails OPEN on null — so a
+            // store reported as 0 because it could not be parsed is the most alarming thing this
+            // diagnostic can describe, and it must not be able to describe it as "0".
+            var config = DefaultConfig();
+            config.ReviewedVodStreamIdsJson = "[30,31,3";   // truncated
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            var logger = new RecordingLogger();
+            await new StrmSyncService(logger, HttpClient).SyncMoviesAsync(config, None, SaveConfig);
+
+            var line = logger.Infos.Single(i => i.StartsWith("Decision stores:"));
+            Assert.Contains("UNPARSEABLE reviewed movies", line);
+            Assert.DoesNotContain("0 reviewed movies", line);
+        }
+
+        [Fact]
+        public async Task SyncReportsAGenuinelyEmptyStoreAsZero()
+        {
+            // The other half of the contract: empty must stay 0, or every fresh install reads as
+            // an alarm and the distinction stops meaning anything.
+            var config = DefaultConfig();
+            config.ReviewedVodStreamIdsJson = string.Empty;
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            var logger = new RecordingLogger();
+            await new StrmSyncService(logger, HttpClient).SyncMoviesAsync(config, None, SaveConfig);
+
+            var line = logger.Infos.Single(i => i.StartsWith("Decision stores:"));
+            Assert.Contains("0 reviewed movies", line);
+            Assert.DoesNotContain("UNPARSEABLE", line);
+        }
+
+        [Fact]
+        public async Task SyncReportsStoreSizesAfterItsOwnWriteBack()
+        {
+            // The review gate adds auto-reviewed ids to the reviewed set during the run. Logging
+            // before that write-back would report a number that was already stale by the time it
+            // was printed, which defeats using the line as a trend.
+            var config = DefaultConfig();
+            config.RequireReviewBeforeSync = true;
+            config.EnableTmdbFolderNaming = true;
+            config.ReviewedVodStreamIdsJson = string.Empty;
+
+            // On disk under its TMDB id, so the gate exempts it and records its StreamId.
+            var dir = Path.Combine(TempDir.Path, "Movies", "Kept Movie [tmdbid=555]");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "Kept Movie [tmdbid=555].strm"),
+                "http://fake-xtream/movie/user/pass/1.mkv");
+
+            RegisterVodStreams(VodStreamsJson(
+                VodStream(streamId: 1, name: "Kept Movie", added: 1000, tmdbId: "555")));
+
+            var logger = new RecordingLogger();
+            await new StrmSyncService(logger, HttpClient).SyncMoviesAsync(config, None, SaveConfig);
+
+            var line = logger.Infos.Single(i => i.StartsWith("Decision stores:"));
+            Assert.Contains("1 reviewed movies", line);
+        }
+
         [Fact]
         public async Task OrphanCleanup_TruncatesTheSampleAndSaysSo()
         {
