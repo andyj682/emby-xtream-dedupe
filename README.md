@@ -318,6 +318,34 @@ Download the latest DLL from [Releases](../../releases/latest), replace the file
 | **TMDB Folder Naming** | Off | Append `[tmdbid=X]` to movie/series folders |
 | **Fallback Lookup** | Off | Query Emby's metadata providers for missing IDs |
 | **Name Cleaning** | Off | Strip prefix tags and custom terms from titles |
+| **Config rollback copies** | 5 | How many rollback copies of the plugin's configuration to keep (`ConfigRollbackCount`; `0` disables). See below |
+
+---
+
+## Protecting your configuration
+
+Your exclusions and reviewed marks are the expensive part of this plugin's state. On a curated
+library that is tens of thousands of individual decisions, and nothing else on your system knows
+what they were — a media scan cannot rebuild them.
+
+**What the plugin does for you.** Every sync reports the size of all four stores in the log, so a
+sudden drop is visible rather than something you notice weeks later when the review queue looks
+wrong. A large cleanup writes the full list of deleted files beside Emby's logs. And before a sync
+makes its own changes, it copies the configuration into a `rollback` folder next to it, keeping
+the most recent few.
+
+**What it does not do.** Those rollback copies live on the same disk as the file they protect, so
+they are a way to undo a bad change — not a backup. Nothing here survives losing the volume.
+
+**So take your own copy somewhere else.** The whole configuration is a single XML file:
+
+```bash
+cp /path/to/emby/config/plugins/configurations/Emby.Xtream.Plugin.xml ~/backups/$(date +%F).xml
+```
+
+> ⚠️ **That file — and every rollback copy — contains your provider username and password in
+> plain text.** Keep the copies local, and never commit one to version control or attach one to a
+> bug report.
 
 ---
 

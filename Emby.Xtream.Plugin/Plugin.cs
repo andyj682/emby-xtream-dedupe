@@ -48,6 +48,17 @@ namespace Emby.Xtream.Plugin
         public new IApplicationPaths ApplicationPaths => _applicationPaths;
 
         /// <summary>
+        /// Where Emby keeps this plugin's configuration XML.
+        /// <para>
+        /// Exposed for the rollback copies in <c>StrmSyncService</c> (ADR-F005), which cannot
+        /// derive it: Emby names the configuration file after the plugin DLL, so an install
+        /// using the Emby 4.10 asset under its published <c>-4.10</c> name has a differently
+        /// named configuration file. Reading it from the base class is the only correct source.
+        /// </para>
+        /// </summary>
+        public string ConfigPath => ConfigurationFilePath;
+
+        /// <summary>
         /// Creates an HttpClient configured with the plugin's User-Agent setting.
         /// </summary>
         public static HttpClient CreateHttpClient(int timeoutSeconds = 10)

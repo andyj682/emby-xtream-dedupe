@@ -110,6 +110,24 @@ namespace Emby.Xtream.Plugin
         public bool RequireReviewBeforeSync { get; set; }
 
         /// <summary>
+        /// How many rollback copies of this configuration to keep. Zero disables them.
+        /// <para>
+        /// The exclusions and reviewed checkpoints below are tens of thousands of individual
+        /// decisions that cannot be reconstructed, and the failure they are exposed to is a bad
+        /// write through this plugin's own save path (ADR-F005). A copy is taken at the start of
+        /// a sync when the file has changed since the last one, and lands beside the
+        /// configuration in a <c>rollback</c> folder.
+        /// </para>
+        /// <para>
+        /// It is a rollback, not a backup: it sits on the same volume as the file it protects,
+        /// so it does nothing for a lost disk. Copy the configuration somewhere else for that.
+        /// <b>These copies contain the provider username and password in plain text, exactly as
+        /// the configuration itself does.</b>
+        /// </para>
+        /// </summary>
+        public int ConfigRollbackCount { get; set; } = 5;
+
+        /// <summary>
         /// Reviewed-checkpoint: JSON array of VOD StreamIds the user has marked
         /// "reviewed" in the de-duplicated view. Stored as a JSON string (not int[])
         /// because the set grows toward the full library size; the client keeps it in

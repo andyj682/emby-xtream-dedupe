@@ -716,6 +716,161 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
+        // Configuration rollback copies (ADR-F005 mechanism 3)
+        // -----------------------------------------------------------------
+
+        /// <summary>A stand-in for the plugin's config XML; production reads Plugin.ConfigPath.</summary>
+        private string SeedConfigFile(string contents = "<PluginConfiguration><A>1</A></PluginConfiguration>")
+        {
+            var path = Path.Combine(TempDir.Path, "cfg", "Emby.Xtream.Plugin.xml");
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllText(path, contents);
+            return path;
+        }
+
+        private string[] Rollbacks() => Directory.Exists(Path.Combine(TempDir.Path, "cfg", "rollback"))
+            ? Directory.GetFiles(Path.Combine(TempDir.Path, "cfg", "rollback"), "*.xml")
+            : new string[0];
+
+        /// <summary>
+        /// Registers the same VOD payload for several consecutive syncs.
+        /// <c>RespondWith</c> enqueues exactly one response and the handler dequeues it, so a
+        /// test that syncs twice gets "no registered response" on the second call.
+        /// </summary>
+        private void RegisterVodStreamsTimes(string json, int times)
+            => Handler.RespondWithSequence("get_vod_streams", Enumerable.Repeat(json, times));
+
+        private StrmSyncService ServiceWithRollback(string configPath, RecordingLogger logger = null) =>
+            new StrmSyncService(logger ?? new RecordingLogger(), HttpClient)
+            {
+                ConfigRollbackSourcePath = configPath
+            };
+
+        [Fact]
+        public async Task Rollback_CopiesTheConfigurationBeforeTheSyncWrites()
+        {
+            var config = DefaultConfig();
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            var copy = Rollbacks().Single();
+            Assert.Equal(File.ReadAllText(cfgPath), File.ReadAllText(copy));
+        }
+
+        [Fact]
+        public async Task Rollback_SkipsWhenTheConfigurationHasNotChanged()
+        {
+            // A user syncing hourly and editing nothing would otherwise churn megabytes a day
+            // and push the real last-good state out of the retention window — which would defeat
+            // the entire mechanism rather than merely waste disk.
+            var config = DefaultConfig();
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreamsTimes(
+                VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)), 2);
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.Single(Rollbacks());
+        }
+
+        [Fact]
+        public async Task Rollback_TakesAFreshCopyWhenTheConfigurationChanged()
+        {
+            var config = DefaultConfig();
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreamsTimes(
+                VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)), 2);
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            // Simulate a save between runs. No sleep needed: the copy filename carries
+            // milliseconds precisely so back-to-back copies do not collide.
+            File.WriteAllText(cfgPath, "<PluginConfiguration><A>2</A></PluginConfiguration>");
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.Equal(2, Rollbacks().Length);
+            // The PREVIOUS state has to be recoverable — that is the whole point.
+            Assert.Contains(Rollbacks(), f => File.ReadAllText(f).Contains("<A>1</A>"));
+        }
+
+        [Fact]
+        public async Task Rollback_BackToBackCopiesDoNotOverwriteEachOther()
+        {
+            // The movie sync saves the configuration and the series sync follows immediately, so
+            // two copies within the same second are the normal case, not an edge one. At second
+            // resolution the second overwrote the first — silently destroying the state the copy
+            // existed to preserve.
+            var config = DefaultConfig();
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreamsTimes(
+                VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)), 3);
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+            File.WriteAllText(cfgPath, "<PluginConfiguration><A>2</A></PluginConfiguration>");
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+            File.WriteAllText(cfgPath, "<PluginConfiguration><A>3</A></PluginConfiguration>");
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.Equal(3, Rollbacks().Length);
+            var bodies = Rollbacks().Select(File.ReadAllText).ToList();
+            Assert.Contains(bodies, b => b.Contains("<A>1</A>"));
+            Assert.Contains(bodies, b => b.Contains("<A>2</A>"));
+            Assert.Contains(bodies, b => b.Contains("<A>3</A>"));
+        }
+
+        [Fact]
+        public async Task Rollback_DisabledWhenCountIsZero()
+        {
+            var config = DefaultConfig();
+            config.ConfigRollbackCount = 0;
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.Empty(Rollbacks());
+        }
+
+        [Fact]
+        public async Task Rollback_PrunesToTheConfiguredCount()
+        {
+            var config = DefaultConfig();
+            config.ConfigRollbackCount = 3;
+            var cfgPath = SeedConfigFile();
+            var dir = Path.Combine(TempDir.Path, "cfg", "rollback");
+            Directory.CreateDirectory(dir);
+            for (var i = 1; i <= 6; i++)
+            {
+                File.WriteAllText(Path.Combine(dir, string.Format("2025010{0}-000000.xml", i)), "old");
+            }
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.Equal(3, Rollbacks().Length);
+            // The one just written must survive the prune, not merely leave the right count.
+            Assert.Contains(Rollbacks(), f => File.ReadAllText(f).Contains("<A>1</A>"));
+        }
+
+        [Fact]
+        public async Task Rollback_DoesNotFailTheSyncWhenItCannotBeWritten()
+        {
+            // A safety copy that can break the thing it protects is worse than none.
+            var config = DefaultConfig();
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            var svc = ServiceWithRollback(Path.Combine(TempDir.Path, "nope", "missing.xml"));
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(MovieStrmPath("Kept Movie")));
+            Assert.Equal(0, svc.MovieProgress.Failed);
+        }
+
+        // -----------------------------------------------------------------
         // The full deleted-path record (ADR-F005 mechanism 2)
         // -----------------------------------------------------------------
 

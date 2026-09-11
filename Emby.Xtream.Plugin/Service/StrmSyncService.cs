@@ -166,6 +166,15 @@ namespace Emby.Xtream.Plugin.Service
         /// </summary>
         internal string DeletionRecordDirectory;
 
+        /// <summary>
+        /// The configuration file to take rollback copies of. Null means "ask Emby", which is
+        /// what production does. Tests point it at a temp file: <c>Plugin.Instance</c> is not
+        /// available to them, and the real filename is not derivable anyway — Emby names the
+        /// configuration after the plugin DLL, so an install using the Emby 4.10 asset under its
+        /// published name has a differently-named configuration file.
+        /// </summary>
+        internal string ConfigRollbackSourcePath;
+
         // Single-flight gates. Each sync replaces its progress object wholesale and shares a
         // written-path set, so two overlapping runs of the same kind corrupt each other's state.
         // Movies and series are gated separately because they touch different roots and are
@@ -718,6 +727,10 @@ namespace Emby.Xtream.Plugin.Service
         private async Task SyncMoviesCoreAsync(PluginConfiguration config, CancellationToken cancellationToken, Action saveConfig, IProgress<double> taskProgress)
         {
             ApplyUserAgentToSharedClient();
+            // Before anything that writes. CheckAndUpgradeNamingVersion saves, and so does the
+            // review gate's write-back later, so a copy taken further down would already be of
+            // the post-write state.
+            SnapshotConfigurationForRollback(config);
             CheckAndUpgradeNamingVersion(config, saveConfig);
             _movieProgress = new SyncProgress { IsRunning = true, Phase = "Starting movie sync" };
             lock (_failedItemsLock) { _failedItems.Clear(); }
@@ -1258,6 +1271,8 @@ namespace Emby.Xtream.Plugin.Service
         private async Task SyncSeriesCoreAsync(PluginConfiguration config, CancellationToken cancellationToken, Action saveConfig, IProgress<double> taskProgress)
         {
             ApplyUserAgentToSharedClient();
+            // Before anything that writes — see the matching call in SyncMoviesCoreAsync.
+            SnapshotConfigurationForRollback(config);
             CheckAndUpgradeNamingVersion(config, saveConfig);
             _seriesProgress = new SyncProgress { IsRunning = true, Phase = "Starting series sync" };
             _episodeProgress = new SyncProgress { IsRunning = true };
@@ -3322,6 +3337,128 @@ namespace Emby.Xtream.Plugin.Service
             }
 
             return removed;
+        }
+
+        /// <summary>
+        /// Takes a rollback copy of the configuration file if it has changed since the last one
+        /// (ADR-F005 mechanism 3). Returns the path written, or null if nothing was.
+        /// <para>
+        /// Called at the START of a sync, before the run performs any writes of its own — the
+        /// naming-version upgrade and the review gate's write-back both save the configuration,
+        /// so a copy taken later would already be of the post-write state.
+        /// </para>
+        /// <para>
+        /// This is a rollback, not a backup. It sits on the same volume as the file it protects
+        /// and does nothing for a lost disk; what it covers is a bad write through the plugin's
+        /// own save path, where the last good state is otherwise gone. Never throws — failing to
+        /// take a safety copy must not stop a sync the user asked for.
+        /// </para>
+        /// </summary>
+        private string SnapshotConfigurationForRollback(PluginConfiguration config)
+        {
+            var keep = config.ConfigRollbackCount;
+            if (keep <= 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                var source = ConfigRollbackSourcePath;
+                if (string.IsNullOrEmpty(source))
+                {
+                    // Plugin.Instance throws before ApplicationPaths is initialised, so this is
+                    // guarded rather than resolved at construction.
+                    source = Plugin.InstanceOrNull?.ConfigPath;
+                }
+
+                if (string.IsNullOrEmpty(source) || !File.Exists(source))
+                {
+                    return null;
+                }
+
+                var directory = Path.Combine(Path.GetDirectoryName(source) ?? string.Empty, "rollback");
+                Directory.CreateDirectory(directory);
+
+                // Skip when nothing changed, or a user who syncs hourly and edits nothing would
+                // churn several megabytes a day and push the real last-good state out of the
+                // retention window — which would defeat the whole mechanism.
+                var currentHash = HashFile(source);
+                var existing = Directory.GetFiles(directory, "*.xml");
+                Array.Sort(existing, StringComparer.OrdinalIgnoreCase);
+                if (existing.Length > 0 && currentHash != null
+                    && string.Equals(currentHash, HashFile(existing[existing.Length - 1]), StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                // Millisecond resolution, not seconds: the movie sync saves the configuration and
+                // the series sync runs straight afterwards, so two copies in the same second are
+                // ordinary rather than exotic — and at second resolution the second one would
+                // overwrite the first, silently losing the state it was taken to preserve.
+                // Still sorts chronologically, which the prune depends on.
+                var target = Path.Combine(
+                    directory,
+                    string.Format(CultureInfo.InvariantCulture, "{0:yyyyMMdd-HHmmss-fff}.xml", DateTime.Now));
+                File.Copy(source, target, false);
+
+                PruneRollbackCopies(directory, keep);
+                _logger.Debug("Configuration rollback copy written to {0}", target);
+                return target;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn("Could not take a configuration rollback copy: {0}", ex.Message);
+                return null;
+            }
+        }
+
+        /// <summary>SHA-256 of a file, or null if it cannot be read.</summary>
+        private static string HashFile(string path)
+        {
+            try
+            {
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                using (var stream = File.OpenRead(path))
+                {
+                    return BitConverter.ToString(sha.ComputeHash(stream));
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Keeps the rollback copies bounded. Name-sorted, which is chronological because the
+        /// filename is the timestamp.
+        /// </summary>
+        private void PruneRollbackCopies(string directory, int keep)
+        {
+            var existing = Directory.GetFiles(directory, "*.xml");
+            if (existing.Length <= keep)
+            {
+                return;
+            }
+
+            Array.Sort(existing, StringComparer.OrdinalIgnoreCase);
+
+            for (var i = 0; i < existing.Length - keep; i++)
+            {
+                try
+                {
+                    // delete-ok: removes this plugin's own rollback copies from the "rollback"
+                    // folder it created beside its configuration file. These are copies of the
+                    // plugin's XML settings, never library content, so the StrmOwnership check
+                    // does not apply and nothing here can reach a .strm or a media folder.
+                    File.Delete(existing[i]);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Debug("Could not prune old rollback copy '{0}': {1}", existing[i], ex.Message);
+                }
+            }
         }
 
         /// <summary>

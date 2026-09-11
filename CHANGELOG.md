@@ -20,6 +20,15 @@ starting at 1.0.0 — independent of upstream
   unreadable store is reported as `UNPARSEABLE` rather than as zero, because those look identical
   in a count and mean opposite things.
 
+- **The plugin now keeps a few rollback copies of its own configuration.** Before a sync makes any
+  changes of its own, it copies the configuration into a `rollback` folder beside it — but only
+  when it has actually changed since the last copy, so an unchanged setup does not accumulate
+  copies. Five are kept by default; set **Config rollback copies** to `0` to turn it off. This is
+  an undo for a bad change, not a backup: the copies sit on the same disk as the file they
+  protect, so please still keep your own copy somewhere else. See "Protecting your configuration"
+  in the README — and note that these copies contain your provider username and password in plain
+  text, exactly as the configuration itself does.
+
 - **When a cleanup removes a lot of files, it now writes down exactly which ones.** The sync log
   names up to 15 deleted files, which describes a routine sweep perfectly well and is useless for
   the cases you actually want explained — one past run removed 360 episodes, another 126 movies,
