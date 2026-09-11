@@ -137,6 +137,31 @@ is genuinely the user's job — a plugin cannot put a file somewhere the plugin 
   deliberate bulk action from data loss, and this project's own history is full of
   diagnostics that were correct and silent rather than loud and wrong.
 
+## Implementation note, 2026-09-10: both hooks exist
+
+The rollback is taken from two places, because neither alone is sufficient.
+
+**At the start of a sync**, before `CheckAndUpgradeNamingVersion` and before the review
+gate's write-back — both of which save. This covers everything the sync itself writes.
+
+**In an override of `BasePlugin.UpdateConfiguration`**, which covers a save made from the
+config page. That path arrives through Emby's own API and touches no plugin code anywhere
+else, so without this hook a UI save was only captured at the *following* sync — the last
+good state survived, but only for as many syncs as the retention count allowed. Whether
+the base method was `virtual` could not be determined from the reference assemblies and was
+settled by compiling: it is.
+
+Both funnel into the same snapshot routine, and the hash comparison means the two hooks
+firing in quick succession produce one copy rather than two.
+
+⚠️ **Still unverified: that Emby's configuration endpoint actually calls
+`UpdateConfiguration`** rather than assigning `Configuration` and calling
+`SaveConfiguration` directly. Compilation proves only that the override is legal. Confirm
+on a rig by changing a setting in the UI, saving, and checking that a copy appears in the
+`rollback` folder. If it does not, the sync-start hook is still doing its job and the
+override is harmless dead weight — but the coverage claim above would be wrong and should
+be corrected here.
+
 ## Implementation references
 
 - `Emby.Xtream.Plugin/Service/StrmSyncService.cs` (sync summary, `CleanupOrphans`,

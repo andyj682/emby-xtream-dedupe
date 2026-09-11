@@ -20,8 +20,9 @@ starting at 1.0.0 — independent of upstream
   unreadable store is reported as `UNPARSEABLE` rather than as zero, because those look identical
   in a count and mean opposite things.
 
-- **The plugin now keeps a few rollback copies of its own configuration.** Before a sync makes any
-  changes of its own, it copies the configuration into a `rollback` folder beside it — but only
+- **The plugin now keeps a few rollback copies of its own configuration.** Before saving your
+  settings, and before a sync makes any changes of its own, it copies the configuration into a
+  `rollback` folder beside it — but only
   when it has actually changed since the last copy, so an unchanged setup does not accumulate
   copies. Five are kept by default; set **Config rollback copies** to `0` to turn it off. This is
   an undo for a bad change, not a backup: the copies sit on the same disk as the file they

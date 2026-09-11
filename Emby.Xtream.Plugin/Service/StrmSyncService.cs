@@ -3354,7 +3354,7 @@ namespace Emby.Xtream.Plugin.Service
         /// take a safety copy must not stop a sync the user asked for.
         /// </para>
         /// </summary>
-        private string SnapshotConfigurationForRollback(PluginConfiguration config)
+        internal string SnapshotConfigurationForRollback(PluginConfiguration config)
         {
             var keep = config.ConfigRollbackCount;
             if (keep <= 0)

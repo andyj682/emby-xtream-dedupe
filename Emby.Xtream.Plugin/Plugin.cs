@@ -59,6 +59,37 @@ namespace Emby.Xtream.Plugin
         public string ConfigPath => ConfigurationFilePath;
 
         /// <summary>
+        /// Takes a rollback copy before any configuration write lands, including one made from
+        /// the config page (ADR-F005 mechanism 3).
+        /// <para>
+        /// The sync takes its own copy at the start of a run, which covers everything the sync
+        /// writes. It cannot cover a save made from the UI, because that arrives through Emby's
+        /// own API and never passes through plugin code — except here. Hooking this is the
+        /// difference between "the last good state survives for a few syncs" and "the last good
+        /// state survives the write that damaged it".
+        /// </para>
+        /// <para>
+        /// <see cref="Configuration"/> and the file on disk are both still the OLD values at this
+        /// point, which is exactly what a rollback wants. Failure is swallowed inside the
+        /// snapshot itself: refusing to save because a safety copy failed would be worse than
+        /// not having one.
+        /// </para>
+        /// </summary>
+        public override void UpdateConfiguration(BasePluginConfiguration configuration)
+        {
+            try
+            {
+                _strmSyncService?.SnapshotConfigurationForRollback(Configuration);
+            }
+            catch
+            {
+                // Never let the safety copy block the save it is protecting.
+            }
+
+            base.UpdateConfiguration(configuration);
+        }
+
+        /// <summary>
         /// Creates an HttpClient configured with the plugin's User-Agent setting.
         /// </summary>
         public static HttpClient CreateHttpClient(int timeoutSeconds = 10)
