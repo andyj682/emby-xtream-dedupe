@@ -3392,14 +3392,28 @@ namespace Emby.Xtream.Plugin.Service
                     return null;
                 }
 
-                // Millisecond resolution, not seconds: the movie sync saves the configuration and
-                // the series sync runs straight afterwards, so two copies in the same second are
-                // ordinary rather than exotic — and at second resolution the second one would
-                // overwrite the first, silently losing the state it was taken to preserve.
-                // Still sorts chronologically, which the prune depends on.
-                var target = Path.Combine(
-                    directory,
-                    string.Format(CultureInfo.InvariantCulture, "{0:yyyyMMdd-HHmmss-fff}.xml", DateTime.Now));
+                // Never overwrite, and never rely on the clock for uniqueness. The movie sync
+                // saves the configuration and the series sync runs straight afterwards, so two
+                // copies arriving in the same instant is ordinary — and back-to-back syncs have
+                // been observed completing inside a single millisecond, so even millisecond
+                // stamps collide. A collision used to mean one copy silently replacing the
+                // other, destroying exactly the state being preserved; now it just takes the
+                // next free name.
+                //
+                // The collision counter is separated by '_' and zero-padded, both deliberately.
+                // The prune sorts by name and relies on that being chronological: '_' (0x5F)
+                // sorts AFTER '.' (0x2E), so "…123_001.xml" follows "…123.xml" rather than
+                // preceding it, which a '-' separator would have got backwards. Padding keeps
+                // 002 after 001 rather than after 010.
+                var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
+                var target = Path.Combine(directory, stamp + ".xml");
+                for (var attempt = 1; File.Exists(target) && attempt < 1000; attempt++)
+                {
+                    target = Path.Combine(
+                        directory,
+                        string.Format(CultureInfo.InvariantCulture, "{0}_{1:D3}.xml", stamp, attempt));
+                }
+
                 File.Copy(source, target, false);
 
                 PruneRollbackCopies(directory, keep);
