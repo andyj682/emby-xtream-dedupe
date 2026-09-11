@@ -158,6 +158,14 @@ namespace Emby.Xtream.Plugin.Service
         internal int SeriesDetailMaxAttempts = 3;
         internal int SeriesDetailRetryBaseDelayMs = 500;
 
+        /// <summary>
+        /// Where the full deleted-path record is written when a cleanup removes more than the
+        /// logged sample (ADR-F005). Null means "ask Emby for its log directory", which is what
+        /// production does. Tests set it directly: <c>Plugin.Instance</c> is not available to
+        /// them, and reaching for it here would throw rather than degrade.
+        /// </summary>
+        internal string DeletionRecordDirectory;
+
         // Single-flight gates. Each sync replaces its progress object wholesale and shares a
         // written-path set, so two overlapping runs of the same kind corrupt each other's state.
         // Movies and series are gated separately because they touch different roots and are
@@ -3254,7 +3262,9 @@ namespace Emby.Xtream.Plugin.Service
             // not in writtenPaths, so it is deleted as an orphan even though the user still wants
             // it (see ADR-F004). Keep a sample so the question is answerable next time.
             const int DeletedSampleSize = 15;
-            var deletedSample = new List<string>();
+            // Every deletion, not just the sample. Bounded by the orphan count, which the ratio
+            // guard above already caps, so this cannot grow to the size of the library.
+            var deleted = new List<string>();
 
             foreach (var strmFile in orphans)
             {
@@ -3264,10 +3274,7 @@ namespace Emby.Xtream.Plugin.Service
                     // above, so every path here is one this plugin wrote.
                     File.Delete(strmFile);
                     removed++;
-                    if (deletedSample.Count < DeletedSampleSize)
-                    {
-                        deletedSample.Add(RelativeToRoot(strmFile, rootPath));
-                    }
+                    deleted.Add(RelativeToRoot(strmFile, rootPath));
 
                     // Remove empty parent directories
                     var dir = Path.GetDirectoryName(strmFile);
@@ -3291,14 +3298,135 @@ namespace Emby.Xtream.Plugin.Service
             {
                 // Already in order: `orphans` was sorted before the loop, so the sample is the
                 // same 15 paths on every run.
+                var sample = deleted.Count > DeletedSampleSize
+                    ? deleted.GetRange(0, DeletedSampleSize)
+                    : deleted;
+
+                // Past the sample the log alone stops being able to answer "what went?" — and
+                // that is exactly the size of event where the question gets asked. Two real
+                // cases motivated this: 360 files under Shows and 126 under Movies, neither
+                // explainable afterwards. The record is written whatever the log level, because
+                // the question is always asked in hindsight and a diagnostic you had to enable
+                // beforehand cannot answer it.
+                var recordPath = deleted.Count > sample.Count
+                    ? WriteDeletionRecord(rootPath, deleted)
+                    : null;
+
                 _logger.Info(
                     "Removed {0} orphaned STRM files from {1}: {2}{3}",
                     removed, rootPath,
-                    string.Join(", ", deletedSample),
-                    removed > deletedSample.Count ? ", ..." : string.Empty);
+                    string.Join(", ", sample),
+                    deleted.Count > sample.Count
+                        ? ", ... (full list: " + (recordPath ?? "could not be written") + ")"
+                        : string.Empty);
             }
 
             return removed;
+        }
+
+        /// <summary>
+        /// Writes the complete list of paths a cleanup removed, and returns where it went
+        /// (null if it could not be written). Called only when the deletion count exceeds the
+        /// sample the log line carries.
+        /// <para>
+        /// Never throws: the files are already gone by the time this runs, so failing to record
+        /// what happened must not also fail the sync.
+        /// </para>
+        /// </summary>
+        private string WriteDeletionRecord(string rootPath, List<string> deletedPaths)
+        {
+            var directory = DeletionRecordDirectory;
+            if (string.IsNullOrEmpty(directory))
+            {
+                try
+                {
+                    // Plugin.Instance throws when ApplicationPaths is not initialised yet, which
+                    // is why this is guarded rather than read at construction.
+                    directory = Plugin.Instance?.ApplicationPaths?.LogDirectoryPath;
+                }
+                catch (Exception ex)
+                {
+                    _logger.Debug("No log directory available for the deleted-path record: {0}", ex.Message);
+                    return null;
+                }
+            }
+
+            if (string.IsNullOrEmpty(directory))
+            {
+                return null;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(directory);
+
+                // Timestamp FIRST so an ordinary name sort is a chronological sort — the prune
+                // below depends on that, and putting the root name first would group Movies and
+                // Shows into separate runs and prune the wrong files.
+                var leaf = Path.GetFileName(rootPath.TrimEnd(
+                    Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                var fileName = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "xtream-deleted-{0:yyyyMMdd-HHmmss}-{1}.txt",
+                    DateTime.Now,
+                    string.IsNullOrEmpty(leaf) ? "library" : SanitizeFileName(leaf));
+                var path = Path.Combine(directory, fileName);
+
+                using (var writer = new StreamWriter(path, false))
+                {
+                    writer.WriteLine(string.Format(
+                        CultureInfo.InvariantCulture,
+                        "# {0} file(s) removed from {1} at {2:yyyy-MM-dd HH:mm:ss}",
+                        deletedPaths.Count, rootPath, DateTime.Now));
+                    writer.WriteLine("# Paths are relative to the root above.");
+                    foreach (var deletedPath in deletedPaths)
+                    {
+                        writer.WriteLine(deletedPath);
+                    }
+                }
+
+                PruneDeletionRecords(directory);
+                return path;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn("Could not write the deleted-path record: {0}", ex.Message);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Keeps the deleted-path records bounded. Name-sorted, which is chronological because
+        /// the timestamp leads the filename.
+        /// </summary>
+        private void PruneDeletionRecords(string directory)
+        {
+            const int KeepRecords = 10;
+
+            var existing = Directory.GetFiles(directory, "xtream-deleted-*.txt");
+            if (existing.Length <= KeepRecords)
+            {
+                return;
+            }
+
+            Array.Sort(existing, StringComparer.OrdinalIgnoreCase);
+
+            for (var i = 0; i < existing.Length - KeepRecords; i++)
+            {
+                try
+                {
+                    // delete-ok: removes this plugin's own diagnostic records from Emby's log
+                    // directory, matched on the "xtream-deleted-*.txt" name pattern it writes
+                    // itself. These are text files about the library, never library content, so
+                    // the StrmOwnership check does not apply and nothing here can reach a .strm.
+                    File.Delete(existing[i]);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Debug("Could not prune old deleted-path record '{0}': {1}",
+                        existing[i], ex.Message);
+                }
+            }
         }
 
         /// <summary>

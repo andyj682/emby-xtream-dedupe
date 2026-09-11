@@ -715,6 +715,134 @@ namespace Emby.Xtream.Plugin.Tests
             Assert.Contains("1 reviewed movies", line);
         }
 
+        // -----------------------------------------------------------------
+        // The full deleted-path record (ADR-F005 mechanism 2)
+        // -----------------------------------------------------------------
+
+        /// <summary>Somewhere for the deletion record to go; production asks Emby for its log dir.</summary>
+        private string RecordDir()
+        {
+            var dir = Path.Combine(TempDir.Path, "logs");
+            Directory.CreateDirectory(dir);
+            return dir;
+        }
+
+        private static string[] Records(string dir) => Directory.GetFiles(dir, "xtream-deleted-*.txt");
+
+        [Fact]
+        public async Task OrphanCleanup_WritesEveryDeletedPath_WhenItExceedsTheSample()
+        {
+            // The log carries 15 paths; the events that prompt the question are far larger than
+            // that — 360 files under Shows and 126 under Movies, neither answerable afterwards.
+            var config = DefaultConfig();
+            config.CleanupOrphans = true;
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            for (var i = 0; i < 20; i++)
+            {
+                SeedMovieStrm(string.Format("Gone Movie {0:D2}", i));
+            }
+
+            var logger = new RecordingLogger();
+            var svc = new StrmSyncService(logger, HttpClient) { DeletionRecordDirectory = RecordDir() };
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+
+            var record = Records(RecordDir()).Single();
+            var body = File.ReadAllText(record);
+
+            // ALL of them, not the sample — including entries past the 15th, which is the
+            // entire point of the file.
+            Assert.Contains("Gone Movie 00", body);
+            Assert.Contains("Gone Movie 19", body);
+            Assert.Equal(20, File.ReadAllLines(record).Count(l => l.StartsWith("Gone Movie ")));
+
+            // And the log has to say where it went, or nobody finds it.
+            var summary = logger.Infos.Single(i => i.Contains("orphaned STRM files"));
+            Assert.Contains(record, summary);
+        }
+
+        [Fact]
+        public async Task OrphanCleanup_WritesNoRecord_WhenTheSampleAlreadyCoversIt()
+        {
+            // A routine sweep of two files is fully described by the log line. Writing a file
+            // for every cleanup would bury the ones that matter.
+            var config = DefaultConfig();
+            config.CleanupOrphans = true;
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            SeedMovieStrm("Gone Movie A");
+            SeedMovieStrm("Gone Movie B");
+
+            var svc = new StrmSyncService(new RecordingLogger(), HttpClient)
+            {
+                DeletionRecordDirectory = RecordDir()
+            };
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.Empty(Records(RecordDir()));
+        }
+
+        [Fact]
+        public async Task OrphanCleanup_PrunesOldRecords_OldestFirst()
+        {
+            // Unbounded diagnostics become their own problem. Name sort is chronological because
+            // the timestamp leads the filename — if that ever stops being true this prunes the
+            // wrong files, which is why the ordering is asserted rather than assumed.
+            var dir = RecordDir();
+            for (var i = 1; i <= 12; i++)
+            {
+                File.WriteAllText(
+                    Path.Combine(dir, string.Format("xtream-deleted-202501{0:D2}-000000-Movies.txt", i)),
+                    "seed");
+            }
+            var seeded = Records(dir).Length;
+
+            var config = DefaultConfig();
+            config.CleanupOrphans = true;
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+            for (var i = 0; i < 20; i++)
+            {
+                SeedMovieStrm(string.Format("Gone Movie {0:D2}", i));
+            }
+
+            var svc = new StrmSyncService(new RecordingLogger(), HttpClient) { DeletionRecordDirectory = dir };
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+
+            var after = Records(dir);
+            Assert.True(seeded > 10, "the seed must exceed the retention or this asserts nothing");
+            Assert.Equal(10, after.Length);
+
+            // The survivor set must include the one just written, not merely be the right size.
+            Assert.Contains(after, f => Path.GetFileName(f).StartsWith("xtream-deleted-2026"));
+        }
+
+        [Fact]
+        public async Task OrphanCleanup_StillDeletes_WhenTheRecordCannotBeWritten()
+        {
+            // Recording what happened must never become a reason for the cleanup to fail: the
+            // files are already gone by the time the record is written.
+            var config = DefaultConfig();
+            config.CleanupOrphans = true;
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+            for (var i = 0; i < 20; i++)
+            {
+                SeedMovieStrm(string.Format("Gone Movie {0:D2}", i));
+            }
+
+            // A path that cannot be created: an existing FILE standing where the directory goes.
+            var blocked = Path.Combine(TempDir.Path, "blocked");
+            File.WriteAllText(blocked, "not a directory");
+
+            var logger = new RecordingLogger();
+            var svc = new StrmSyncService(logger, HttpClient) { DeletionRecordDirectory = blocked };
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.False(File.Exists(MovieStrmPath("Gone Movie 00")), "the orphans must still be removed");
+            Assert.Equal(0, svc.MovieProgress.Failed);
+            var summary = logger.Infos.Single(i => i.Contains("orphaned STRM files"));
+            Assert.Contains("could not be written", summary);
+        }
+
         [Fact]
         public async Task OrphanCleanup_TruncatesTheSampleAndSaysSo()
         {

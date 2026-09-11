@@ -20,6 +20,14 @@ starting at 1.0.0 — independent of upstream
   unreadable store is reported as `UNPARSEABLE` rather than as zero, because those look identical
   in a count and mean opposite things.
 
+- **When a cleanup removes a lot of files, it now writes down exactly which ones.** The sync log
+  names up to 15 deleted files, which describes a routine sweep perfectly well and is useless for
+  the cases you actually want explained — one past run removed 360 episodes, another 126 movies,
+  and neither can be accounted for now. Past that sample the full list is written to a file
+  alongside Emby's own logs, and the sync log says where it went. Older records are pruned
+  automatically. This is written regardless of your log level, because the question is always
+  asked afterwards and a diagnostic you had to switch on in advance cannot answer it.
+
 - **Two new diagnostic scripts**, written while recovering from a provider that reissued every
   stream ID in its catalog. `config-counts-canary.py` reports how many exclusions and reviewed
   marks a config actually holds — on the live config, a test rig's, or a proposed repair — and
