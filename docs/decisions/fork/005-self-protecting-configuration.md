@@ -154,13 +154,17 @@ settled by compiling: it is.
 Both funnel into the same snapshot routine, and the hash comparison means the two hooks
 firing in quick succession produce one copy rather than two.
 
-⚠️ **Still unverified: that Emby's configuration endpoint actually calls
-`UpdateConfiguration`** rather than assigning `Configuration` and calling
-`SaveConfiguration` directly. Compilation proves only that the override is legal. Confirm
-on a rig by changing a setting in the UI, saving, and checking that a copy appears in the
-`rollback` folder. If it does not, the sync-start hook is still doing its job and the
-override is harmless dead weight — but the coverage claim above would be wrong and should
-be corrected here.
+✅ **Verified on an Emby 4.10 rig, 2026-09-11.** Changing a setting in the config page and
+saving produced a copy in the `rollback` folder, so Emby's configuration endpoint does call
+`UpdateConfiguration` rather than assigning `Configuration` and saving directly. The
+coverage claim above holds: a UI save is captured at the moment it happens, not at the
+following sync.
+
+The copy captured the **pre-save** state, which is the point and is worth knowing how to
+confirm: `File.Copy` preserves the source's last-write time, so a rollback copy carries two
+different timestamps. The **filename** is when the copy was taken; the **file's mtime** is
+when the state inside it was written. If the hook ever fired too late, the mtime would
+match the save rather than predate it.
 
 ## Implementation references
 
