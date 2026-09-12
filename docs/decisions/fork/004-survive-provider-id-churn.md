@@ -4,7 +4,8 @@
 upstream ADR — see [README.md](README.md).)*
 
 **Date**: 2026-09-09
-**Status**: ACCEPTED (not yet implemented)
+**Status**: ACCEPTED — stage 1 implemented, stage 2 withdrawn, stage 3 implemented
+(see the amendments below)
 **Affects**: `StrmSyncService.SyncMoviesAsync` (the review gate, `CleanupOrphans`,
 `BuildLibraryIdentityIndex`), `PluginConfiguration` (new parallel TMDB fields),
 `Configuration/Web/config.js` (de-dup view store handling), `scripts/repair-id-churn.py`
@@ -262,6 +263,134 @@ risk" conditions.
 payload and need the detail-learned cache first; and damage predating stage 3, where nothing
 was stored to resolve against. `repair-id-churn.py` keeps a real job — it stops being the
 *only* path.
+
+## Amendment, 2026-09-11: stage 3 as built
+
+Stage 3 is implemented. Reading the code settled three things the decision above left open, and
+two of them changed the design.
+
+### The store holds pairs, not a set of TMDB IDs
+
+The original sketch — "record the TMDB ID next to the StreamId" — is ambiguous between a set of
+TMDB IDs per store and an explicit StreamId → TMDB pairing. A set does not work, and the way it
+fails is destructive.
+
+Un-excluding a title through **upstream's category tree** removes the StreamId and knows nothing
+about TMDB, so the TMDB would remain in the excluded set. The next sync would read that as a
+rotation, re-apply the exclusion, and `RemoveExcludedContent` would delete the folder — no ratio
+guard, no warning. This is precisely the "server-side alone cannot distinguish *the user withdrew
+this* from *the ID changed underneath us*" problem, and a set has no way to tell them apart.
+
+The pairing resolves it, entirely server-side:
+
+| State | Meaning | Action |
+|---|---|---|
+| pair's ID in a store, ID live | steady state | nothing |
+| pair's ID in a store, ID **dead** | the provider rotated it | re-point; record the new ID |
+| pair's ID in **neither** store | the user withdrew the decision | drop the pair |
+
+The third row is the disambiguation, and it means upstream's tree needs no changes at all — a
+withdrawal made there is recognized on the next sync. The field is
+`VodDecisionTmdbIdsJson`, a JSON map covering both movie stores at once: the ID sets already say
+*which* decision an entry belongs to, so one map avoids storing a title twice when it is both
+excluded and reviewed. `ExcludedVodStreamIds` stays a pure `int[]`, which is what the original
+"no `tmdb:603` prefixes" reasoning was protecting. Parallel `int[]`s were rejected separately:
+they carry an index invariant nothing enforces, and a mis-paired exclusion deletes the wrong
+folder.
+
+### The on-disk half of the re-point safety rule is dropped; "reviewed-and-kept" is kept
+
+The rule above reads "never re-point onto an ID that is currently on disk or reviewed-and-kept."
+Those are two rules and they land differently.
+
+**Reviewed-and-kept is kept.** It is what stops a stale exclusion from before a rotation
+overriding a newer decision to keep the title — older decision beating newer, which is wrong
+independently of churn. Declining costs only that the title stays until the user excludes it
+again; getting it wrong the other way deletes a folder they chose to keep, silently.
+
+**On-disk is dropped.** It existed because `repair-id-churn.py` falls back to **name** matching,
+which produced confidently wrong answers twice during the 2026-09-09 investigation. In-plugin,
+matching is exact: a TMDB ID the plugin recorded itself, against a field Dispatcharr enforces as
+unique. The guard would also block the case this exists for — at steady state an excluded title
+is not on disk, so the only time it *is* on disk is the window right after a rotation, when the
+title was written **because the exclusion detached**. Declining there would perpetuate the damage
+rather than prevent it.
+
+### The repair follow-on is subsumed, not deferred
+
+The follow-on section below proposes a dry-run/apply panel behind a `storeGuardBanner`. Building
+stage 3 with automatic re-pointing makes it unnecessary rather than merely later:
+
+- Re-pointing happens on every sync, which is what "not a button" asked for.
+- Its trigger condition was *resolvable* dead IDs — and those are now resolved as they appear, so
+  the count a banner would key on sits at zero except during an event. The remainder is dead IDs
+  with no stored TMDB, which the plugin cannot resolve at all; a banner on those would be lit
+  permanently, which the section itself identifies as the trap to avoid.
+- "Show evidence, not a count" is met by logging an `old → new (tmdb) title` sample, the pattern
+  the review gate already uses for held titles.
+- The two dangerous steps — stopping Emby and hand-copying a candidate over the live
+  configuration — disappear, as intended.
+
+What made automatic application defensible is a property worth stating separately, because it is
+what a reviewer should check: **the pass never removes a decision from either store.** It only
+adds IDs and drops entries from the identity map, and a dropped entry loses an identity record,
+never a decision. There is a test pinning it.
+
+### Smaller decisions, recorded so they are not re-derived
+
+- **It runs against the unfiltered catalog, before the exclusion filter**, so a re-pointed
+  exclusion takes effect on the same run — and, because the filter then removes the title, ahead
+  of the review gate, which would otherwise auto-review the title about to be excluded.
+- **Re-pointing stands down on a partial fetch.** Absence is how a dead ID is recognized, and a
+  category that failed to answer makes every live ID in it look dead. Backfilling and pruning
+  infer nothing from absence and still run — the same split the code already applies to orphan
+  cleanup.
+- **The lowest live StreamId wins** where two rows carry one TMDB, so an unmerged duplicate pair
+  cannot make the target flip between runs — the failure the series collapse representative had.
+- **Records for dead IDs are kept, not pruned.** They are the only thing that can recognize a
+  title returning under a third ID.
+- **Migration is the backfill**, run incrementally against the live catalog rather than as a
+  one-time conversion. There is no historical artifact to convert, so coverage is what the
+  catalog can still say: decisions whose ID died before this shipped can never be given an
+  identity. The sync logs the coverage ratio, which is the number that says how much of the store
+  would actually survive the next re-issue.
+
+### Rejected while building: grouping the de-dup view on TMDB ID
+
+Stage 3 was intended to carry a second change — grouping movies in the de-dup view on TMDB ID
+rather than StreamId, so that two unmerged rows for one film collapse into a single entry and the
+per-copy exclusion that causes the delete-recreate cycle stops being expressible.
+
+**It was built, tested, and withdrawn: it cannot work, for a structural reason.** The proxy
+declares `Movie.tmdb_id` **unique**, so two live movie rows can never carry the same TMDB ID. The
+conflict handler exists precisely to enforce that — it clears the ID from one row before setting
+it on the other, to avoid violating the constraint. Grouping on a column that is unique per row is
+therefore identical to grouping by row: on the install this was tried against, it collapsed 0 of
+37,552 titles.
+
+Two lessons worth more than the change was:
+
+- **The same uniqueness that makes this impossible is what makes stage 3's matching safe**, and
+  the two conclusions were drawn from the same line of code an hour apart. Stage 3 compares a
+  *stored* TMDB from a dead ID against a *live* row's TMDB — different rows at different times, so
+  uniqueness never binds. Grouping compares two live rows, where it always binds.
+- **Its unit tests passed on input the system cannot produce** — two catalog entries sharing a
+  TMDB ID. Green tests over an impossible state prove nothing, which is the same objection this
+  repo already applies to a guard that cannot reject.
+
+**The real mechanism, confirmed on a rig:** the duplicate rows differ by capitalization, so they
+are genuinely distinct rows and at most one carries a TMDB ID. Exclusion is enforced **by ID** at
+filter time but **by name** at deletion time — `RemoveExcludedContent` indexes folders with
+`OrdinalIgnoreCase` after stripping the `[tmdbid=]` suffix. So the included row is written and the
+excluded row's name matches its folder and deletes it, every run. The title is not merely churned;
+it is permanently absent despite being included and reviewed.
+
+Any fix therefore has to act on **name**, which makes it the movie-side analogue of
+[ADR-F001](001-collapse-group-exclusion-propagation.md) rather than anything TMDB can reach — and
+it needs its own decision record, because ADR-F001's safety argument rested on the propagation
+groups being co-extensive with a collapse the *sync* already performs, and the movie sync performs
+no such collapse. Merging the rows at the proxy layer is the other candidate and may be the better
+one. Neither is decided here.
 
 ## Implementation references
 

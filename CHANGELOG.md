@@ -10,6 +10,21 @@ starting at 1.0.0 — independent of upstream
 
 ### Added
 
+- **Your movie decisions now survive the provider renumbering its catalog.** Every exclusion and
+  every reviewed mark is stored against the provider's stream ID, and providers re-issue those:
+  one re-ingest replaced every ID in a catalog, which silently detached around 9,700 decisions and
+  put long-settled titles back in the review queue. The plugin now records each movie's TMDB ID
+  beside the decision, so when a title comes back under a new ID it is recognized and the decision
+  moves with it. This happens during the ordinary sync — there is nothing to run and no button to
+  press, because the whole problem with this failure is that nothing tells you it happened. The
+  sync log names a sample of what moved.
+
+  Two limits worth knowing. It protects decisions made from the moment it is installed onward: an
+  ID that died before then has nothing recorded against it, so the earlier this runs the more it
+  covers. And it needs the provider to supply a TMDB ID for the title — most do, but the ones that
+  do not are not covered. Series are unaffected, as the provider's series listing carries no TMDB
+  ID at all.
+
 - **Every sync now reports how many exclusions and reviewed marks you have.** These are the
   expensive part of your setup — potentially tens of thousands of individual decisions that
   cannot be reconstructed — and nothing used to show their size, so a store shrinking was
