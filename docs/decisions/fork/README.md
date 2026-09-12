@@ -34,6 +34,7 @@ exists, and a bare `ADR-016` anywhere in the tree is unambiguously upstream's.
 | [ADR-F004](004-survive-provider-id-churn.md) | Survive provider ID churn inside the plugin | Accepted (stages 1 and 3 implemented; stage 2 withdrawn) |
 | [ADR-F005](005-self-protecting-configuration.md) | Make the plugin protect its own configuration | Accepted |
 | [ADR-F006](006-fetch-movie-detail-on-sync.md) | Fetch movie detail for titles we sync | Proposed |
+| [ADR-F007](007-never-delete-what-the-sync-just-wrote.md) | Never delete a folder the sync just wrote | Accepted |
 
 ## History
 
