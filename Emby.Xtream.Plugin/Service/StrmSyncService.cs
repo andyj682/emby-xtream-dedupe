@@ -1591,7 +1591,8 @@ namespace Emby.Xtream.Plugin.Service
                 {
                     _movieProgress.Phase = "Removing excluded movies";
                     _movieProgress.Deleted += RemoveExcludedContent(
-                        config, excludedMovies, config.MovieFolderMode, categoryNames, folderMappings, "Movies");
+                        config, excludedMovies, config.MovieFolderMode, categoryNames, folderMappings, "Movies",
+                        writtenPaths);
                 }
 
                 // Cleanup orphans. Skipped when any category failed to answer: those titles are
@@ -2479,7 +2480,8 @@ namespace Emby.Xtream.Plugin.Service
                 {
                     _seriesProgress.Phase = "Removing excluded series";
                     _seriesProgress.Deleted += RemoveExcludedContent(
-                        config, excludedSeriesItems, config.SeriesFolderMode, categoryNames, folderMappings, "Shows");
+                        config, excludedSeriesItems, config.SeriesFolderMode, categoryNames, folderMappings, "Shows",
+                        writtenPaths);
                 }
 
                 // Cleanup orphans. Skipped when any category failed to answer — see the
@@ -3522,6 +3524,22 @@ namespace Emby.Xtream.Plugin.Service
         ///
         /// Folder matching strips any metadata-ID suffix, so an excluded title is found whether it
         /// was written as "Some Movie", "Some Movie [tmdbid=123]" or "Some Show [tvdbid=456]".
+        ///
+        /// <para>
+        /// <b>It will not delete a folder this run wrote</b> (ADR-F007). Matching is by name, but
+        /// exclusion is stored per provider ID, and the two disagree whenever distinct IDs produce
+        /// one folder name — two provider rows for the same film, or two different titles that
+        /// sanitize alike. When that happens the write loop creates the included title's folder and
+        /// this pass deletes it moments later, every run, so a title the user included and reviewed
+        /// is permanently absent with nothing in the log to explain it.
+        /// </para>
+        /// <para>
+        /// The guard is deliberately not a name rule. Every name comparison is a guess about
+        /// identity that some input violates, whereas "the sync must not delete what it just
+        /// wrote" holds regardless of why the names collided. It is also surgical: a genuinely
+        /// excluded title with no included twin writes nothing, so it is absent from
+        /// <paramref name="writtenPaths"/> and is removed exactly as before.
+        /// </para>
         /// </remarks>
         /// <param name="config">Active plugin configuration (supplies the library root).</param>
         /// <param name="excludedItems">Cleaned display name + category ID for each excluded item.</param>
@@ -3529,6 +3547,10 @@ namespace Emby.Xtream.Plugin.Service
         /// <param name="categoryNames">Category ID → name, used by "multiple" mode.</param>
         /// <param name="folderMappings">Category ID → folder, used by "custom" mode.</param>
         /// <param name="rootFolder">"Movies" or "Shows".</param>
+        /// <param name="writtenPaths">
+        /// Every STRM path this run wrote or deliberately kept. Folders containing one are never
+        /// deleted here. Episodes sit a level below the show folder, so ancestors count too.
+        /// </param>
         /// <returns>The number of folders deleted.</returns>
         private int RemoveExcludedContent(
             PluginConfiguration config,
@@ -3536,7 +3558,8 @@ namespace Emby.Xtream.Plugin.Service
             string folderMode,
             Dictionary<int, string> categoryNames,
             Dictionary<int, string> folderMappings,
-            string rootFolder)
+            string rootFolder,
+            HashSet<string> writtenPaths)
         {
             if (excludedItems == null || excludedItems.Count == 0)
             {
@@ -3544,6 +3567,33 @@ namespace Emby.Xtream.Plugin.Service
             }
 
             var removed = 0;
+            var kept = 0;
+
+            // Every folder this run wrote into, plus their ancestors up to the library root —
+            // episode STRMs live under a season folder, so the show folder an exclusion targets
+            // is two levels above the path that protects it. Built once; the walk stops as soon
+            // as it reaches a directory already recorded, since that one's ancestors are too.
+            var protectedDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (writtenPaths != null && writtenPaths.Count > 0)
+            {
+                var separators = new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar };
+                var rootLength = (config.StrmLibraryPath ?? string.Empty).TrimEnd(separators).Length;
+
+                foreach (var written in writtenPaths)
+                {
+                    var dir = Path.GetDirectoryName(written);
+                    for (var depth = 0; depth < 8 && !string.IsNullOrEmpty(dir); depth++)
+                    {
+                        var normalized = dir.TrimEnd(separators);
+                        if (normalized.Length <= rootLength || !protectedDirs.Add(normalized))
+                        {
+                            break;
+                        }
+
+                        dir = Path.GetDirectoryName(normalized);
+                    }
+                }
+            }
 
             // subFolder → { folderNameWithoutIdSuffix → fullPath }. One readdir per subfolder.
             var dirIndexCache = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
@@ -3589,6 +3639,22 @@ namespace Emby.Xtream.Plugin.Service
                     continue;
                 }
 
+                // An included title wrote this folder moments ago (ADR-F007). Two provider IDs
+                // produced one folder name; deleting it would erase content the user kept, and
+                // the next run would write and delete it again. Logged at Info because the state
+                // is genuinely wrong upstream and the user is the only one who can resolve it.
+                if (protectedDirs.Contains(existingDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
+                {
+                    kept++;
+                    _logger.Info(
+                        "Kept '{0}': excluded item '{1}' matches a folder this sync just wrote for an "
+                        + "included title. Two provider entries share a folder name, so excluding one "
+                        + "would delete the other. Nothing was removed — exclude both entries, or merge "
+                        + "them at the provider, if you meant to drop this title.",
+                        existingDir, sanitized);
+                    continue;
+                }
+
                 try
                 {
                     // Delete only the files this plugin actually wrote, verified by content, then
@@ -3626,6 +3692,13 @@ namespace Emby.Xtream.Plugin.Service
                 _logger.Info("Removed {0} folder(s) for explicitly excluded items under {1}", removed, rootFolder);
             }
 
+            if (kept > 0)
+            {
+                _logger.Info(
+                    "Kept {0} folder(s) under {1} that an excluded item matched by name but an included "
+                    + "title had just written. Each is a pair of provider entries sharing one folder name.",
+                    kept, rootFolder);
+            }
 
             return removed;
         }

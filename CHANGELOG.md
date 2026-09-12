@@ -8,6 +8,21 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Fixed
+
+- **Excluding one movie could permanently remove a different one from your library.** When a
+  provider lists two entries whose names differ only in capitalization — or that otherwise end up
+  with the same folder name — excluding one of them deleted the *other* one's folder moments after
+  the sync wrote it. The library ended up missing a title you had included and reviewed, the next
+  sync wrote and deleted it again, and nothing in the log said why. The sync now refuses to delete
+  a folder it wrote during the same run, and says so in the log when it declines. Excluding a title
+  that has no such twin removes its folder exactly as before.
+
+  You can now include one of the two entries and exclude the other, which previously left you with
+  neither. The underlying cause is two catalog entries that should have been merged into one
+  before reaching the plugin, so it is still worth merging them at the source — but the plugin no
+  longer destroys content over the disagreement. Series were never affected.
+
 ### Added
 
 - **Your movie decisions now survive the provider renumbering its catalog.** Every exclusion and

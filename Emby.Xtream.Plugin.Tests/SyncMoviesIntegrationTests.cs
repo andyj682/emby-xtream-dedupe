@@ -465,6 +465,36 @@ namespace Emby.Xtream.Plugin.Tests
             Assert.True(File.Exists(MovieStrmPath("Keep Me")));
         }
 
+        [Fact]
+        public async Task ExcludedMovie_MatchingAFolderJustWrittenForAnIncludedTitle_KeepsIt()
+        {
+            // Two provider entries for what the provider reports as different titles, differing
+            // only in case. Exclusion is stored per StreamId, but folder matching is
+            // case-insensitive -- so excluding one used to delete the other's folder moments
+            // after the write loop created it. The library ends up missing a title the user
+            // included, the next run writes and deletes it again, and nothing says why.
+            //
+            // Both must remain individually selectable: excluding one is not a statement about
+            // the other. Series get this for free because ADR-F001 propagates exclusion across
+            // the collapse group, whose key uses the same normalization as the deletion index,
+            // so the pair is excluded together and never written. Movies have no such
+            // propagation -- and should not, since it would make "sync just this one"
+            // inexpressible.
+            var config = DefaultConfig();
+            config.ExcludedVodStreamIds = new[] { 2 };
+
+            RegisterVodStreams(VodStreamsJson(
+                VodStream(streamId: 1, name: "Some Film", added: 1000),
+                VodStream(streamId: 2, name: "SOME FILM", added: 1000)));
+
+            var svc = MakeService();
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(MovieStrmPath("Some Film")),
+                "the included title's folder was deleted by the excluded title's name match");
+            Assert.Equal(0, svc.MovieProgress.Failed);
+        }
+
         /// <summary>
         /// A folder that matches an excluded title by name but holds no STRM was not written
         /// by this plugin. Recursively deleting it would destroy user data (codex review of
