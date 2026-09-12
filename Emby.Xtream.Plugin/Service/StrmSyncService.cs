@@ -391,6 +391,424 @@ namespace Emby.Xtream.Plugin.Service
         }
 
         /// <summary>
+        /// Reads the movie decision identity map (ADR-F004 stage 3).
+        /// </summary>
+        /// <returns>
+        /// The StreamId → TMDB pairs, or <c>null</c> when the field holds something that will
+        /// not parse. Null and empty are distinguishable for the same reason they are in
+        /// <see cref="DeserializeIdSet"/>, and the stakes are higher here: an unreadable map
+        /// read as "no identities are known" would look exactly like every decision having
+        /// just been withdrawn, and the pruning pass would agree.
+        /// </returns>
+        internal static Dictionary<int, int> DeserializeTmdbMap(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new Dictionary<int, int>();
+            }
+
+            try
+            {
+                var raw = STJ.JsonSerializer.Deserialize<Dictionary<string, int>>(json);
+                if (raw == null)
+                {
+                    return null;
+                }
+
+                var map = new Dictionary<int, int>();
+                foreach (var kv in raw)
+                {
+                    int streamId;
+                    if (int.TryParse(kv.Key, NumberStyles.None, CultureInfo.InvariantCulture, out streamId)
+                        && streamId > 0 && kv.Value > 0)
+                    {
+                        map[streamId] = kv.Value;
+                    }
+                }
+
+                return map;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Writes the movie decision identity map back out, key-sorted so successive saves
+        /// produce a readable diff rather than a reshuffle.
+        /// </summary>
+        internal static string SerializeTmdbMap(Dictionary<int, int> map)
+        {
+            if (map == null || map.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            var ordered = new List<int>(map.Keys);
+            ordered.Sort();
+
+            var output = new Dictionary<string, int>(ordered.Count);
+            foreach (var id in ordered)
+            {
+                output[id.ToString(CultureInfo.InvariantCulture)] = map[id];
+            }
+
+            return STJ.JsonSerializer.Serialize(output);
+        }
+
+        private static bool TryParseTmdbId(string raw, out int tmdbId)
+        {
+            tmdbId = 0;
+            return IsValidTmdbId(raw)
+                && int.TryParse(raw.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out tmdbId)
+                && tmdbId > 0;
+        }
+
+        /// <summary>
+        /// What a <see cref="ReconcileMovieDecisionIdentity"/> pass did.
+        /// </summary>
+        internal sealed class MovieIdentityReconciliation
+        {
+            public int Backfilled { get; set; }
+            public int RepointedExclusions { get; set; }
+            public int RepointedReviews { get; set; }
+            public int DeclinedExclusions { get; set; }
+            public int Pruned { get; set; }
+
+            /// <summary>Distinct titles that moved to a new StreamId and had a decision applied.</summary>
+            public int MovedTitles { get; set; }
+
+            /// <summary>Human-readable <c>old → new</c> evidence, capped by the caller.</summary>
+            public List<string> Samples { get; private set; }
+
+            public MovieIdentityReconciliation()
+            {
+                Samples = new List<string>();
+            }
+
+            public bool ChangedStores
+            {
+                get { return RepointedExclusions > 0 || RepointedReviews > 0; }
+            }
+
+            public bool ChangedAnything
+            {
+                get { return ChangedStores || Backfilled > 0 || Pruned > 0; }
+            }
+        }
+
+        /// <summary>
+        /// Carries movie decisions across a provider re-issuing its stream ids (ADR-F004
+        /// stage 3). Mutates the two decision stores and the identity map in place.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Runs against the UNFILTERED catalogue and before the exclusion filter, so a
+        /// re-pointed exclusion takes effect on the same run rather than the next one — and,
+        /// because the filter removes it before the loop begins, ahead of the review gate,
+        /// which would otherwise auto-review the title it is about to exclude.
+        /// </para>
+        /// <para>
+        /// <b>It never removes a decision.</b> It adds ids to the two stores and drops entries
+        /// from the identity map; a dropped entry loses an identity record, never a decision.
+        /// That is the property that makes running it automatically on every sync defensible,
+        /// and there is a test pinning it.
+        /// </para>
+        /// <para>
+        /// Matching is exact — a TMDB id this plugin recorded itself, against a field
+        /// Dispatcharr enforces as unique. <b>No name matching</b>, which ADR-F004 rules out
+        /// outright: the one event this exists for renamed every title as it renumbered them.
+        /// </para>
+        /// </remarks>
+        /// <param name="allowRepoint">
+        /// False when the catalogue fetch was partial. Absence is how this pass recognizes a
+        /// dead id, and a category that failed to answer makes every live id in it look dead.
+        /// Backfilling and pruning stay safe (neither infers anything from absence), so only
+        /// re-pointing stands down — the same reasoning that skips orphan cleanup on a partial
+        /// fetch.
+        /// </param>
+        internal static MovieIdentityReconciliation ReconcileMovieDecisionIdentity(
+            IList<VodStreamInfo> fetchedStreams,
+            HashSet<int> excludedIds,
+            HashSet<int> reviewedIds,
+            Dictionary<int, int> tmdbByStreamId,
+            bool allowRepoint,
+            int sampleSize)
+        {
+            var result = new MovieIdentityReconciliation();
+            if (fetchedStreams == null || excludedIds == null || reviewedIds == null || tmdbByStreamId == null)
+            {
+                return result;
+            }
+
+            // 1. Drop identity records whose decision is gone. An entry whose StreamId is in
+            //    neither store means the user withdrew that decision — through the de-dup view
+            //    or through upstream's category tree, which knows nothing about TMDB and so
+            //    cannot clean up after itself. Without this step the next pass would read the
+            //    orphaned entry as a rotation and helpfully restore what the user removed.
+            //    This is the whole reason the map stores PAIRS rather than a set of TMDB ids:
+            //    a bare set cannot tell a withdrawn decision from a rotated id.
+            var stale = new List<int>();
+            foreach (var kv in tmdbByStreamId)
+            {
+                if (!excludedIds.Contains(kv.Key) && !reviewedIds.Contains(kv.Key))
+                {
+                    stale.Add(kv.Key);
+                }
+            }
+
+            foreach (var id in stale)
+            {
+                tmdbByStreamId.Remove(id);
+                result.Pruned++;
+            }
+
+            // 2. Index the live catalogue. Lowest id wins where two live rows carry the same
+            //    TMDB (an unmerged duplicate pair), so the re-point target cannot flip between
+            //    runs the way the series collapse representative once did.
+            var liveIds = new HashSet<int>();
+            var liveIdByTmdb = new Dictionary<int, int>();
+            var nameByStreamId = new Dictionary<int, string>();
+            foreach (var s in fetchedStreams)
+            {
+                if (s == null)
+                {
+                    continue;
+                }
+
+                liveIds.Add(s.StreamId);
+
+                int tmdb;
+                if (!TryParseTmdbId(s.TmdbId, out tmdb))
+                {
+                    continue;
+                }
+
+                nameByStreamId[s.StreamId] = s.Name;
+
+                int existing;
+                if (!liveIdByTmdb.TryGetValue(tmdb, out existing) || s.StreamId < existing)
+                {
+                    liveIdByTmdb[tmdb] = s.StreamId;
+                }
+            }
+
+            // 3. Backfill — this is the migration, and it is incremental by design. There is no
+            //    historical artifact to convert, so coverage is whatever the live catalogue can
+            //    still tell us: a decision whose id died before this shipped can never be given
+            //    an identity, which is the honest limit and the reason coverage is highest the
+            //    earlier this starts running.
+            foreach (var s in fetchedStreams)
+            {
+                if (s == null || tmdbByStreamId.ContainsKey(s.StreamId))
+                {
+                    continue;
+                }
+
+                if (!excludedIds.Contains(s.StreamId) && !reviewedIds.Contains(s.StreamId))
+                {
+                    continue;
+                }
+
+                int tmdb;
+                if (TryParseTmdbId(s.TmdbId, out tmdb))
+                {
+                    tmdbByStreamId[s.StreamId] = tmdb;
+                    result.Backfilled++;
+                }
+            }
+
+            if (!allowRepoint)
+            {
+                return result;
+            }
+
+            // The reviewed set as it stood BEFORE this pass. The exclusion guard below reads
+            // this rather than the live set so that a reviewed mark carried across in step 4
+            // cannot make step 5 decline the exclusion for the same title — the ordinary
+            // "reviewed it, later excluded it" state, which must survive a rotation intact.
+            var reviewedBefore = new HashSet<int>(reviewedIds);
+
+            var repointed = new List<KeyValuePair<int, int>>();
+            foreach (var kv in tmdbByStreamId)
+            {
+                if (liveIds.Contains(kv.Key))
+                {
+                    continue;
+                }
+
+                int newId;
+                if (!liveIdByTmdb.TryGetValue(kv.Value, out newId) || newId == kv.Key)
+                {
+                    // Dead with nothing carrying its TMDB. Keep the record: this is exactly
+                    // what makes the decision recoverable if the title returns later.
+                    continue;
+                }
+
+                repointed.Add(new KeyValuePair<int, int>(kv.Key, newId));
+            }
+
+            // Deterministic order, so the logged sample is the same titles every run.
+            repointed.Sort((a, b) => a.Key.CompareTo(b.Key));
+
+            // Which moves actually carried a decision. A move can be listed above and still
+            // apply nothing — the new id may already hold the decision, or the exclusion may be
+            // declined below — and those must not be reported or recorded as if they had.
+            var applied = new HashSet<int>();
+
+            // 4. Reviewed marks first — see reviewedBefore above.
+            foreach (var move in repointed)
+            {
+                if (reviewedIds.Contains(move.Key) && !reviewedIds.Contains(move.Value))
+                {
+                    reviewedIds.Add(move.Value);
+                    result.RepointedReviews++;
+                    applied.Add(move.Key);
+                }
+            }
+
+            // 5. Exclusions, unless the user has since reviewed-and-kept the title under its
+            //    new id. That is a newer, explicit decision than the exclusion being carried
+            //    forward, and declining costs only that the title stays until the user excludes
+            //    it again — where getting it wrong the other way deletes a folder they wanted,
+            //    silently, because RemoveExcludedContent has no ratio guard.
+            foreach (var move in repointed)
+            {
+                if (!excludedIds.Contains(move.Key) || excludedIds.Contains(move.Value))
+                {
+                    continue;
+                }
+
+                if (reviewedBefore.Contains(move.Value))
+                {
+                    result.DeclinedExclusions++;
+                    continue;
+                }
+
+                excludedIds.Add(move.Value);
+                result.RepointedExclusions++;
+                applied.Add(move.Key);
+            }
+
+            // 6. Give the new ids their own identity records. The old entries stay: they cost
+            //    little, they keep the pass idempotent, and they remain the record of a title
+            //    that may yet come back under a third id.
+            foreach (var move in repointed)
+            {
+                int tmdb;
+                if (applied.Contains(move.Key) && tmdbByStreamId.TryGetValue(move.Key, out tmdb))
+                {
+                    tmdbByStreamId[move.Value] = tmdb;
+                    result.MovedTitles++;
+
+                    if (result.Samples.Count < sampleSize)
+                    {
+                        string name;
+                        result.Samples.Add(string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0} → {1} (tmdb {2}) {3}",
+                            move.Key,
+                            move.Value,
+                            tmdb,
+                            nameByStreamId.TryGetValue(move.Value, out name) ? name : string.Empty).TrimEnd());
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Reads the stores, runs <see cref="ReconcileMovieDecisionIdentity"/>, writes back what
+        /// changed and reports it. Kept separate so the pass itself stays pure and unit-testable.
+        /// </summary>
+        private void ReconcileMovieDecisionIdentityForSync(
+            PluginConfiguration config,
+            List<VodStreamInfo> fetchedStreams,
+            bool allowRepoint,
+            Action saveConfig)
+        {
+            var reviewedIds = DeserializeIdSet(config.ReviewedVodStreamIdsJson);
+            if (reviewedIds == null)
+            {
+                _logger.Error(
+                    "ReviewedVodStreamIdsJson could not be parsed, so movie decisions will not be reconciled against "
+                    + "provider id changes this run. Every reviewed mark would otherwise look withdrawn, and the "
+                    + "identity records for them would be dropped. Check the plugin configuration file.");
+                return;
+            }
+
+            var tmdbByStreamId = DeserializeTmdbMap(config.VodDecisionTmdbIdsJson);
+            if (tmdbByStreamId == null)
+            {
+                _logger.Error(
+                    "VodDecisionTmdbIdsJson could not be parsed, so movie decisions will not be reconciled against "
+                    + "provider id changes this run. The field is left untouched for repair rather than rebuilt — "
+                    + "rebuilding would silently discard every identity recorded so far. Check the plugin configuration file.");
+                return;
+            }
+
+            var excludedIds = new HashSet<int>(config.ExcludedVodStreamIds ?? new int[0]);
+
+            const int RepointSampleSize = 15;
+            var outcome = ReconcileMovieDecisionIdentity(
+                fetchedStreams, excludedIds, reviewedIds, tmdbByStreamId, allowRepoint, RepointSampleSize);
+
+            if (!outcome.ChangedAnything)
+            {
+                return;
+            }
+
+            if (outcome.ChangedStores)
+            {
+                var ordered = new List<int>(excludedIds);
+                ordered.Sort();
+                config.ExcludedVodStreamIds = ordered.ToArray();
+                config.ReviewedVodStreamIdsJson = SerializeIdSet(reviewedIds);
+            }
+
+            config.VodDecisionTmdbIdsJson = SerializeTmdbMap(tmdbByStreamId);
+            saveConfig?.Invoke();
+
+            if (outcome.MovedTitles > 0)
+            {
+                // A sample, not just a count, for the same reason the review gate logs held
+                // titles by name: "carried 8,560 decisions across" cannot be checked by anyone.
+                _logger.Info(
+                    "Movie identity: {0} title(s) came back under a new StreamId — carried {1} exclusion(s) and "
+                    + "{2} reviewed mark(s) across: {3}{4}",
+                    outcome.MovedTitles,
+                    outcome.RepointedExclusions,
+                    outcome.RepointedReviews,
+                    string.Join(", ", outcome.Samples),
+                    outcome.MovedTitles > outcome.Samples.Count ? ", ..." : string.Empty);
+            }
+
+            if (outcome.DeclinedExclusions > 0)
+            {
+                _logger.Info(
+                    "Movie identity: declined to carry {0} exclusion(s) onto a new StreamId you have since reviewed "
+                    + "and kept — the newer decision wins. Exclude the title again if that is not what you want.",
+                    outcome.DeclinedExclusions);
+            }
+
+            if (outcome.Backfilled > 0 || outcome.Pruned > 0)
+            {
+                // The coverage ratio is the useful half: it says how much of the store would
+                // actually survive the next re-issue. Decisions whose id died before this
+                // shipped can never be given an identity, so it will not reach 100%.
+                _logger.Info(
+                    "Movie identity: recorded a TMDB id for {0} decision(s), dropped {1} record(s) for decisions no "
+                    + "longer stored — {2} of {3} movie decisions now carry one",
+                    outcome.Backfilled,
+                    outcome.Pruned,
+                    tmdbByStreamId.Count,
+                    excludedIds.Count + reviewedIds.Count);
+            }
+        }
+
+        /// <summary>
         /// Indexes an existing STRM library tree by the identity its folder names carry: the
         /// TMDB ID from a <c>[tmdbid=N]</c> suffix, and the ID-stripped folder name.
         /// </summary>
@@ -780,6 +1198,10 @@ namespace Emby.Xtream.Plugin.Service
                         "{0} of {1} VOD categories failed to answer — orphan cleanup will be skipped this run to avoid deleting files for the categories that did not report",
                         vodFetch.FailedCategoryCount, vodFetch.RequestedCategoryCount);
                 }
+
+                // Carry stored decisions across any ids the provider re-issued (ADR-F004 stage 3),
+                // before the exclusion filter reads the stores and before the review gate runs.
+                ReconcileMovieDecisionIdentityForSync(config, fetchedStreams, !vodFetch.HadFailures, saveConfig);
 
                 // Per-item exclusions (issue #57): split the catalogue before anything else reads it.
                 // The excluded half is kept so its on-disk folders can be removed below.

@@ -137,6 +137,35 @@ namespace Emby.Xtream.Plugin
         /// </summary>
         public string ReviewedVodStreamIdsJson { get; set; } = string.Empty;
 
+        /// <summary>
+        /// Durable identity for movie decisions (ADR-F004 stage 3): a JSON dictionary
+        /// mapping StreamId → TMDB id, covering every movie StreamId that appears in
+        /// <see cref="ExcludedVodStreamIds"/> or <see cref="ReviewedVodStreamIdsJson"/>.
+        /// <para>
+        /// Every decision this plugin stores is keyed on the provider's StreamId, which
+        /// the provider is free to re-issue — and has: one re-ingest replaced every id in
+        /// a catalog, silently detaching ~9,700 decisions. Recording the TMDB id beside
+        /// the decision is what lets the sync recognize the same title under a new id and
+        /// carry the decision across, with no snapshot and no external repair.
+        /// </para>
+        /// <para>
+        /// A map rather than two parallel <c>int[]</c>s deliberately: parallel arrays
+        /// carry an index invariant that nothing enforces, and a mis-paired exclusion
+        /// makes <c>RemoveExcludedContent</c> delete the wrong folder. A map rather than
+        /// <c>tmdb:603</c> prefixes inside the existing stores, also deliberately —
+        /// prefixes would cost <see cref="ExcludedVodStreamIds"/> its native
+        /// <c>int[]</c> XML serialization and inflate it in the field whose size is
+        /// already the concern (see ADR-F004).
+        /// </para>
+        /// <para>
+        /// The pairing is what makes "the provider rotated this id" distinguishable from
+        /// "the user withdrew this decision": an entry whose StreamId is no longer in
+        /// either store means the latter, and is dropped. Series are excluded — they carry
+        /// no TMDB id on the <c>get_series</c> list payload.
+        /// </para>
+        /// </summary>
+        public string VodDecisionTmdbIdsJson { get; set; } = string.Empty;
+
         // Series / TV Shows
         public bool SyncSeries { get; set; }
         public int[] SelectedSeriesCategoryIds { get; set; } = new int[0];
