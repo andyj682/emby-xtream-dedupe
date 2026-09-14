@@ -1014,6 +1014,98 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
+        // The dated catalogue snapshot (ADR-F005 mechanism 6)
+        // -----------------------------------------------------------------
+
+        private string SnapshotPath() => Path.Combine(
+            TempDir.Path, "cfg", "xtream-backups", "snapshots",
+            "catalogue-ids-" + DateTime.Now.ToString("yyyy-MM-dd") + ".tsv");
+
+        [Fact]
+        public async Task Snapshot_WritesRowsInTheExternalScriptFormat()
+        {
+            // repair-id-churn.py must read a plugin-written file with no flags and no changes,
+            // so the header, the tab layout and the empty-not-zero TMDB field all have to match
+            // catalogue-snapshot.py exactly.
+            var config = DefaultConfig();
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreams(VodStreamsJson(
+                VodStream(streamId: 42, name: "Some Film", added: 1000, tmdbId: "603"),
+                VodStream(streamId: 43, name: "No Tmdb Film", added: 1000)));
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            var raw = File.ReadAllText(SnapshotPath());
+            Assert.DoesNotContain("\r", raw); // readers strip only '\n'; a stray CR lands in a field
+
+            var lines = raw.Split('\n');
+            Assert.Equal("#kind\tid\ttmdb\tname\tcategory", lines[0]);
+            Assert.Contains("movie\t42\t603\tSome Film\t", lines);
+            Assert.Contains("movie\t43\t\tNo Tmdb Film\t", lines);
+        }
+
+        [Fact]
+        public async Task Snapshot_FirstWriteOfTheDayIsNeverOverwritten()
+        {
+            // The whole safety property. A snapshot is the only record of what a now-dead id used
+            // to be, so a sync running several times a day that rewrote today's file would
+            // destroy the morning's pre-event copy every afternoon — turning the artifact that
+            // makes a churn event recoverable into the one that makes it unrecoverable.
+            var config = DefaultConfig();
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreamsTimes(
+                VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)), 2);
+
+            var svc = ServiceWithRollback(cfgPath);
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+            var first = File.ReadAllText(SnapshotPath());
+
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.Equal(first, File.ReadAllText(SnapshotPath()));
+        }
+
+        [Fact]
+        public async Task Snapshot_SkippedWhenTheCatalogueFetchWasPartial()
+        {
+            // A short listing written first would be locked in for the rest of the day by the
+            // rule above, and a snapshot missing exactly the titles that later go dead is worse
+            // than no snapshot — it reads as authoritative.
+            var config = DefaultConfig();
+            config.SelectedVodCategoryIds = new[] { 1, 2 };
+            var cfgPath = SeedConfigFile();
+            Handler.RespondWith("category_id=1",
+                VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+            Handler.RespondWith("category_id=2", "{}", HttpStatusCode.InternalServerError);
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.False(File.Exists(SnapshotPath()));
+        }
+
+        [Fact]
+        public async Task Snapshot_AddsToTheDayFileWithoutDisplacingTheOtherKind()
+        {
+            // The movie and series syncs each contribute their own rows to ONE file, which is why
+            // "already recorded today" is judged per kind rather than per file. A movie sync must
+            // extend a file the series sync started, not replace it — repair-id-churn.py resolves
+            // both stores from a single snapshot.
+            var config = DefaultConfig();
+            var cfgPath = SeedConfigFile();
+            var path = SnapshotPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllText(path, "#kind\tid\ttmdb\tname\tcategory\nseries\t900\t\tSome Show\t7\n");
+
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            var lines = File.ReadAllText(path).Split('\n');
+            Assert.Equal("#kind\tid\ttmdb\tname\tcategory", lines[0]);
+            Assert.Contains("series\t900\t\tSome Show\t7", lines);
+            Assert.Contains("movie\t1\t\tKept Movie\t", lines);
+        }
+
+        // -----------------------------------------------------------------
         // The full deleted-path record (ADR-F005 mechanism 2)
         // -----------------------------------------------------------------
 

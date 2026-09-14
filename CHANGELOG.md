@@ -33,6 +33,20 @@ starting at 1.0.0 — independent of upstream
 
 ### Added
 
+- **The plugin now records a dated listing of your provider's catalog on every sync.** When a
+  provider reissues its stream IDs, the only thing that can say what a now-dead ID used to be is a
+  listing taken beforehand — and until now that meant running `scripts/catalogue-snapshot.py`
+  yourself, on a schedule, having known to set it up. It is written to
+  `xtream-backups/snapshots/` from the catalog the sync already fetches, so it costs no extra
+  requests, and the twelve most recent days are kept.
+
+  The format and filename match `catalogue-snapshot.py` exactly, so `repair-id-churn.py
+  --snapshot` reads a plugin-written file with no changes. **The first listing of each day is
+  never overwritten**, which is the point: a sync running several times a day that rewrote the
+  file would destroy the morning's pre-event copy every afternoon. A listing is also skipped
+  entirely if any category failed to answer, since a short one written first would be locked in
+  for the rest of the day while reading as authoritative.
+
 - **The plugin now keeps its own history of how many exclusions and reviewed marks you have.**
   Every sync already reported those four numbers in the log — but Emby's log rotates, and the
   value of those counts is the trend across weeks, not any single reading. They are now also

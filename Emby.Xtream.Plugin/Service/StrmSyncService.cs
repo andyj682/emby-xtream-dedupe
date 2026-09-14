@@ -190,6 +190,18 @@ namespace Emby.Xtream.Plugin.Service
         /// <summary>The append-only store-size history. Format matches config-counts-canary.py.</summary>
         internal const string CountsLogFileName = "counts.log";
 
+        /// <summary>Dated catalogue listings, in catalogue-snapshot.py's format and naming.</summary>
+        internal const string SnapshotsFolderName = "snapshots";
+
+        /// <summary>The first line of a snapshot. Readers skip it because it starts with '#'.</summary>
+        internal const string SnapshotHeader = "#kind\tid\ttmdb\tname\tcategory";
+
+        /// <summary>
+        /// Dated snapshots kept, matching <c>catalogue-snapshot.py</c>'s default. At roughly
+        /// 3 MB each this is a bounded ~40 MB.
+        /// </summary>
+        private const int SnapshotRetentionDays = 12;
+
         // Single-flight gates. Each sync replaces its progress object wholesale and shares a
         // written-path set, so two overlapping runs of the same kind corrupt each other's state.
         // Movies and series are gated separately because they touch different roots and are
@@ -464,6 +476,166 @@ namespace Emby.Xtream.Plugin.Service
             catch (Exception ex)
             {
                 _logger.Debug("Could not append to the decision store counts log: {0}", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// One snapshot row in <c>catalogue-snapshot.py</c>'s TSV format:
+        /// <c>kind\tid\ttmdb\tname\tcategory</c>.
+        /// </summary>
+        /// <remarks>
+        /// A tab or newline inside a title would split the row into the wrong fields, so they are
+        /// replaced with spaces — matching the external writer, which does the same for the same
+        /// reason. An absent TMDB id is an empty field, never a zero: readers parse that column
+        /// and a literal 0 would be a TMDB id nothing has.
+        /// </remarks>
+        internal static string FormatSnapshotRow(string kind, int id, string tmdbId, string name, int? categoryId)
+        {
+            var clean = (name ?? string.Empty)
+                .Replace('\t', ' ')
+                .Replace('\r', ' ')
+                .Replace('\n', ' ');
+
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}\t{1}\t{2}\t{3}\t{4}",
+                kind,
+                id,
+                string.IsNullOrWhiteSpace(tmdbId) ? string.Empty : tmdbId.Trim(),
+                clean,
+                categoryId.HasValue ? categoryId.Value.ToString(CultureInfo.InvariantCulture) : string.Empty);
+        }
+
+        /// <summary>
+        /// Records the day's catalogue listing for one kind (ADR-F005 mechanism 6), written from
+        /// the fetch the sync has already performed.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This is the artifact both real recoveries depended on, and both times it existed only
+        /// because someone had run <c>catalogue-snapshot.py</c> by hand. It is the only record of
+        /// what a now-dead provider id used to be, so it answers the questions a stored identity
+        /// cannot: series (which carry no TMDB id on the list payload), titles the provider ships
+        /// with no TMDB id at all, and whether ids are ever recycled.
+        /// </para>
+        /// <para>
+        /// <b>The first write of a calendar day wins, per kind, and is never overwritten.</b> That
+        /// mirrors the external script's refusal to clobber a same-day file, and it is the whole
+        /// safety property: a sync running four times a day that rewrote today's snapshot would
+        /// destroy the morning's pre-event copy every afternoon — turning the thing that makes a
+        /// churn event recoverable into the thing that makes it unrecoverable. The movie and
+        /// series syncs each contribute their own rows to the same file, which is why "already
+        /// written" is judged per kind rather than per file.
+        /// </para>
+        /// <para>
+        /// Skipped entirely when the catalogue fetch was partial. A short listing written first
+        /// would be locked in for the rest of the day by the rule above, and a snapshot missing
+        /// the titles that later go dead is worse than none — it reads as authoritative.
+        /// </para>
+        /// <para>
+        /// Format and filename match <c>catalogue-snapshot.py</c> exactly so that
+        /// <c>repair-id-churn.py --snapshot</c> reads a plugin-written file with no flags and no
+        /// changes. Never throws.
+        /// </para>
+        /// </remarks>
+        private void WriteCatalogueSnapshot(string kind, List<string> rows)
+        {
+            if (rows == null || rows.Count == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                var root = ResolveRecordsRoot();
+                if (string.IsNullOrEmpty(root))
+                {
+                    return;
+                }
+
+                var directory = Path.Combine(root, SnapshotsFolderName);
+                var path = Path.Combine(
+                    directory,
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "catalogue-ids-{0}.tsv",
+                        DateTime.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)));
+
+                var prefix = kind + "\t";
+                var carried = new List<string>();
+                if (File.Exists(path))
+                {
+                    foreach (var line in File.ReadAllLines(path))
+                    {
+                        if (line.StartsWith(prefix, StringComparison.Ordinal))
+                        {
+                            return;
+                        }
+
+                        if (line.Length > 0 && !line.StartsWith("#", StringComparison.Ordinal))
+                        {
+                            carried.Add(line);
+                        }
+                    }
+                }
+
+                Directory.CreateDirectory(directory);
+
+                // Explicit '\n', not WriteAllLines: on Windows that would emit CRLF, and the
+                // readers strip only '\n' — the stray '\r' would land inside the last field.
+                var text = new StringBuilder();
+                text.Append(SnapshotHeader).Append('\n');
+                foreach (var line in carried)
+                {
+                    text.Append(line).Append('\n');
+                }
+
+                foreach (var line in rows)
+                {
+                    text.Append(line).Append('\n');
+                }
+
+                File.WriteAllText(path, text.ToString(), new UTF8Encoding(false));
+                _logger.Info("Catalogue snapshot: recorded {0} {1} rows in {2}", rows.Count, kind, path);
+
+                PruneCatalogueSnapshots(directory);
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("Could not write the catalogue snapshot: {0}", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Keeps the most recent <see cref="SnapshotRetentionDays"/> dated snapshots.
+        /// </summary>
+        private void PruneCatalogueSnapshots(string directory)
+        {
+            var files = Directory.GetFiles(directory, "catalogue-ids-*.tsv");
+            if (files.Length <= SnapshotRetentionDays)
+            {
+                return;
+            }
+
+            // ISO dates sort chronologically as text, so ordinal order is oldest-first.
+            Array.Sort(files, StringComparer.Ordinal);
+
+            for (var i = 0; i < files.Length - SnapshotRetentionDays; i++)
+            {
+                try
+                {
+                    // delete-ok: prunes this plugin's own dated catalogue listings from the
+                    // "snapshots" folder it created. These are TSV files the plugin wrote
+                    // itself, never library content. The glob matches only its own
+                    // "catalogue-ids-*.tsv" naming, so a copy the user has deliberately
+                    // preserved by renaming it with a prefix is immune — the same escape the
+                    // external script's prune leaves open, and the one that saved a recovery.
+                    File.Delete(files[i]);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Debug("Could not prune old snapshot '{0}': {1}", files[i], ex.Message);
+                }
             }
         }
 
@@ -1359,6 +1531,17 @@ namespace Emby.Xtream.Plugin.Service
                 // before the exclusion filter reads the stores and before the review gate runs.
                 ReconcileMovieDecisionIdentityForSync(config, fetchedStreams, !vodFetch.HadFailures, saveConfig);
 
+                // Record the day's catalogue (ADR-F005 mechanism 6) from the UNFILTERED fetch —
+                // an excluded title's id is exactly the kind a repair has to resolve later.
+                if (!vodFetch.HadFailures)
+                {
+                    WriteCatalogueSnapshot(
+                        "movie",
+                        fetchedStreams
+                            .Select(s => FormatSnapshotRow("movie", s.StreamId, s.TmdbId, s.Name, s.CategoryId))
+                            .ToList());
+                }
+
                 // Per-item exclusions (issue #57): split the catalogue before anything else reads it.
                 // The excluded half is kept so its on-disk folders can be removed below.
                 var excludedVodSet = ContentExclusionFilter.BuildSet(config.ExcludedVodStreamIds);
@@ -1909,6 +2092,18 @@ namespace Emby.Xtream.Plugin.Service
                     _logger.Warn(
                         "{0} of {1} series categories failed to answer — orphan cleanup will be skipped this run to avoid deleting files for the categories that did not report",
                         seriesFetch.FailedCategoryCount, seriesFetch.RequestedCategoryCount);
+                }
+
+                // The series half of the day's catalogue snapshot (ADR-F005 mechanism 6). Series
+                // carry no TMDB id on this payload, so these rows resolve by name — which is
+                // exactly why the snapshot remains the only route for series identity.
+                if (!seriesFetch.HadFailures)
+                {
+                    WriteCatalogueSnapshot(
+                        "series",
+                        fetchedSeries
+                            .Select(s => FormatSnapshotRow("series", s.SeriesId, s.TmdbId, s.Name, s.CategoryId))
+                            .ToList());
                 }
 
                 // Collapse key for every fetched series, built once up front: (target folder +
