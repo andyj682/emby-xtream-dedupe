@@ -49,9 +49,9 @@ on top of the existing per-title exclusion:
   title's whole group of duplicate copies, not just the IDs you ticked, so a copy that appears
   later under a fresh ID is skipped without any action from you. This is based on the fact that Dispatcharr uses the exact same title for the series for every merged copy of it. Titles that Dispatcharr hasn't merged and have different names will appear as different items in the review interface.
 - **Only sync movies and series you have reviewed** — normally anything you have not excluded gets
-  synced, which is fine until a provider adds content in bulk; one addition during development was
-  5,974 movies overnight. With this option on, a title is written only once you have reviewed it or
-  excluded it, so new arrivals wait in the de-dup view instead of landing in your library.
+  synced, which is fine until a provider adds content in bulk. With this option on, a title is
+  written only once you have reviewed it or excluded it, so new arrivals wait in the de-dup view
+  instead of landing in your library.
   If a title already on disk reappears with a different ID it is automatically marked as reviewed
   and continues to sync. For series, an existing record of their episodes counts as recognition too,
   so a rename is fine as long as the ID is stable. Turning on **metadata IDs in folder names** makes
@@ -61,6 +61,40 @@ on top of the existing per-title exclusion:
 - **Sync robustness for duplicates** — cross-listed series collapse to one folder instead of
   writing duplicate per-episode files, and series whose episode list returns empty under load are
   retried so a batch of new titles lands in one sync.
+
+### Surviving a provider renumbering its catalog
+
+Every exclusion and reviewed mark is stored against the provider's stream ID, and some providers
+periodically reissue those in bulk. When that happens, thousands of decisions silently detach at
+once: long-settled titles reappear as unreviewed, files pointing at dead IDs get cleaned up as
+orphans, and nothing in any log explains it. This fork treats that as a first-class failure
+rather than bad luck.
+
+- **Decisions re-point themselves** — the plugin records each movie's TMDB ID alongside the
+  decision, so a title returning under a new ID is recognised and your choice moves with it,
+  during the ordinary sync. There is deliberately no button and no prompt: the defining property
+  of this failure is that nothing tells you it happened, so anything needing you to notice has
+  already failed. It protects decisions from the moment it is installed onward, needs the provider
+  to supply a TMDB ID, and does not cover series, whose listing carries none.
+- **The sync will not delete a folder it just wrote** — exclusions are stored per ID but enforced
+  by folder name, so two catalog entries that resolve to one folder name used to make the sync
+  write a title and then immediately delete it, on every run, leaving you with neither copy.
+- **It keeps its own records, with no setup** — the store sizes in a log that does not rotate, a
+  dated listing of which provider ID was which title, a rollback copy taken immediately before
+  every configuration write, and a scheduled backup of the whole configuration. Point **Backup and
+  records folder** at a different drive and the backup, the listings and the store-size log move
+  there, which is what turns them from same-disk copies into real ones. The rollback stays beside
+  the configuration on purpose: it is taken on every write, so it has to be somewhere always
+  available.
+- **Recovery scripts for what the plugin cannot reach** — damage that predates installation, series
+  identity, and repairing a configuration after the fact. See
+  [Diagnostics and recovery scripts](#diagnostics-and-recovery-scripts).
+
+The in-plugin half exists because the alternative did not hold up in practice: tooling that needs
+Docker, a cron entry and prior knowledge protects the people who least need protecting. A snapshot
+is only useful if it was taken *before* the event, which means it cannot depend on anyone
+remembering to take one.
+
 ## Related projects
 
 This plugin is one of four small projects that together run a Dispatcharr-backed VOD library in
