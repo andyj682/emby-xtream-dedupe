@@ -57,7 +57,7 @@ starting at 1.0.0 — independent of upstream
   listing taken beforehand — and until now that meant running `scripts/catalogue-snapshot.py`
   yourself, on a schedule, having known to set it up. It is written to
   `xtream-backups/snapshots/` from the catalog the sync already fetches, so it costs no extra
-  requests, and the twelve most recent days are kept.
+  requests, and the ten most recent days are kept.
 
   The format and filename match `catalogue-snapshot.py` exactly, so `repair-id-churn.py
   --snapshot` reads a plugin-written file with no changes. **The first listing of each day is
@@ -105,9 +105,9 @@ starting at 1.0.0 — independent of upstream
 
 - **The plugin now keeps a few rollback copies of its own configuration.** Before saving your
   settings, and before a sync makes any changes of its own, it copies the configuration into an
-  `xtream-rollback` folder beside it — but only
-  when it has actually changed since the last copy, so an unchanged setup does not accumulate
-  copies. Five are kept by default; set **Config rollback copies** to `0` to turn it off. This is
+  `xtream-rollback` folder beside it — but only when it has actually changed since the last copy,
+  so an unchanged setup does not accumulate copies. Ten are kept by default; set **Configuration
+  rollback copies to keep** to `0` to turn it off. This is
   an undo for a bad change, not a backup: the copies sit on the same disk as the file they
   protect, so please still keep your own copy somewhere else. See "Protecting your configuration"
   in the README — and note that these copies contain your provider username and password in plain

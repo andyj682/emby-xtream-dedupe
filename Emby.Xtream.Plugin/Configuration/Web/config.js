@@ -119,7 +119,15 @@ function (BaseView, loading) {
         });
 
         view.querySelector('.btnBrowseStrmPath').addEventListener('click', function () {
-            openBrowser(view);
+            openBrowser(view, '.txtStrmLibraryPath', '.strmPathValidationResult');
+        });
+
+        view.querySelector('.btnBrowseRecordsPath').addEventListener('click', function () {
+            openBrowser(view, '.txtRecordsPath', '.recordsPathValidationResult');
+        });
+
+        view.querySelector('.txtRecordsPath').addEventListener('blur', function () {
+            validatePath(view, '.txtRecordsPath', '.recordsPathValidationResult');
         });
 
         view.querySelector('.btnCloseBrowser').addEventListener('click', function () {
@@ -132,9 +140,11 @@ function (BaseView, loading) {
 
         view.querySelector('.btnBrowserOk').addEventListener('click', function () {
             var path = (view.querySelector('.txtBrowserCurrentPath').value || '').trim();
+            var modal = view.querySelector('.strmBrowserModal');
             if (path) {
-                view.querySelector('.txtStrmLibraryPath').value = path;
-                validateStrmPath(view);
+                view.querySelector(modal._targetClass || '.txtStrmLibraryPath').value = path;
+                validatePath(view, modal._targetClass || '.txtStrmLibraryPath',
+                    modal._resultClass || '.strmPathValidationResult');
             }
             closeBrowser(view);
         });
@@ -627,9 +637,9 @@ function (BaseView, loading) {
             view.querySelector('.chkCleanupOrphans').checked = !!config.CleanupOrphans;
             view.querySelector('.txtOrphanSafetyThreshold').value = Math.round((config.OrphanSafetyThreshold != null ? config.OrphanSafetyThreshold : 0.20) * 100);
             view.querySelector('.txtRecordsPath').value = config.RecordsPath || '';
-            view.querySelector('.txtConfigBackupCount').value = config.ConfigBackupCount != null ? config.ConfigBackupCount : 14;
-            view.querySelector('.txtConfigRollbackCount').value = config.ConfigRollbackCount != null ? config.ConfigRollbackCount : 5;
-            view.querySelector('.txtCatalogueSnapshotCount').value = config.CatalogueSnapshotCount != null ? config.CatalogueSnapshotCount : 14;
+            view.querySelector('.txtConfigBackupCount').value = config.ConfigBackupCount != null ? config.ConfigBackupCount : 10;
+            view.querySelector('.txtConfigRollbackCount').value = config.ConfigRollbackCount != null ? config.ConfigRollbackCount : 10;
+            view.querySelector('.txtCatalogueSnapshotCount').value = config.CatalogueSnapshotCount != null ? config.CatalogueSnapshotCount : 10;
             view.querySelector('.orphanThresholdContainer').style.display = config.CleanupOrphans ? '' : 'none';
             view.querySelector('.chkEnableNfoFiles').checked = !!config.EnableNfoFiles;
 
@@ -1123,10 +1133,14 @@ function updateEpgVisibility(view) {
 
     // ---- Folder browser ----
 
-    function openBrowser(view) {
+    // One shared browser modal serves several path fields, so it remembers which one opened
+    // it. Without this the OK button would always write back to the STRM library path.
+    function openBrowser(view, targetClass, resultClass) {
         var modal = view.querySelector('.strmBrowserModal');
+        modal._targetClass = targetClass || '.txtStrmLibraryPath';
+        modal._resultClass = resultClass || '.strmPathValidationResult';
         modal.style.display = 'flex';
-        var startPath = (view.querySelector('.txtStrmLibraryPath').value || '').trim() || null;
+        var startPath = (view.querySelector(modal._targetClass).value || '').trim() || null;
         browserNavigate(view, startPath);
     }
 
@@ -1203,8 +1217,14 @@ function updateEpgVisibility(view) {
     }
 
     function validateStrmPath(view) {
-        var path = (view.querySelector('.txtStrmLibraryPath').value || '').trim();
-        var resultEl = view.querySelector('.strmPathValidationResult');
+        validatePath(view, '.txtStrmLibraryPath', '.strmPathValidationResult');
+    }
+
+    // Same writability check for any path field: the endpoint only reports whether Emby can
+    // write there, which is exactly what both the STRM library and the records root need.
+    function validatePath(view, inputClass, resultClass) {
+        var path = (view.querySelector(inputClass).value || '').trim();
+        var resultEl = view.querySelector(resultClass);
         if (!path) {
             resultEl.innerHTML = '';
             return;

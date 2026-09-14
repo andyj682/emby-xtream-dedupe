@@ -331,7 +331,10 @@ Download the latest DLL from [Releases](../../releases/latest), replace the file
 | **TMDB Folder Naming** | Off | Append `[tmdbid=X]` to movie/series folders |
 | **Fallback Lookup** | Off | Query Emby's metadata providers for missing IDs |
 | **Name Cleaning** | Off | Strip prefix tags and custom terms from titles |
-| **Config rollback copies** | 5 | How many rollback copies of the plugin's configuration to keep (`ConfigRollbackCount`; `0` disables). See below |
+| **Backup and records folder** | *(blank)* | Where configuration backups, catalog snapshots and the store-size history are kept (`RecordsPath`). Blank means `xtream-backups` beside the plugin's configuration. See below |
+| **Configuration backups to keep** | 10 | Daily copies of your exclusions, reviewed marks and settings, taken by a scheduled task (`ConfigBackupCount`; `0` disables) |
+| **Configuration rollback copies to keep** | 10 | Copies taken immediately *before* the plugin writes its configuration, kept beside it (`ConfigRollbackCount`; `0` disables). See below |
+| **Catalog snapshots to keep** | 10 | Dated listings of which provider ID was which title, written during each sync (`CatalogueSnapshotCount`; `0` disables) |
 
 ---
 
@@ -341,16 +344,25 @@ Your exclusions and reviewed marks are the expensive part of this plugin's state
 library that is tens of thousands of individual decisions, and nothing else on your system knows
 what they were — a media scan cannot rebuild them.
 
-**What the plugin does for you.** Every sync reports the size of all four stores in the log, so a
-sudden drop is visible rather than something you notice weeks later when the review queue looks
-wrong. A large cleanup writes the full list of deleted files beside Emby's logs. And before a sync
-makes its own changes, it copies the configuration into an `xtream-rollback` folder next to it, keeping
-the most recent few.
+**What the plugin does for you**, with no setup at all:
 
-**What it does not do.** Those rollback copies live on the same disk as the file they protect, so
-they are a way to undo a bad change — not a backup. Nothing here survives losing the volume.
+- **Store sizes in every sync log**, so a sudden drop is visible rather than something you notice
+  weeks later when the review queue looks wrong — and appended to `counts.log` as well, because
+  Emby's log rotates and the value of those counts is the trend.
+- **The full list of deleted files** beside Emby's logs whenever a cleanup removes more than the
+  log line samples.
+- **A rollback copy** of the configuration into an `xtream-rollback` folder next to it, taken
+  immediately before the plugin writes.
+- **A scheduled backup** of the configuration, and a **dated catalog snapshot** written during each
+  sync — both under the **Backup and records folder**, which defaults to `xtream-backups` beside
+  the configuration.
 
-**So take your own copy somewhere else.** The whole configuration is a single XML file:
+**What it does not do.** By default all of that lives on the same disk as the file it protects. It
+covers a bad write; it does not survive losing the volume.
+
+**So point the backup folder at a different drive** if you have one — that single setting upgrades
+the backups and snapshots from same-disk to real ones. For anything off-machine, the whole
+configuration is still a single XML file:
 
 ```bash
 cp /path/to/emby/config/plugins/configurations/Emby.Xtream.Plugin.xml ~/backups/$(date +%F).xml

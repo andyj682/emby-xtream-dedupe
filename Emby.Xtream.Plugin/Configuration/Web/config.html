@@ -528,54 +528,6 @@
                         </div>
                     </div>
 
-                    <div class="inputContainer" style="margin-top:1em;">
-                        <input class="txtRecordsPath" type="text" is="emby-input"
-                               label="Backup and records folder" />
-                        <div class="fieldDescription">
-                            Where to keep configuration backups, catalog snapshots and the store-size
-                            history. Leave blank for an <code>xtream-backups</code> folder beside the
-                            plugin's configuration file. <strong>Point this at a different drive</strong>
-                            if you have one &mdash; on the default it shares a disk with the file it
-                            protects, so it covers a bad write but not a lost drive. These copies contain
-                            your provider username and password in plain text, exactly as the
-                            configuration and your STRM files already do.
-                            <br /><br />
-                            Changing this does <strong>not</strong> move records already written &mdash;
-                            move the old folder yourself if you want to keep the history, or the
-                            store-size log restarts and the old one is left behind. Note also that the
-                            catalog snapshot and the store-size line are written by a <em>sync</em>;
-                            the backup task on its own writes the configuration copy and the store-size
-                            line, but cannot produce a snapshot without fetching the catalog.
-                        </div>
-                    </div>
-                    <div class="inputContainer">
-                        <input class="txtConfigBackupCount" type="number" is="emby-input"
-                               label="Configuration backups to keep" min="0" step="1" />
-                        <div class="fieldDescription">
-                            Daily copies of your exclusions, reviewed marks and settings &mdash; the part
-                            of your setup a library scan cannot rebuild. Set 0 to turn the backup task off.
-                        </div>
-                    </div>
-                    <div class="inputContainer">
-                        <input class="txtConfigRollbackCount" type="number" is="emby-input"
-                               label="Configuration rollback copies to keep" min="0" step="1" />
-                        <div class="fieldDescription">
-                            Separate from the backups above: a copy taken immediately <em>before</em> the
-                            plugin writes its configuration, kept beside it, so a bad change can be undone.
-                            Set 0 to disable.
-                        </div>
-                    </div>
-                    <div class="inputContainer">
-                        <input class="txtCatalogueSnapshotCount" type="number" is="emby-input"
-                               label="Catalog snapshots to keep" min="0" step="1" />
-                        <div class="fieldDescription">
-                            A dated record of which provider ID was which title, written during each sync
-                            at no extra cost. If your provider renumbers its catalog, this is the only
-                            thing that can say what a now-dead ID used to be. Roughly 3&nbsp;MB per day.
-                            Set 0 to disable.
-                        </div>
-                    </div>
-
                     <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.5em;">
                         <label>
                             <input class="chkRequireReviewBeforeSync" type="checkbox" is="emby-checkbox" />
@@ -826,6 +778,54 @@
                                 is the old behaviour, and the two fixed choices are for setups where the
                                 plugin cannot read your stream profiles.
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <hr style="border:none; border-top:1px solid rgba(128,128,128,0.2); margin:0.25em 0 1.25em;" />
+
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Config and Records Backup</h2>
+                    <div style="display:flex; gap:0.5em; align-items:flex-end;">
+                        <div class="inputContainer" style="flex:1; min-width:0; margin-bottom:0;">
+                            <input class="txtRecordsPath" type="text" is="emby-input"
+                                   label="Backup and records folder" />
+                        </div>
+                        <button class="btnBrowseRecordsPath raised button-secondary" is="emby-button" type="button"
+                                style="flex-shrink:0; margin-bottom:4px;" title="Browse">
+                            Browse
+                        </button>
+                    </div>
+                    <div class="fieldDescription" style="margin-top:0.25em;">
+                        Where to keep configuration backups, catalog snapshots and the store-size history,
+                        which can help restore your include/review choices during big churn events from
+                        your provider. Leave blank to store at plugins/configurations/xtream-backup in
+                        Emby's main folder. Changing this does not move existing backups automatically.
+                    </div>
+                    <div class="recordsPathValidationResult" style="margin-top:0.25em; margin-bottom:0.75em; font-size:0.9em;"></div>
+                    <div class="inputContainer">
+                        <input class="txtConfigBackupCount" type="number" is="emby-input"
+                               label="Configuration backups to keep" min="0" step="1" />
+                        <div class="fieldDescription">
+                            Copies of your exclusions, reviewed marks and settings. Runs via an Emby
+                            scheduled task. Set 0 to disable.
+                        </div>
+                    </div>
+                    <div class="inputContainer">
+                        <input class="txtConfigRollbackCount" type="number" is="emby-input"
+                               label="Configuration rollback copies to keep" min="0" step="1" />
+                        <div class="fieldDescription">
+                            Separate from the backup above: a copy taken immediately before the plugin
+                            writes its configuration, kept beside it, so a bad change can be undone.
+                            Set 0 to disable.
+                        </div>
+                    </div>
+                    <div class="inputContainer">
+                        <input class="txtCatalogueSnapshotCount" type="number" is="emby-input"
+                               label="Catalog snapshots to keep" min="0" step="1" />
+                        <div class="fieldDescription">
+                            A record of titles and corresponding title IDs, written during each sync.
+                            Set 0 to disable.
                         </div>
                     </div>
                 </div>

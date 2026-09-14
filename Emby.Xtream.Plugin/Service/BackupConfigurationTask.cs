@@ -33,8 +33,7 @@ namespace Emby.Xtream.Plugin.Service
 
         public string Name        => "Xtream Tuner – Back Up Configuration";
         public string Description =>
-            "Copy the plugin's exclusions, reviewed marks and settings into the backup folder. "
-            + "These decisions cannot be rebuilt by a library scan.";
+            "Back up the plugin's settings, exclusions, reviewed marks and store size.";
         public string Category    => "Xtream Tuner";
         public string Key         => "XtreamTunerBackupConfiguration";
 

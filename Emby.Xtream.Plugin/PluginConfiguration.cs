@@ -116,7 +116,7 @@ namespace Emby.Xtream.Plugin
         /// decisions that cannot be reconstructed, and the failure they are exposed to is a bad
         /// write through this plugin's own save path (ADR-F005). A copy is taken at the start of
         /// a sync when the file has changed since the last one, and lands beside the
-        /// configuration in a <c>rollback</c> folder.
+        /// configuration in an <c>xtream-rollback</c> folder.
         /// </para>
         /// <para>
         /// It is a rollback, not a backup: it sits on the same volume as the file it protects,
@@ -125,7 +125,7 @@ namespace Emby.Xtream.Plugin
         /// the configuration itself does.</b>
         /// </para>
         /// </summary>
-        public int ConfigRollbackCount { get; set; } = 5;
+        public int ConfigRollbackCount { get; set; } = 10;
 
         /// <summary>
         /// Where the plugin keeps its durable records — configuration backups, catalog
@@ -150,22 +150,22 @@ namespace Emby.Xtream.Plugin
         /// How many scheduled configuration backups to keep. Zero disables the backup task.
         /// <para>
         /// Separate from <see cref="ConfigRollbackCount"/> because they answer different
-        /// failures: a rollback undoes the last bad write and only needs a few, while a backup
-        /// covers losing the file and wants enough history to reach back past a problem nobody
-        /// noticed at the time. Two weeks of daily copies at ~1.8 MB is the default.
+        /// failures: a rollback undoes the last bad write, while a backup covers losing the file
+        /// and wants enough history to reach back past a problem nobody noticed at the time. The
+        /// three retentions default to the same number so one answer covers all of them.
         /// </para>
         /// </summary>
-        public int ConfigBackupCount { get; set; } = 14;
+        public int ConfigBackupCount { get; set; } = 10;
 
         /// <summary>
         /// How many dated catalog snapshots to keep (ADR-F005 mechanism 6). Zero disables them.
         /// <para>
         /// One per day, roughly 3 MB each. The useful depth is "far enough back to predate an
-        /// id-churn event nobody noticed immediately", which two weeks covers comfortably — the
-        /// two real recoveries both used a snapshot under 48 hours old.
+        /// id-churn event nobody noticed immediately" — the two real recoveries both used a
+        /// snapshot under 48 hours old, so a week and a half is generous.
         /// </para>
         /// </summary>
-        public int CatalogueSnapshotCount { get; set; } = 14;
+        public int CatalogueSnapshotCount { get; set; } = 10;
 
         /// <summary>
         /// Reviewed-checkpoint: JSON array of VOD StreamIds the user has marked
