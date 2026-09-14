@@ -55,16 +55,26 @@ namespace Emby.Xtream.Plugin.Service
             progress.Report(0);
 
             var config = Plugin.Instance.Configuration;
+            var service = Plugin.Instance.StrmSyncService;
+
+            // Record the store sizes even when no backup is taken, and even when backups are
+            // switched off entirely. Reading the four counts needs no catalog fetch and no sync —
+            // and an install whose sync is disabled, broken, or simply never scheduled is exactly
+            // the one whose stores nothing else is watching. Tying the history to the sync would
+            // leave that install with no record at all, which is the gap this task can close for
+            // free. Consecutive identical lines are skipped, so a daily run adds one line a day.
+            service.AppendDecisionStoreCounts(config);
+
             if (config.ConfigBackupCount <= 0)
             {
-                _logger.Info("Configuration backups are disabled (retention is 0) — skipping.");
+                _logger.Info("Configuration backups are disabled (retention is 0) — skipping the copy.");
                 progress.Report(100);
                 return Task.FromResult(0);
             }
 
             // Returns null when the configuration is unchanged since the last copy, which is the
             // ordinary case on a daily timer and is not worth a log line at Info.
-            var written = Plugin.Instance.StrmSyncService.BackupConfiguration(config);
+            var written = service.BackupConfiguration(config);
             if (written == null)
             {
                 _logger.Debug("No configuration backup written (unchanged, or it could not be taken).");

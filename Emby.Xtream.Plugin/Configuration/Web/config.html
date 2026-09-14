@@ -539,6 +539,13 @@
                             protects, so it covers a bad write but not a lost drive. These copies contain
                             your provider username and password in plain text, exactly as the
                             configuration and your STRM files already do.
+                            <br /><br />
+                            Changing this does <strong>not</strong> move records already written &mdash;
+                            move the old folder yourself if you want to keep the history, or the
+                            store-size log restarts and the old one is left behind. Note also that the
+                            catalog snapshot and the store-size line are written by a <em>sync</em>;
+                            the backup task on its own writes the configuration copy and the store-size
+                            line, but cannot produce a snapshot without fetching the catalog.
                         </div>
                     </div>
                     <div class="inputContainer">

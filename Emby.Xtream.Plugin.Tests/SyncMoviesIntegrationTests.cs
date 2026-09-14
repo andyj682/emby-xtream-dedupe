@@ -1033,6 +1033,24 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         [Fact]
+        public void CountsLog_CanBeRecordedWithoutASync()
+        {
+            // The backup task calls this directly. An install whose sync is disabled, failing or
+            // simply never scheduled is exactly the one whose stores nothing else is watching, so
+            // the history must not depend on a sync having run — reading the four counts needs no
+            // catalogue fetch.
+            var config = DefaultConfig();
+            config.ExcludedVodStreamIds = new[] { 1, 2, 3 };
+            var cfgPath = SeedConfigFile();
+
+            ServiceWithRollback(cfgPath).AppendDecisionStoreCounts(config);
+
+            Assert.Contains(
+                "ExcludedVodStreamIds=3",
+                Assert.Single(File.ReadAllLines(CountsLogPath())));
+        }
+
+        [Fact]
         public async Task CountsLog_DoesNotRepeatAByteIdenticalLine()
         {
             // The movie and series syncs run back to back, so identical counts land twice inside

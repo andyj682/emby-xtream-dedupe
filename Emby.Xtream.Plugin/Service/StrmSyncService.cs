@@ -539,7 +539,7 @@ namespace Emby.Xtream.Plugin.Service
         /// Never throws. Failing to record a number must not fail a sync the user asked for.
         /// </para>
         /// </remarks>
-        private void AppendDecisionStoreCounts(PluginConfiguration config)
+        internal void AppendDecisionStoreCounts(PluginConfiguration config)
         {
             try
             {
