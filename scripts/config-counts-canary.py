@@ -20,6 +20,11 @@ a path. Read-only.
 Usage:
   python3 config-counts-canary.py /cfg/plugins/configurations/Emby.Xtream.Plugin.xml
   python3 config-counts-canary.py <path> --log /out/xtream-config-counts.log
+
+The --log line is stamped with the CONTAINER's local time, and a bare python:3-alpine has no
+timezone set, so it runs in UTC. The plugin writes the same line, in the same format, using
+Emby's timezone. Run this with `-v /etc/localtime:/etc/localtime:ro` or the two histories
+cannot be read as one series -- interleaved, they run backwards by your UTC offset.
 """
 
 import argparse

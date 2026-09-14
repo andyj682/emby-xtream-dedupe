@@ -388,6 +388,7 @@ They assume Docker and a throwaway `python:3-alpine` container, e.g.:
 
 ```bash
 docker run --rm --network container:emby --memory=512m \
+  -v /etc/localtime:/etc/localtime:ro \
   -v /path/to/emby/config:/cfg:ro \
   -v "$PWD/scripts":/scripts:ro \
   -v "$HOME/xtream-snapshots":/out \
@@ -398,6 +399,14 @@ docker run --rm --network container:emby --memory=512m \
 the default bridge cannot resolve it, and the failure looks like a DNS error rather than a
 credentials problem. Note also that snapshots contain titles, and the config XML they read
 contains your provider credentials in plaintext (see below), so keep both local.
+
+`-v /etc/localtime:/etc/localtime:ro` matters more than it looks. These scripts stamp dated
+filenames and log lines with the **container's** local time, and a bare `python:3-alpine` has no
+timezone set, so it runs in UTC — while Emby, and therefore the plugin's own records, use whatever
+timezone that container was given. Without the mount the two disagree by your UTC offset: a
+snapshot taken in the evening can land under tomorrow's date, and a counts log interleaved with the
+plugin's own would run backwards. Mounting the host clock makes every record agree, and it needs no
+`tzdata` package.
 
 ---
 
