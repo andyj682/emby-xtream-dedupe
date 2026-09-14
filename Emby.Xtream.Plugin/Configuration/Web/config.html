@@ -1359,7 +1359,12 @@
 
                 <!-- STRM Folder Browser Modal -->
                 <div class="strmBrowserModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; z-index:9999; background:rgba(0,0,0,0.78); align-items:center; justify-content:center;">
-                    <div style="background:#1f1f1f; border:1px solid rgba(255,255,255,0.1); border-radius:8px; width:580px; max-width:94vw; max-height:85vh; display:flex; flex-direction:column; box-shadow:0 12px 40px rgba(0,0,0,0.6);">
+                    <!-- The panel hardcodes a dark background, so it must hardcode a light
+                         foreground too. Everything inside it (the rows, the path box, the close
+                         button) uses color:inherit, and on Emby's light theme that inherited
+                         color is near-black — which rendered the whole dialog dark-on-dark and
+                         unreadable. Setting it here fixes all of them at once. -->
+                    <div style="background:#1f1f1f; color:#e8e8e8; border:1px solid rgba(255,255,255,0.1); border-radius:8px; width:580px; max-width:94vw; max-height:85vh; display:flex; flex-direction:column; box-shadow:0 12px 40px rgba(0,0,0,0.6);">
                         <div style="display:flex; align-items:center; justify-content:space-between; padding:0.9em 1.5em; border-bottom:1px solid rgba(255,255,255,0.08);">
                             <h3 style="margin:0; font-size:1em; font-weight:600;">Browse Folder</h3>
                             <button class="btnCloseBrowser" type="button" style="background:none; border:none; cursor:pointer; font-size:1.2em; opacity:0.5; color:inherit; padding:0.2em 0.5em; line-height:1;" title="Close">&#x2715;</button>

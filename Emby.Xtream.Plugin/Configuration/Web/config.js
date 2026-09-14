@@ -1160,7 +1160,9 @@ function updateEpgVisibility(view) {
         ApiClient.ajax({ type: 'GET', url: url, dataType: 'json' })
             .then(function (result) { browserRenderList(view, result); })
             .catch(function () {
-                listEl.innerHTML = '<div style="padding:1.2em 1.5em; color:#cc0000;">Failed to load directory.</div>';
+                // Lightened from #cc0000: the panel is always dark, and dark red on it was
+                // barely readable — the same contrast problem the panel's own colour fixes.
+                listEl.innerHTML = '<div style="padding:1.2em 1.5em; color:#ff7a7a;">Failed to load directory.</div>';
             });
     }
 

@@ -10,6 +10,11 @@ starting at 1.0.0 — independent of upstream
 
 ### Fixed
 
+- **The folder browser was unreadable on Emby's light theme.** Its panel sets a dark background but
+  left the text colour to be inherited from the page, so on a light theme every row, the path box
+  and the close button rendered near-black on near-black. It now sets its own light text to match
+  the background it forces, and the "failed to load" message is no longer dark red on dark grey.
+
 - **`scripts/repair-id-churn.py`: `--prune-resolved` silently did nothing on a second pass.**
   Pruning the superseded IDs is naturally done *after* a repair has been installed and confirmed
   working — but at that point every dead ID resolves to one that is already stored, so there are
