@@ -175,6 +175,12 @@ namespace Emby.Xtream.Plugin.Service
         /// </summary>
         internal string ConfigRollbackSourcePath;
 
+        /// <summary>One root for every durable record the plugin keeps — see ADR-F005 mechanism 8.</summary>
+        internal const string RecordsRootName = "xtream-backups";
+
+        /// <summary>The append-only store-size history. Format matches config-counts-canary.py.</summary>
+        internal const string CountsLogFileName = "counts.log";
+
         // Single-flight gates. Each sync replaces its progress object wholesale and shares a
         // written-path set, so two overlapping runs of the same kind corrupt each other's state.
         // Movies and series are gated separately because they touch different roots and are
@@ -358,6 +364,147 @@ namespace Emby.Xtream.Plugin.Service
                 config.ExcludedSeriesIds?.Length ?? 0,
                 DescribeIdSetSize(config.ReviewedVodStreamIdsJson),
                 DescribeIdSetSize(config.ReviewedSeriesIdsJson));
+
+            AppendDecisionStoreCounts(config);
+        }
+
+        /// <summary>
+        /// Where the plugin's durable records live (ADR-F005 mechanisms 5 and 8): one root, so a
+        /// recovery does not have to find three artifacts in three places.
+        /// </summary>
+        /// <remarks>
+        /// A default rather than a setting that must be filled in. A path starting empty would
+        /// mean these records exist only for users who went looking for them — the same failure
+        /// as shipping a script, rebuilt inside the plugin — and it is worst for records that are
+        /// worthless unless they have been accumulating all along. Mechanism 5 adds a setting that
+        /// RELOCATES this root, ideally onto another volume; it does not enable it.
+        /// </remarks>
+        private string ResolveRecordsRoot()
+        {
+            // Plugin.Instance throws before ApplicationPaths is initialised, so this is guarded
+            // rather than resolved at construction — same reasoning as the rollback copy.
+            var source = ConfigRollbackSourcePath;
+            if (string.IsNullOrEmpty(source))
+            {
+                source = Plugin.InstanceOrNull?.ConfigPath;
+            }
+
+            var directory = string.IsNullOrEmpty(source) ? null : Path.GetDirectoryName(source);
+            return string.IsNullOrEmpty(directory) ? null : Path.Combine(directory, RecordsRootName);
+        }
+
+        /// <summary>
+        /// Appends the four store sizes to a durable, append-only record (ADR-F005 mechanism 7).
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <see cref="LogDecisionStoreSizes"/> already puts these numbers in Emby's log — but that
+        /// log rotates, and the entire value of these counts is the <b>trend</b> across weeks. A
+        /// rotating log cannot hold one, so the same line also goes to a file the plugin never
+        /// prunes. At a few hundred bytes a year, retention is not worth the risk of pruning away
+        /// the history the file exists to keep.
+        /// </para>
+        /// <para>
+        /// <b>The format is load-bearing and must not be tidied.</b> It is byte-compatible with
+        /// the line <c>scripts/config-counts-canary.py</c> has been appending to users' own logs
+        /// for months: full field names, local time to the minute, single-spaced, this field
+        /// order, and deliberately no trailing path. Changing any of it splits the history into
+        /// two series that cannot be compared at exactly the moment someone needs to look back.
+        /// Note the order is NOT the order the stores are declared in — it pairs the two
+        /// exclusion stores first, and that is the order already on disk in existing logs.
+        /// </para>
+        /// <para>
+        /// Consecutive byte-identical lines are skipped. The stamp has minute resolution, so a
+        /// repeat inside the same minute with the same counts <i>is</i> the same line — which is
+        /// exactly what the movie and series syncs produce running back to back. Anything else
+        /// still writes, so a run of unchanged syncs stays visible as a heartbeat rather than
+        /// collapsing into silence.
+        /// </para>
+        /// <para>
+        /// Never throws. Failing to record a number must not fail a sync the user asked for.
+        /// </para>
+        /// </remarks>
+        private void AppendDecisionStoreCounts(PluginConfiguration config)
+        {
+            try
+            {
+                var root = ResolveRecordsRoot();
+                if (string.IsNullOrEmpty(root))
+                {
+                    return;
+                }
+
+                var line = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0} ExcludedVodStreamIds={1} ExcludedSeriesIds={2} ReviewedVodStreamIdsJson={3} ReviewedSeriesIdsJson={4}",
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
+                    config.ExcludedVodStreamIds?.Length ?? 0,
+                    config.ExcludedSeriesIds?.Length ?? 0,
+                    DescribeIdSetSize(config.ReviewedVodStreamIdsJson),
+                    DescribeIdSetSize(config.ReviewedSeriesIdsJson));
+
+                var path = Path.Combine(root, CountsLogFileName);
+                if (string.Equals(ReadLastLine(path), line, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                Directory.CreateDirectory(root);
+                File.AppendAllText(path, line + "\n", new UTF8Encoding(false));
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("Could not append to the decision store counts log: {0}", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// The last non-empty line of a file, read from the tail rather than the whole file — the
+        /// counts log is append-only and never pruned, so checking one line must not mean loading
+        /// years of them.
+        /// </summary>
+        private static string ReadLastLine(string path)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    return null;
+                }
+
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    const int TailBytes = 512;
+                    var length = (int)Math.Min(stream.Length, TailBytes);
+                    if (length == 0)
+                    {
+                        return null;
+                    }
+
+                    stream.Seek(-length, SeekOrigin.End);
+                    var buffer = new byte[length];
+                    var read = stream.Read(buffer, 0, length);
+
+                    // Seeking a fixed offset can land mid-character, but taking the LAST complete
+                    // line discards whatever partial line the read started in.
+                    var lines = new UTF8Encoding(false).GetString(buffer, 0, read).Split('\n');
+                    for (var i = lines.Length - 1; i >= 0; i--)
+                    {
+                        var candidate = lines[i].TrimEnd('\r');
+                        if (candidate.Length > 0)
+                        {
+                            return candidate;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // An unreadable tail only costs the de-duplication; writing a duplicate line is
+                // harmless next to failing the caller.
+            }
+
+            return null;
         }
 
         /// <summary>

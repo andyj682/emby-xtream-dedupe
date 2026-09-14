@@ -901,6 +901,119 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
+        // The durable store-size history (ADR-F005 mechanism 7)
+        // -----------------------------------------------------------------
+
+        private string CountsLogPath()
+            => Path.Combine(TempDir.Path, "cfg", "xtream-backups", "counts.log");
+
+        [Fact]
+        public async Task CountsLog_AppendsOneLineInTheExternalCanaryFormat()
+        {
+            // Byte-compatible with what scripts/config-counts-canary.py has been appending to
+            // users' own logs for months: full field names, local time to the minute,
+            // single-spaced, no trailing path — and the two EXCLUSION stores first, which is not
+            // the order the stores are declared in. A tidier format would split an existing
+            // history into two series that cannot be compared.
+            var config = DefaultConfig();
+            config.ExcludedVodStreamIds = new[] { 7, 8, 9 };
+            config.ExcludedSeriesIds = new[] { 11 };
+            config.ReviewedVodStreamIdsJson = "[1,2]";
+            config.ReviewedSeriesIdsJson = string.Empty;
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            var line = Assert.Single(File.ReadAllLines(CountsLogPath()));
+            Assert.Matches(
+                @"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} ExcludedVodStreamIds=3 ExcludedSeriesIds=1 "
+                + @"ReviewedVodStreamIdsJson=2 ReviewedSeriesIdsJson=0$",
+                line);
+        }
+
+        [Fact]
+        public async Task CountsLog_DoesNotRepeatAByteIdenticalLine()
+        {
+            // The movie and series syncs run back to back, so identical counts land twice inside
+            // one minute — and at minute resolution that is literally the same line.
+            var config = DefaultConfig();
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreamsTimes(
+                VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)), 2);
+
+            var svc = ServiceWithRollback(cfgPath);
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.Single(File.ReadAllLines(CountsLogPath()));
+        }
+
+        [Fact]
+        public async Task CountsLog_KeepsAppendingWhenTheCountsChange()
+        {
+            // The mirror of the test above: de-duplication must not be so eager that a real
+            // change goes unrecorded. A fresh service each time also stands in for a restart —
+            // the file is the history, so it must be extended rather than replaced.
+            var config = DefaultConfig();
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreamsTimes(
+                VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)), 2);
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+            config.ExcludedSeriesIds = new[] { 42 };
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            var lines = File.ReadAllLines(CountsLogPath());
+            Assert.Equal(2, lines.Length);
+            Assert.Contains("ExcludedSeriesIds=0", lines[0]);
+            Assert.Contains("ExcludedSeriesIds=1", lines[1]);
+        }
+
+        [Fact]
+        public async Task CountsLog_ReportsUnparseableRatherThanZero()
+        {
+            // 0 and "could not read it" are opposite conditions that look identical as a number.
+            // Reporting a broken store as 0 hides exactly the failure this history exists to
+            // catch — the same contract DeserializeIdSet and the external canary both hold.
+            var config = DefaultConfig();
+            config.ReviewedVodStreamIdsJson = "[1,2";
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.Contains(
+                "ReviewedVodStreamIdsJson=UNPARSEABLE",
+                Assert.Single(File.ReadAllLines(CountsLogPath())));
+        }
+
+        [Fact]
+        public async Task CountsLog_DoesNotFailTheSyncWhenItCannotBeWritten()
+        {
+            // Same rule as the rollback copy: a record that can break the thing it documents is
+            // worse than no record.
+            //
+            // The root has to be genuinely unwritable to test this. A merely absent directory is
+            // not — CreateDirectory builds intermediates, so pointing at a missing folder would
+            // succeed and the test would pass without exercising anything. Rooting it under a
+            // regular FILE cannot succeed.
+            var config = DefaultConfig();
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            var blocker = Path.Combine(TempDir.Path, "blocker");
+            File.WriteAllText(blocker, "a file, not a directory");
+
+            var svc = ServiceWithRollback(Path.Combine(blocker, "Emby.Xtream.Plugin.xml"));
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.False(Directory.Exists(Path.Combine(blocker, "xtream-backups")));
+
+            Assert.True(File.Exists(MovieStrmPath("Kept Movie")));
+            Assert.Equal(0, svc.MovieProgress.Failed);
+        }
+
+        // -----------------------------------------------------------------
         // The full deleted-path record (ADR-F005 mechanism 2)
         // -----------------------------------------------------------------
 

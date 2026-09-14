@@ -33,6 +33,18 @@ starting at 1.0.0 — independent of upstream
 
 ### Added
 
+- **The plugin now keeps its own history of how many exclusions and reviewed marks you have.**
+  Every sync already reported those four numbers in the log — but Emby's log rotates, and the
+  value of those counts is the trend across weeks, not any single reading. They are now also
+  appended to `xtream-backups/counts.log` beside your plugin configuration, one line per sync,
+  never pruned. It is a few hundred bytes a year and it answers "when did this start dropping?",
+  which is otherwise unanswerable by the time anyone thinks to ask.
+
+  The format deliberately matches the one `scripts/config-counts-canary.py` already writes, so if
+  you have been running that on a schedule the two histories are directly comparable and can be
+  read as one series. A store that cannot be read is recorded as `UNPARSEABLE` rather than as
+  zero, because those look identical as a number and mean opposite things.
+
 - **Your movie decisions now survive the provider renumbering its catalog.** Every exclusion and
   every reviewed mark is stored against the provider's stream ID, and providers re-issue those:
   one re-ingest replaced every ID in a catalog, which silently detached around 9,700 decisions and
