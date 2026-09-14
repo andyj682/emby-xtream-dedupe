@@ -626,6 +626,10 @@ function (BaseView, loading) {
             view.querySelector('.txtXtreamRequestsPerSecond').value = config.XtreamRequestsPerSecond || 0;
             view.querySelector('.chkCleanupOrphans').checked = !!config.CleanupOrphans;
             view.querySelector('.txtOrphanSafetyThreshold').value = Math.round((config.OrphanSafetyThreshold != null ? config.OrphanSafetyThreshold : 0.20) * 100);
+            view.querySelector('.txtRecordsPath').value = config.RecordsPath || '';
+            view.querySelector('.txtConfigBackupCount').value = config.ConfigBackupCount != null ? config.ConfigBackupCount : 14;
+            view.querySelector('.txtConfigRollbackCount').value = config.ConfigRollbackCount != null ? config.ConfigRollbackCount : 5;
+            view.querySelector('.txtCatalogueSnapshotCount').value = config.CatalogueSnapshotCount != null ? config.CatalogueSnapshotCount : 14;
             view.querySelector('.orphanThresholdContainer').style.display = config.CleanupOrphans ? '' : 'none';
             view.querySelector('.chkEnableNfoFiles').checked = !!config.EnableNfoFiles;
 
@@ -757,6 +761,12 @@ function (BaseView, loading) {
             config.XtreamRequestsPerSecond = parseInt(view.querySelector('.txtXtreamRequestsPerSecond').value, 10) || 0;
             config.CleanupOrphans = view.querySelector('.chkCleanupOrphans').checked;
             config.OrphanSafetyThreshold = (parseInt(view.querySelector('.txtOrphanSafetyThreshold').value, 10) || 0) / 100;
+            config.RecordsPath = view.querySelector('.txtRecordsPath').value.replace(/\/+$/, '');
+            // parseInt||0 is deliberate for all three: a blank or junk box means "off", and 0 is
+            // the documented way to disable each of them.
+            config.ConfigBackupCount = parseInt(view.querySelector('.txtConfigBackupCount').value, 10) || 0;
+            config.ConfigRollbackCount = parseInt(view.querySelector('.txtConfigRollbackCount').value, 10) || 0;
+            config.CatalogueSnapshotCount = parseInt(view.querySelector('.txtCatalogueSnapshotCount').value, 10) || 0;
             config.EnableNfoFiles = view.querySelector('.chkEnableNfoFiles').checked;
 
             // Auto-sync schedule

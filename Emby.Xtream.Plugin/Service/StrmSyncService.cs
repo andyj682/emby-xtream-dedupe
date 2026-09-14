@@ -193,14 +193,11 @@ namespace Emby.Xtream.Plugin.Service
         /// <summary>Dated catalogue listings, in catalogue-snapshot.py's format and naming.</summary>
         internal const string SnapshotsFolderName = "snapshots";
 
+        /// <summary>Scheduled configuration backups, under the records root.</summary>
+        internal const string ConfigBackupFolderName = "config";
+
         /// <summary>The first line of a snapshot. Readers skip it because it starts with '#'.</summary>
         internal const string SnapshotHeader = "#kind\tid\ttmdb\tname\tcategory";
-
-        /// <summary>
-        /// Dated snapshots kept, matching <c>catalogue-snapshot.py</c>'s default. At roughly
-        /// 3 MB each this is a bounded ~40 MB.
-        /// </summary>
-        private const int SnapshotRetentionDays = 12;
 
         // Single-flight gates. Each sync replaces its progress object wholesale and shares a
         // written-path set, so two overlapping runs of the same kind corrupt each other's state.
@@ -400,8 +397,17 @@ namespace Emby.Xtream.Plugin.Service
         /// worthless unless they have been accumulating all along. Mechanism 5 adds a setting that
         /// RELOCATES this root, ideally onto another volume; it does not enable it.
         /// </remarks>
-        private string ResolveRecordsRoot()
+        internal string ResolveRecordsRoot(PluginConfiguration config)
         {
+            // An explicit path wins, and is used verbatim rather than having the folder name
+            // appended: the user picked a directory, so writing into a surprise subfolder of it
+            // would just make the records harder to find.
+            var configured = config?.RecordsPath;
+            if (!string.IsNullOrWhiteSpace(configured))
+            {
+                return configured.Trim();
+            }
+
             // Plugin.Instance throws before ApplicationPaths is initialised, so this is guarded
             // rather than resolved at construction — same reasoning as the rollback copy.
             var source = ConfigRollbackSourcePath;
@@ -412,6 +418,94 @@ namespace Emby.Xtream.Plugin.Service
 
             var directory = string.IsNullOrEmpty(source) ? null : Path.GetDirectoryName(source);
             return string.IsNullOrEmpty(directory) ? null : Path.Combine(directory, RecordsRootName);
+        }
+
+        /// <summary>
+        /// Copies the configuration into the records root on a schedule (ADR-F005 mechanism 5).
+        /// Returns the path written, or null when nothing was.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// A sibling of the rollback, not a replacement for it. The rollback answers "undo the
+        /// last bad write" and is taken immediately before one; this answers "the volume holding
+        /// my configuration is gone" and is taken on a timer. They keep separate directories and
+        /// separate retentions because conflating them is what forced the rollback to spend a
+        /// paragraph apologising for what it cannot do.
+        /// </para>
+        /// <para>
+        /// Driven by a scheduled task rather than the sync: a user whose sync is disabled,
+        /// failing, or simply never scheduled still needs backups, and tying this to the sync
+        /// would rebuild the "only protects people who already set it up" property inside the
+        /// plugin.
+        /// </para>
+        /// <para>
+        /// Skips when the configuration is byte-identical to the newest copy already held, so a
+        /// daily task against an unedited setup does not churn the retention window and push the
+        /// genuinely interesting older copies out of it.
+        /// </para>
+        /// </remarks>
+        internal string BackupConfiguration(PluginConfiguration config)
+        {
+            var keep = config?.ConfigBackupCount ?? 0;
+            if (keep <= 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                var source = ConfigRollbackSourcePath;
+                if (string.IsNullOrEmpty(source))
+                {
+                    source = Plugin.InstanceOrNull?.ConfigPath;
+                }
+
+                if (string.IsNullOrEmpty(source) || !File.Exists(source))
+                {
+                    return null;
+                }
+
+                var root = ResolveRecordsRoot(config);
+                if (string.IsNullOrEmpty(root))
+                {
+                    return null;
+                }
+
+                var directory = Path.Combine(root, ConfigBackupFolderName);
+                Directory.CreateDirectory(directory);
+
+                var currentHash = HashFile(source);
+                var existing = Directory.GetFiles(directory, "*.xml");
+                Array.Sort(existing, StringComparer.OrdinalIgnoreCase);
+                if (existing.Length > 0 && currentHash != null
+                    && string.Equals(currentHash, HashFile(existing[existing.Length - 1]), StringComparison.Ordinal))
+                {
+                    _logger.Debug("Configuration backup skipped: unchanged since the last copy");
+                    return null;
+                }
+
+                var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
+                var target = Path.Combine(directory, stamp + ".xml");
+                for (var attempt = 1; File.Exists(target) && attempt < 1000; attempt++)
+                {
+                    target = Path.Combine(
+                        directory,
+                        string.Format(CultureInfo.InvariantCulture, "{0}_{1:D3}.xml", stamp, attempt));
+                }
+
+                File.Copy(source, target, false);
+                PruneConfigurationCopies(directory, keep);
+
+                _logger.Info("Configuration backed up to {0}", target);
+                return target;
+            }
+            catch (Exception ex)
+            {
+                // Same rule as the rollback: a safety copy that can break the thing it protects
+                // is worse than none.
+                _logger.Warn("Could not back up the configuration: {0}", ex.Message);
+                return null;
+            }
         }
 
         /// <summary>
@@ -449,7 +543,7 @@ namespace Emby.Xtream.Plugin.Service
         {
             try
             {
-                var root = ResolveRecordsRoot();
+                var root = ResolveRecordsRoot(config);
                 if (string.IsNullOrEmpty(root))
                 {
                     return;
@@ -538,16 +632,17 @@ namespace Emby.Xtream.Plugin.Service
         /// changes. Never throws.
         /// </para>
         /// </remarks>
-        private void WriteCatalogueSnapshot(string kind, List<string> rows)
+        private void WriteCatalogueSnapshot(PluginConfiguration config, string kind, List<string> rows)
         {
-            if (rows == null || rows.Count == 0)
+            var keep = config?.CatalogueSnapshotCount ?? 0;
+            if (rows == null || rows.Count == 0 || keep <= 0)
             {
                 return;
             }
 
             try
             {
-                var root = ResolveRecordsRoot();
+                var root = ResolveRecordsRoot(config);
                 if (string.IsNullOrEmpty(root))
                 {
                     return;
@@ -598,7 +693,7 @@ namespace Emby.Xtream.Plugin.Service
                 File.WriteAllText(path, text.ToString(), new UTF8Encoding(false));
                 _logger.Info("Catalogue snapshot: recorded {0} {1} rows in {2}", rows.Count, kind, path);
 
-                PruneCatalogueSnapshots(directory);
+                PruneCatalogueSnapshots(directory, keep);
             }
             catch (Exception ex)
             {
@@ -607,12 +702,12 @@ namespace Emby.Xtream.Plugin.Service
         }
 
         /// <summary>
-        /// Keeps the most recent <see cref="SnapshotRetentionDays"/> dated snapshots.
+        /// Keeps the most recent <paramref name="keep"/> dated snapshots.
         /// </summary>
-        private void PruneCatalogueSnapshots(string directory)
+        private void PruneCatalogueSnapshots(string directory, int keep)
         {
             var files = Directory.GetFiles(directory, "catalogue-ids-*.tsv");
-            if (files.Length <= SnapshotRetentionDays)
+            if (files.Length <= keep)
             {
                 return;
             }
@@ -620,7 +715,7 @@ namespace Emby.Xtream.Plugin.Service
             // ISO dates sort chronologically as text, so ordinal order is oldest-first.
             Array.Sort(files, StringComparer.Ordinal);
 
-            for (var i = 0; i < files.Length - SnapshotRetentionDays; i++)
+            for (var i = 0; i < files.Length - keep; i++)
             {
                 try
                 {
@@ -1536,6 +1631,7 @@ namespace Emby.Xtream.Plugin.Service
                 if (!vodFetch.HadFailures)
                 {
                     WriteCatalogueSnapshot(
+                        config,
                         "movie",
                         fetchedStreams
                             .Select(s => FormatSnapshotRow("movie", s.StreamId, s.TmdbId, s.Name, s.CategoryId))
@@ -2100,6 +2196,7 @@ namespace Emby.Xtream.Plugin.Service
                 if (!seriesFetch.HadFailures)
                 {
                     WriteCatalogueSnapshot(
+                        config,
                         "series",
                         fetchedSeries
                             .Select(s => FormatSnapshotRow("series", s.SeriesId, s.TmdbId, s.Name, s.CategoryId))
@@ -4262,7 +4359,7 @@ namespace Emby.Xtream.Plugin.Service
 
                 File.Copy(source, target, false);
 
-                PruneRollbackCopies(directory, keep);
+                PruneConfigurationCopies(directory, keep);
                 _logger.Debug("Configuration rollback copy written to {0}", target);
                 return target;
             }
@@ -4294,7 +4391,7 @@ namespace Emby.Xtream.Plugin.Service
         /// Keeps the rollback copies bounded. Name-sorted, which is chronological because the
         /// filename is the timestamp.
         /// </summary>
-        private void PruneRollbackCopies(string directory, int keep)
+        private void PruneConfigurationCopies(string directory, int keep)
         {
             var existing = Directory.GetFiles(directory, "*.xml");
             if (existing.Length <= keep)

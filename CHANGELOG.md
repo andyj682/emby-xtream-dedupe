@@ -33,6 +33,25 @@ starting at 1.0.0 — independent of upstream
 
 ### Added
 
+- **The plugin now backs up its own configuration on a schedule, and you can tell it where.** A new
+  **Back Up Configuration** task copies your exclusions, reviewed marks and settings daily — the
+  part of your setup a library scan cannot rebuild. It skips the copy when nothing has changed, so
+  an unedited setup does not churn through its own retention.
+
+  This is separate from the rollback copies, because they answer different failures: a rollback
+  undoes the last bad write and lives beside the configuration, while a backup is for losing the
+  file entirely. Both are on by default and both are configurable, including the rollback count,
+  which the settings page never actually exposed before.
+
+  **Set "Backup and records folder" to somewhere on a different drive if you have one.** By default
+  everything lands in `xtream-backups` beside your plugin configuration, which covers a bad write
+  but not a lost drive — and relocating it moves the catalog snapshots and the counts history along
+  with it, so a recovery only ever has one place to look. Like the configuration itself, and like
+  every STRM file the plugin writes, these copies contain your provider credentials in plain text.
+
+  The task also runs on demand from Emby's Scheduled Tasks page, which is worth doing before
+  anything risky.
+
 - **The plugin now records a dated listing of your provider's catalog on every sync.** When a
   provider reissues its stream IDs, the only thing that can say what a now-dead ID used to be is a
   listing taken beforehand — and until now that meant running `scripts/catalogue-snapshot.py`

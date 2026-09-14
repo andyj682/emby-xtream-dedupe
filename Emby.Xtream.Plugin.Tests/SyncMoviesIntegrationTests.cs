@@ -901,6 +901,106 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
+        // The scheduled configuration backup (ADR-F005 mechanism 5)
+        // -----------------------------------------------------------------
+
+        private string[] Backups(string root = null)
+        {
+            var dir = Path.Combine(root ?? Path.Combine(TempDir.Path, "cfg", "xtream-backups"), "config");
+            return Directory.Exists(dir) ? Directory.GetFiles(dir, "*.xml") : new string[0];
+        }
+
+        [Fact]
+        public void Backup_CopiesTheConfigurationUnderTheRecordsRoot()
+        {
+            var config = DefaultConfig();
+            var cfgPath = SeedConfigFile();
+
+            var written = ServiceWithRollback(cfgPath).BackupConfiguration(config);
+
+            Assert.NotNull(written);
+            Assert.Equal(File.ReadAllText(cfgPath), File.ReadAllText(Assert.Single(Backups())));
+        }
+
+        [Fact]
+        public void Backup_SkipsWhenTheConfigurationIsUnchanged()
+        {
+            // A daily task against an unedited setup would otherwise churn the retention window
+            // and push the genuinely interesting older copies out of it — defeating the
+            // mechanism rather than merely wasting disk, exactly as for the rollback.
+            var config = DefaultConfig();
+            var cfgPath = SeedConfigFile();
+            var svc = ServiceWithRollback(cfgPath);
+
+            Assert.NotNull(svc.BackupConfiguration(config));
+            Assert.Null(svc.BackupConfiguration(config));
+            Assert.Single(Backups());
+        }
+
+        [Fact]
+        public void Backup_DisabledWhenCountIsZero()
+        {
+            var config = DefaultConfig();
+            config.ConfigBackupCount = 0;
+            var cfgPath = SeedConfigFile();
+
+            Assert.Null(ServiceWithRollback(cfgPath).BackupConfiguration(config));
+            Assert.Empty(Backups());
+        }
+
+        [Fact]
+        public void Backup_HonoursAConfiguredRecordsPath()
+        {
+            // The setting RELOCATES the root; it does not enable the feature. Pointing it at
+            // another volume is the only thing that turns a rollback-grade copy into a real
+            // backup, so it has to actually move the files rather than duplicate them.
+            var config = DefaultConfig();
+            var elsewhere = Path.Combine(TempDir.Path, "elsewhere");
+            config.RecordsPath = elsewhere;
+            var cfgPath = SeedConfigFile();
+
+            ServiceWithRollback(cfgPath).BackupConfiguration(config);
+
+            Assert.Single(Backups(elsewhere));
+            Assert.Empty(Backups());
+        }
+
+        [Fact]
+        public void Backup_PrunesToTheConfiguredCount()
+        {
+            var config = DefaultConfig();
+            config.ConfigBackupCount = 2;
+            var cfgPath = SeedConfigFile();
+            var svc = ServiceWithRollback(cfgPath);
+
+            for (var i = 0; i < 4; i++)
+            {
+                // Content must differ each time or the unchanged-skip above suppresses the copy.
+                File.WriteAllText(cfgPath, "<PluginConfiguration><A>" + i + "</A></PluginConfiguration>");
+                svc.BackupConfiguration(config);
+            }
+
+            Assert.Equal(2, Backups().Length);
+        }
+
+        [Fact]
+        public async Task RecordsPath_RelocatesTheSnapshotAndCountsLogToo()
+        {
+            // One root holds all three artifacts, so relocating it must move every one of them —
+            // a recovery that has to look in two places is the split this design exists to avoid.
+            var config = DefaultConfig();
+            var elsewhere = Path.Combine(TempDir.Path, "elsewhere");
+            config.RecordsPath = elsewhere;
+            var cfgPath = SeedConfigFile();
+            RegisterVodStreams(VodStreamsJson(VodStream(streamId: 1, name: "Kept Movie", added: 1000)));
+
+            await ServiceWithRollback(cfgPath).SyncMoviesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(Path.Combine(elsewhere, "counts.log")));
+            Assert.Single(Directory.GetFiles(Path.Combine(elsewhere, "snapshots"), "catalogue-ids-*.tsv"));
+        }
+
+        // -----------------------------------------------------------------
         // The durable store-size history (ADR-F005 mechanism 7)
         // -----------------------------------------------------------------
 

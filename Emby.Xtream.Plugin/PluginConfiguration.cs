@@ -128,6 +128,46 @@ namespace Emby.Xtream.Plugin
         public int ConfigRollbackCount { get; set; } = 5;
 
         /// <summary>
+        /// Where the plugin keeps its durable records — configuration backups, catalog
+        /// snapshots and the store-size history (ADR-F005 mechanisms 5–8). Empty means the
+        /// default, an <c>xtream-backups</c> folder beside the configuration file.
+        /// <para>
+        /// <b>This relocates the root; it does not enable it.</b> A setting that started empty
+        /// and had to be filled in would mean these records existed only for users who went
+        /// looking for them — the same failure as shipping a script — and it is worst for the
+        /// records that are worthless unless they have been accumulating all along.
+        /// </para>
+        /// <para>
+        /// The point of setting it is to put the records on a <b>different volume</b> from the
+        /// configuration. On the default they share a disk, so they cover a bad write and not a
+        /// lost one. Note the copies contain the provider username and password in plaintext,
+        /// exactly as the configuration and every written <c>.strm</c> already do.
+        /// </para>
+        /// </summary>
+        public string RecordsPath { get; set; } = string.Empty;
+
+        /// <summary>
+        /// How many scheduled configuration backups to keep. Zero disables the backup task.
+        /// <para>
+        /// Separate from <see cref="ConfigRollbackCount"/> because they answer different
+        /// failures: a rollback undoes the last bad write and only needs a few, while a backup
+        /// covers losing the file and wants enough history to reach back past a problem nobody
+        /// noticed at the time. Two weeks of daily copies at ~1.8 MB is the default.
+        /// </para>
+        /// </summary>
+        public int ConfigBackupCount { get; set; } = 14;
+
+        /// <summary>
+        /// How many dated catalog snapshots to keep (ADR-F005 mechanism 6). Zero disables them.
+        /// <para>
+        /// One per day, roughly 3 MB each. The useful depth is "far enough back to predate an
+        /// id-churn event nobody noticed immediately", which two weeks covers comfortably — the
+        /// two real recoveries both used a snapshot under 48 hours old.
+        /// </para>
+        /// </summary>
+        public int CatalogueSnapshotCount { get; set; } = 14;
+
+        /// <summary>
         /// Reviewed-checkpoint: JSON array of VOD StreamIds the user has marked
         /// "reviewed" in the de-duplicated view. Stored as a JSON string (not int[])
         /// because the set grows toward the full library size; the client keeps it in
