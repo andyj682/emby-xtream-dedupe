@@ -8,6 +8,8 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-14
+
 ### Fixed
 
 - **The folder browser was unreadable on Emby's light theme.** Its panel sets a dark background but
@@ -84,9 +86,9 @@ starting at 1.0.0 — independent of upstream
   zero, because those look identical as a number and mean opposite things.
 
 - **Your movie decisions now survive the provider renumbering its catalog.** Every exclusion and
-  every reviewed mark is stored against the provider's stream ID, and providers re-issue those:
-  one re-ingest replaced every ID in a catalog, which silently detached around 9,700 decisions and
-  put long-settled titles back in the review queue. The plugin now records each movie's TMDB ID
+  every reviewed mark is stored against the provider's stream ID, and providers re-issue those: a
+  single re-ingest can replace every ID in a catalog and silently detach thousands of decisions,
+  putting long-settled titles back in the review queue. The plugin now records each movie's TMDB ID
   beside the decision, so when a title comes back under a new ID it is recognized and the decision
   moves with it. This happens during the ordinary sync — there is nothing to run and no button to
   press, because the whole problem with this failure is that nothing tells you it happened. The
@@ -476,7 +478,8 @@ Xtream `.strm` generator, tuned for Dispatcharr-proxied providers.
 Built on upstream firestaerter3/emby-xtream (MIT); all upstream install, Live TV, Dispatcharr
 integration, and credential-safety features are included.
 
-[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.6.0...HEAD
+[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.7.0...HEAD
+[1.7.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.6.0...dedupe-v1.7.0
 [1.6.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.5.0...dedupe-v1.6.0
 [1.5.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.4.1...dedupe-v1.5.0
 [1.4.1]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.4.0...dedupe-v1.4.1
