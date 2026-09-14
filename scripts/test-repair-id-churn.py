@@ -157,6 +157,41 @@ def main():
             additions = handle.read()
         ok &= check("additions list mentions 900", "900" in additions)
 
+        # A SECOND pass over an already-repaired config, which is how pruning actually gets
+        # used: the repair is installed first and the superseded ids are dropped later, once
+        # it has been confirmed working. Every dead id then resolves to an id that is already
+        # stored, so there are no additions — and the script used to exit at that point and
+        # write nothing, reporting "Nothing to repair" while --prune-resolved --write silently
+        # did nothing. Found in the field on a real second pass, 2026-09-13.
+        applied_path = os.path.join(tmp, "applied.xml")
+        pruned_path = os.path.join(tmp, "pruned.xml")
+        try:
+            xc.fetch_catalogue = lambda base, user, pw, kind, category_ids=None, timeout=300: (
+                list(LIVE_MOVIES) if kind == "movie" else list(LIVE_SERIES))
+            # Apply WITHOUT pruning, so the candidate carries both the old and new ids.
+            repair.main(["--snapshot", snapshot_path, "--config-glob", config_path,
+                         "--write", applied_path])
+            applied = xc.read_store(ET.parse(applied_path).getroot(),
+                                    "ExcludedVodStreamIds", "int-array")
+            ok &= check("second pass: applied config still holds the superseded id 100",
+                        100 in applied and 900 in applied)
+
+            rc2 = repair.main(["--snapshot", snapshot_path, "--config-glob", applied_path,
+                               "--prune-resolved", "--write", pruned_path])
+        finally:
+            xc.fetch_catalogue = original_fetch
+
+        ok &= check("second pass: exit code 0", rc2 == 0)
+        ok &= check("second pass: candidate written despite zero additions",
+                    os.path.exists(pruned_path))
+        if os.path.exists(pruned_path):
+            pruned = xc.read_store(ET.parse(pruned_path).getroot(),
+                                   "ExcludedVodStreamIds", "int-array")
+            ok &= check("second pass: superseded id 100 pruned", 100 not in pruned)
+            ok &= check("second pass: re-pointed id 900 kept", 900 in pruned)
+            ok &= check("second pass: unresolvable dead id 101 kept", 101 in pruned)
+            ok &= check("second pass: live id 105 untouched", 105 in pruned)
+
         # Refusing to overwrite the live config is the one guard whose failure is destructive.
         try:
             xc.fetch_catalogue = lambda base, user, pw, kind, category_ids=None, timeout=300: (

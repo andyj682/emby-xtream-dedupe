@@ -287,13 +287,28 @@ def main(argv):
     print_report(results, args.tmdb_only)
 
     total = sum(len(r.additions) for r in results)
+    resolved = sum(len(r.resolved_dead_ids) for r in results)
+    prunable = resolved if args.prune_resolved else 0
+
     print("\n" + "=" * 78)
-    if total == 0:
-        print("Nothing to repair — no dead id resolved to a title that is back under a new id.")
+    if total == 0 and prunable == 0:
+        if resolved:
+            # Every dead id resolves to an id that is ALREADY stored, which means the repair
+            # has been applied and this is a second pass. Reporting "nothing to repair" here
+            # was wrong twice over: there is something left to do, and the exit that followed
+            # it made --prune-resolved --write silently produce no candidate at all.
+            print("Nothing to add — all %d resolved dead id(s) are already stored, so the repair "
+                  "has already been applied." % resolved)
+            print("Re-run with --prune-resolved to drop those superseded ids.")
+        else:
+            print("Nothing to repair — no dead id resolved to a title that is back under a new id.")
         return 0
 
-    print("%d proposed addition(s) across %d store(s)."
-          % (total, sum(1 for r in results if r.additions)))
+    if total:
+        print("%d proposed addition(s) across %d store(s)."
+              % (total, sum(1 for r in results if r.additions)))
+    if prunable:
+        print("%d superseded dead id(s) will be pruned from the candidate." % prunable)
 
     if args.additions:
         write_additions(results, args.additions)

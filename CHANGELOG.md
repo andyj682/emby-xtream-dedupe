@@ -10,6 +10,14 @@ starting at 1.0.0 — independent of upstream
 
 ### Fixed
 
+- **`scripts/repair-id-churn.py`: `--prune-resolved` silently did nothing on a second pass.**
+  Pruning the superseded IDs is naturally done *after* a repair has been installed and confirmed
+  working — but at that point every dead ID resolves to one that is already stored, so there are
+  no additions, and the script exited early reporting "Nothing to repair" without writing the
+  candidate it had been asked for. It returned success, so nothing indicated the prune had not
+  happened. It now writes the candidate whenever there is something to prune, and when a run finds
+  the repair already applied it says so and points at the flag instead.
+
 - **Excluding one movie could permanently remove a different one from your library.** When a
   provider lists two entries whose names differ only in capitalization — or that otherwise end up
   with the same folder name — excluding one of them deleted the *other* one's folder moments after
