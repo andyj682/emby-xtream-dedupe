@@ -344,7 +344,7 @@ what they were — a media scan cannot rebuild them.
 **What the plugin does for you.** Every sync reports the size of all four stores in the log, so a
 sudden drop is visible rather than something you notice weeks later when the review queue looks
 wrong. A large cleanup writes the full list of deleted files beside Emby's logs. And before a sync
-makes its own changes, it copies the configuration into a `rollback` folder next to it, keeping
+makes its own changes, it copies the configuration into an `xtream-rollback` folder next to it, keeping
 the most recent few.
 
 **What it does not do.** Those rollback copies live on the same disk as the file they protect, so

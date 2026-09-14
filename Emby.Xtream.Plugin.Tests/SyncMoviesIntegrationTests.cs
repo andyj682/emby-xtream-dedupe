@@ -758,8 +758,8 @@ namespace Emby.Xtream.Plugin.Tests
             return path;
         }
 
-        private string[] Rollbacks() => Directory.Exists(Path.Combine(TempDir.Path, "cfg", "rollback"))
-            ? Directory.GetFiles(Path.Combine(TempDir.Path, "cfg", "rollback"), "*.xml")
+        private string[] Rollbacks() => Directory.Exists(Path.Combine(TempDir.Path, "cfg", "xtream-rollback"))
+            ? Directory.GetFiles(Path.Combine(TempDir.Path, "cfg", "xtream-rollback"), "*.xml")
             : new string[0];
 
         /// <summary>
@@ -871,7 +871,7 @@ namespace Emby.Xtream.Plugin.Tests
             var config = DefaultConfig();
             config.ConfigRollbackCount = 3;
             var cfgPath = SeedConfigFile();
-            var dir = Path.Combine(TempDir.Path, "cfg", "rollback");
+            var dir = Path.Combine(TempDir.Path, "cfg", "xtream-rollback");
             Directory.CreateDirectory(dir);
             for (var i = 1; i <= 6; i++)
             {

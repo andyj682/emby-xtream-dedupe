@@ -178,6 +178,15 @@ namespace Emby.Xtream.Plugin.Service
         /// <summary>One root for every durable record the plugin keeps — see ADR-F005 mechanism 8.</summary>
         internal const string RecordsRootName = "xtream-backups";
 
+        /// <summary>
+        /// Pre-write rollback copies. A sibling of <see cref="RecordsRootName"/> rather than a
+        /// child of it, because the records root is relocatable and this must not be: it is
+        /// copied on every save, so it has to stay adjacent, on the same volume, and available
+        /// unconditionally. Both names are prefixed because they share
+        /// <c>plugins/configurations/</c> with every other plugin's configuration.
+        /// </summary>
+        internal const string RollbackFolderName = "xtream-rollback";
+
         /// <summary>The append-only store-size history. Format matches config-counts-canary.py.</summary>
         internal const string CountsLogFileName = "counts.log";
 
@@ -4019,7 +4028,7 @@ namespace Emby.Xtream.Plugin.Service
                     return null;
                 }
 
-                var directory = Path.Combine(Path.GetDirectoryName(source) ?? string.Empty, "rollback");
+                var directory = Path.Combine(Path.GetDirectoryName(source) ?? string.Empty, RollbackFolderName);
                 Directory.CreateDirectory(directory);
 
                 // Skip when nothing changed, or a user who syncs hourly and edits nothing would
@@ -4104,8 +4113,8 @@ namespace Emby.Xtream.Plugin.Service
             {
                 try
                 {
-                    // delete-ok: removes this plugin's own rollback copies from the "rollback"
-                    // folder it created beside its configuration file. These are copies of the
+                    // delete-ok: removes this plugin's own rollback copies from the
+                    // "xtream-rollback" folder it created beside its configuration file. These are copies of the
                     // plugin's XML settings, never library content, so the StrmOwnership check
                     // does not apply and nothing here can reach a .strm or a media folder.
                     File.Delete(existing[i]);

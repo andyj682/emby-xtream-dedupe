@@ -156,7 +156,7 @@ Both funnel into the same snapshot routine, and the hash comparison means the tw
 firing in quick succession produce one copy rather than two.
 
 ✅ **Verified on an Emby 4.10 rig, 2026-09-11.** Changing a setting in the config page and
-saving produced a copy in the `rollback` folder, so Emby's configuration endpoint does call
+saving produced a copy in the `xtream-rollback` folder, so Emby's configuration endpoint does call
 `UpdateConfiguration` rather than assigning `Configuration` and saving directly. The
 coverage claim above holds: a UI save is captured at the moment it happens, not at the
 following sync.
@@ -193,7 +193,7 @@ Two further findings sharpen it:
   the same as having a history, and the whole value of those counts is the trend across
   weeks.
 - **"Same volume" was a hardcoded path, not a constraint.** The rollback writes to a
-  `rollback` folder derived from the configuration's own directory. The honest caveat in
+  `xtream-rollback` folder derived from the configuration's own directory. The honest caveat in
   mechanism 3 — that it does nothing for a lost volume — describes a choice, not a limit.
 
 ### 5. The rollback gains a sibling: a scheduled backup, under one relocatable root
@@ -297,9 +297,19 @@ user cannot say where the snapshot is, the artifact might as well not exist. So:
 - The sync and task logs name the path they wrote to, so the answer is also in the log the
   user already has.
 
-The rollback deliberately stays beside the configuration rather than moving under the root.
-It has to work before any of this is configured, and its whole value is being adjacent to
-the file it protects.
+The rollback deliberately stays beside the configuration rather than moving under the root,
+as a **sibling** of it: `xtream-rollback/` next to `xtream-backups/`. It is copied on every
+save, so it has to stay adjacent, on the same volume, and available unconditionally —
+following a root the user can relocate would mean cross-volume I/O on every write and a
+failure mode where the destination is unavailable at exactly the moment it is needed. Two
+sibling directories, only one of them relocatable, makes the rollback/backup distinction
+this ADR keeps insisting on visible in the filesystem.
+
+**Both names are prefixed** because they share `plugins/configurations/` with every other
+plugin's configuration file, where a bare `rollback/` says nothing about whose it is. The
+rename from `rollback/` costs nothing only because mechanism 3 has never appeared in a
+tagged release — after one it would need a migration, or it would strand users' most recent
+good copies in a directory nothing prunes.
 
 ### What does not change
 
