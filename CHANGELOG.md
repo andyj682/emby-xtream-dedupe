@@ -8,6 +8,8 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-09-14
+
 ### Fixed
 
 - **"Update Now" always installed the Emby 4.9 build, even on Emby 4.10.** Releases publish one DLL
@@ -494,7 +496,8 @@ Xtream `.strm` generator, tuned for Dispatcharr-proxied providers.
 Built on upstream firestaerter3/emby-xtream (MIT); all upstream install, Live TV, Dispatcharr
 integration, and credential-safety features are included.
 
-[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.7.0...HEAD
+[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.7.1...HEAD
+[1.7.1]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.7.0...dedupe-v1.7.1
 [1.7.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.6.0...dedupe-v1.7.0
 [1.6.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.5.0...dedupe-v1.6.0
 [1.5.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.4.1...dedupe-v1.5.0
