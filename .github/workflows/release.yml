@@ -73,6 +73,28 @@ jobs:
             UPSTREAM_SHA=""
           fi
 
+          # The prose summary is EXTRACTED from CHANGELOG.md rather than composed here. It is
+          # already written, in user-facing language, at the time each change lands rather than
+          # hurriedly at tag time — and a list of commit subjects has never read well to anyone
+          # who did not write them.
+          #
+          # The second reason matters more: this makes a forgotten heading promotion VISIBLE.
+          # 1.6.0 shipped with every entry still under `## [Unreleased]`, no `## [1.6.0]` heading
+          # and no link ref, and it was noticed hours later by accident. With the notes sourced
+          # from that heading, the omission shows up on the release page immediately.
+          #
+          # Matched with index()==1 rather than a regex: the version contains dots, which a regex
+          # would treat as wildcards.
+          VERSION=${GITHUB_REF_NAME#dedupe-v}
+          SUMMARY=$(awk -v ver="$VERSION" '
+            index($0, "## [" ver "]") == 1 { inside = 1; next }
+            inside && index($0, "## [") == 1 { exit }
+            inside { print }
+          ' CHANGELOG.md | sed -e '/./,$!d')
+          if [ -z "$SUMMARY" ]; then
+            echo "::warning::No '## [${VERSION}]' section found in CHANGELOG.md — was the heading promoted from [Unreleased]?"
+          fi
+
           # `|| true` on the grep above is load-bearing: grep exits 1 when it selects no lines,
           # and run: blocks execute under `bash -e`, so an EMPTY commit range failed the whole
           # step rather than producing an empty section. That happens whenever PREV_TAG resolves
@@ -80,13 +102,26 @@ jobs:
           # resolution above takes the second-newest tag overall rather than the one preceding
           # this ref. An empty What's Changed is a fine outcome; a failed release is not.
           {
-            echo "## What's Changed"
+            echo "## What's new in ${VERSION}"
+            echo ""
+            if [ -n "$SUMMARY" ]; then
+              printf '%s\n' "$SUMMARY"
+            else
+              echo "_No CHANGELOG entry was found for ${VERSION}. If the \`## [${VERSION}]\` heading was never promoted, this release's entries are still sitting under \`## [Unreleased]\` in [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md)._"
+            fi
+            echo ""
+            # Commit subjects are kept — they are the complete record, and the fork/upstream split
+            # below depends on them — but folded away. They are provenance, not release notes.
+            echo "<details>"
+            echo "<summary>All commits in this release</summary>"
             echo ""
             if [ -n "$OURS" ]; then
               echo "$OURS"
             else
               echo "_No fork-specific changes in this release._"
             fi
+            echo ""
+            echo "</details>"
             echo ""
             if [ -n "$UPSTREAM_SHA" ]; then
               echo ""
@@ -98,14 +133,16 @@ jobs:
             echo ""
             echo "## Downloads"
             echo ""
-            echo "- **Emby 4.9.x** — \`Emby.Xtream.Plugin.dll\` (what the update check offers)"
+            echo "- **Emby 4.9.x** — \`Emby.Xtream.Plugin.dll\`"
             echo "- **Emby 4.10.0.17 and later** — \`Emby.Xtream.Plugin-4.10.dll\` — **rename to \`Emby.Xtream.Plugin.dll\` before installing**"
             echo ""
             echo "Install one, not both. Emby 4.10 left beta and reached general release in September 2026, so most installs will want the second."
             echo ""
+            echo "Only the first install is a manual choice: from 1.7.1 onward the plugin's own update check reads your Emby version and downloads the matching build for you."
+            echo ""
             echo "> ⚠️ **The 4.10 download must be renamed.** The two builds cannot share a filename in one release, but **Emby names each plugin's settings file after the DLL** — so installing it as \`Emby.Xtream.Plugin-4.10.dll\` gives it a separate settings file. The plugin loads, the settings page opens, and everything you had configured appears blank, with no error. Your settings are not lost; rename the file to \`Emby.Xtream.Plugin.dll\` and they come back."
             echo ""
-            echo "This fork's own changes are described in plain language in [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md)."
+            echo "Every release's changes are recorded in [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md)."
             echo ""
             if [ -n "$PREV_TAG" ]; then
               echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ github.ref_name }}"
