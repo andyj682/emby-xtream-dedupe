@@ -16,13 +16,42 @@ namespace Emby.Xtream.Plugin.Service
         public string DownloadUrl { get; set; }
         public string Error { get; set; }
         public bool IsPreRelease { get; set; }
+
+        /// <summary>
+        /// Name of the release asset this Emby server needs. A null <see cref="DownloadUrl"/>
+        /// alongside it means the release does not carry that asset.
+        /// </summary>
+        public string AssetName { get; set; }
+
+        /// <summary>
+        /// Set when the release carries a build, but not the one this server can use — so nothing
+        /// is offered for download. Explains the absent install button in the update banner, and is
+        /// repeated by the install endpoint.
+        /// </summary>
+        public string AssetNote { get; set; }
     }
 
     public static class UpdateChecker
     {
         private const string GitHubApiUrl = "https://api.github.com/repos/andyj682/emby-xtream-dedupe/releases/latest";
         private const string GitHubAllReleasesUrl = "https://api.github.com/repos/andyj682/emby-xtream-dedupe/releases";
-        private const string DllAssetName = "Emby.Xtream.Plugin.dll";
+        /// <summary>Release asset built against the Emby 4.9 SDK.</summary>
+        internal const string DllAssetName = "Emby.Xtream.Plugin.dll";
+
+        /// <summary>
+        /// Release asset built against the Emby 4.10 SDK. Not interchangeable with
+        /// <see cref="DllAssetName"/>: different reference assemblies, a different
+        /// System.Text.Json, and code compiled only under EMBY_4_10.
+        /// </summary>
+        internal const string DllAssetName410 = "Emby.Xtream.Plugin-4.10.dll";
+
+        /// <summary>
+        /// Lowest Emby version that takes <see cref="DllAssetName410"/>. This is the SDK floor the
+        /// 4.10 build targets, so it matches the install table in the README exactly — 4.10 betas
+        /// below it still want the 4.9 build.
+        /// </summary>
+        private static readonly Version Emby410AssetFloor = new Version(4, 10, 0, 17);
+
         private static readonly TimeSpan CacheTtl = TimeSpan.FromHours(1);
 
         private static UpdateCheckResult _cachedResult;
@@ -97,7 +126,7 @@ namespace Emby.Xtream.Plugin.Service
                     var publishedAt = ExtractJsonString(releaseJson, "published_at");
 
                     result = CompareVersions(currentVersion, tagName, htmlUrl, body, publishedAt);
-                    result.DownloadUrl = ExtractDllDownloadUrl(releaseJson, DllAssetName);
+                    ApplyAssetSelection(result, releaseJson, GetApplicationVersion());
                     result.UpdateInstalled = _updateInstalled;
                     result.IsPreRelease = ExtractJsonBool(releaseJson, "prerelease");
 
@@ -131,6 +160,80 @@ namespace Emby.Xtream.Plugin.Service
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Picks the release asset matching the Emby server this plugin is running on, and records
+        /// it on the result.
+        /// <para>
+        /// Every release publishes one DLL per Emby SDK and they are not interchangeable. Offering
+        /// the same asset to everyone silently downgrades an Emby 4.10 install to a build that
+        /// links the wrong reference assemblies — which is a load failure, not a lesser version.
+        /// </para>
+        /// <para>
+        /// Releases published before the dual build carry only the 4.9 asset. A 4.10 server is
+        /// offered nothing at all in that case rather than the wrong build: there is no version of
+        /// "install it anyway" that ends well, and a caveat printed beside a one-click button is a
+        /// weak guard against replacing a working plugin with one that cannot load. The note
+        /// explains the missing button instead.
+        /// </para>
+        /// <para>
+        /// Pure and side-effect free so the choice is unit-testable against release JSON with no
+        /// network and no running plugin.
+        /// </para>
+        /// </summary>
+        public static void ApplyAssetSelection(UpdateCheckResult result, string releaseJson, string applicationVersion)
+        {
+            if (result == null) return;
+
+            var wanted = SelectDllAssetName(applicationVersion);
+            result.AssetName = wanted;
+            result.DownloadUrl = ExtractDllDownloadUrl(releaseJson, wanted);
+
+            if (result.DownloadUrl != null || string.Equals(wanted, DllAssetName, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            // Only worth explaining when a build is being deliberately withheld. A release carrying
+            // no assets at all is simply broken, and says nothing useful about which Emby it is for.
+            if (ExtractDllDownloadUrl(releaseJson, DllAssetName) != null)
+            {
+                result.AssetNote = "This release does not include an Emby 4.10 build. The Emby 4.9 "
+                    + "build it carries is not interchangeable and would not load on this server, so "
+                    + "it is not offered for installation here.";
+            }
+        }
+
+        /// <summary>
+        /// Names the release asset built for the given Emby server version. An unreadable or
+        /// unparseable version takes the 4.9 asset, which every release has always published.
+        /// </summary>
+        public static string SelectDllAssetName(string applicationVersion)
+        {
+            if (string.IsNullOrWhiteSpace(applicationVersion))
+                return DllAssetName;
+
+            Version parsed;
+            if (!Version.TryParse(NormalizeVersion(applicationVersion.Trim()), out parsed))
+                return DllAssetName;
+
+            return parsed >= Emby410AssetFloor ? DllAssetName410 : DllAssetName;
+        }
+
+        /// <summary>
+        /// The running Emby server's version, or null when it cannot be read — which is the normal
+        /// case under unit tests, where no plugin instance exists.
+        /// </summary>
+        internal static string GetApplicationVersion()
+        {
+            try
+            {
+                var host = Plugin.InstanceOrNull?.ApplicationHost;
+                return host?.ApplicationVersion?.ToString();
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public static UpdateCheckResult CompareVersions(string currentVersion, string tagName, string releaseUrl, string body, string publishedAt)

@@ -3108,8 +3108,14 @@ function updateEpgVisibility(view) {
                 banner.style.borderColor = isBeta ? 'rgba(230,152,34,0.4)' : 'rgba(82,181,75,0.4)';
                 view.querySelector('.updateBannerTitle').textContent = 'Update Available:';
                 var betaLabel = isBeta ? ' (beta)' : '';
-                view.querySelector('.updateBannerText').textContent =
-                    'v' + data.LatestVersion + betaLabel + ' is available (you have v' + data.CurrentVersion + ')';
+                var bannerText = 'v' + data.LatestVersion + betaLabel + ' is available (you have v' +
+                    data.CurrentVersion + ')';
+                // Set only when the download is not the build for this Emby version — say so before
+                // the install button is pressed, not after.
+                if (data.AssetNote) {
+                    bannerText += ' — ' + data.AssetNote;
+                }
+                view.querySelector('.updateBannerText').textContent = bannerText;
                 view.querySelector('.btnInstallUpdate').style.display = '';
                 view.querySelector('.btnInstallUpdate').disabled = false;
                 view.querySelector('.btnRestartEmby').style.display = 'none';

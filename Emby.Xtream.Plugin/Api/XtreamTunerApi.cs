@@ -1495,7 +1495,11 @@ namespace Emby.Xtream.Plugin.Api
 
                 if (string.IsNullOrEmpty(checkResult.DownloadUrl))
                 {
-                    result.Message = "No DLL download URL found in the release.";
+                    // AssetNote is set when the release has builds but not one for this Emby, which
+                    // is a refusal rather than a missing asset — say which.
+                    result.Message = string.IsNullOrEmpty(checkResult.AssetNote)
+                        ? "No DLL download URL found in the release."
+                        : checkResult.AssetNote;
                     return result;
                 }
 
@@ -1592,7 +1596,11 @@ namespace Emby.Xtream.Plugin.Api
                 catch { }
 
                 result.Success = true;
-                result.Message = "Update installed successfully (" + dllBytes.Length + " bytes). Restart Emby to apply.";
+                var assetLabel = string.IsNullOrEmpty(checkResult.AssetName)
+                    ? ""
+                    : ", " + checkResult.AssetName;
+                result.Message = "Update installed successfully (" + dllBytes.Length + " bytes" + assetLabel
+                    + "). Restart Emby to apply.";
             }
             catch (Exception ex)
             {

@@ -237,6 +237,11 @@ version under **Dashboard → Help → About** if you are unsure. **Install one,
 > `Emby.Xtream.Plugin.dll` before copying it in and your existing configuration is picked up
 > normally.
 
+The built-in update check reads your Emby version and downloads the build matching it, writing over
+the file already in place. So installing an update never moves you onto the wrong build. Changing
+Emby's own major version is still worth doing by hand, though: the plugin has to load before it can
+check for anything, and a build meant for the other Emby may not get that far.
+
 > Only the single DLL file is needed — no other dependencies.
 
 <details>

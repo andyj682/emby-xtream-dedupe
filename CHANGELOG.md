@@ -8,6 +8,22 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Update Now" always installed the Emby 4.9 build, even on Emby 4.10.** Releases publish one DLL
+  per Emby version and the two are not interchangeable — they are compiled against different Emby
+  libraries. The update check only ever asked for the 4.9 file, so an Emby 4.10 user who installed
+  the 4.10 download correctly, then later pressed the update button, had it quietly overwritten
+  with a build their server cannot use. There was no warning and no error; the plugin simply
+  stopped working after the next restart, and the fix was to download the right file by hand again.
+
+  The update check now reads the Emby version it is running on and asks for the matching build. If
+  a release turns out not to carry a build for your Emby — which is true of releases published
+  before the two builds were split apart — nothing is offered for download at all, and the update
+  banner says why instead of showing a button that would break the plugin. Your settings are
+  unaffected either way: the installer replaces the file already in place and never changes its
+  name.
+
 ## [1.7.0] - 2026-09-14
 
 ### Fixed
