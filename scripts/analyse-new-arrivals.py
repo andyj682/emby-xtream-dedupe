@@ -157,12 +157,93 @@ def main(argv):
                 print("      id=%-8d tmdb=%-8s %s" % (item_id, tmdb or "-", name_of.get((kind, item_id), "")[:52]))
         print()
 
-    print("=" * 78)
-    print("Series carry no TMDB id on the list payload, so their arrivals cannot be")
-    print("classified here - that is the same measured 0% coverage that ruled TMDB keying")
-    print("out for series exclusion (ADR-F001). Series arrivals are covered instead by the")
-    print("collapse-group propagation, which matches on name.")
+    series_by_name(before, after, stores, args.samples)
     return 0
+
+
+def series_by_name(before, after, stores, samples):
+    """Classify series arrivals by NAME, which is the only handle series ever have.
+
+    The TMDB pass above reports every series arrival as "no usable TMDB id - cannot tell",
+    because the provider does not populate TMDB on the series list payload. That is not the
+    end of the story: the plugin itself groups series by cleaned name (ADR-F001), so name is
+    the key its own behaviour turns on, and it is recorded in the snapshot.
+
+    The question this answers: when a batch of series ids arrives, are they NEW SHOWS, or
+    NEW IDS FOR SHOWS ALREADY IN THE CATALOG? Only the second kind drives the config page's
+    "extended your exclusions to N titles with new duplicate copies" notice, because that
+    fires when a collapse group gains an id the exclusion list does not carry yet.
+
+    It also distinguishes an ordinary trickle from a churn event. Series ids have
+    historically been stable - measured 0.3% dead against 36% for movie exclusions - which
+    is the entire reason series-side identity work is ranked as insurance. A large arrival
+    of new ids for existing shows is evidence that is changing.
+    """
+    before_ids = ids_of_kind(before, "series")
+    after_ids = ids_of_kind(after, "series")
+    arrived = sorted(after_ids - before_ids)
+    departed = sorted(before_ids - after_ids)
+
+    print("=" * 78)
+    print("SERIES, BY NAME  (the TMDB pass above cannot classify these: the provider")
+    print("                  supplies no TMDB id on the series list payload)")
+    print("  before %d ids, after %d ids, arrived %d, departed %d"
+          % (len(before_ids), len(after_ids), len(arrived), len(departed)))
+
+    # Names present before, and the subset of those whose group already carried an exclusion.
+    names_before = {}
+    for (kind, item_id), (_tmdb, name) in before.items():
+        if kind != "series":
+            continue
+        names_before.setdefault(xc.normalise_name(name), set()).add(item_id)
+
+    excluded = set(stores["ExcludedSeriesIds"])
+    excluded_names = {name for name, ids in names_before.items() if ids & excluded}
+
+    new_id_excluded, new_id_other, new_show, unnamed = [], [], [], []
+    for item_id in arrived:
+        name = xc.normalise_name(after[("series", item_id)][1])
+        if not name:
+            unnamed.append(item_id)
+        elif name in excluded_names:
+            new_id_excluded.append(item_id)
+        elif name in names_before:
+            new_id_other.append(item_id)
+        else:
+            new_show.append(item_id)
+
+    total = len(arrived)
+    if not total:
+        print("  no series arrivals between these snapshots\n")
+        return
+
+    def line(label, bucket):
+        print("  %-52s %6d  (%4.1f%%)"
+              % (label, len(bucket), 100.0 * len(bucket) / total))
+
+    line("new id for a show you ALREADY EXCLUDED", new_id_excluded)
+    line("new id for a show already in the catalog", new_id_other)
+    line("genuinely new show (name never seen)", new_show)
+    line("no usable name - cannot tell", unnamed)
+
+    churn = len(new_id_excluded) + len(new_id_other)
+    print("  %-52s %6d  (%4.1f%%)"
+          % ("--> ids that are NOT new content", churn, 100.0 * churn / total))
+    print()
+    print("  'already excluded' is the population behind the config page's self-heal")
+    print("  notice. Those syncs were already correct - the collapse-group propagation")
+    print("  excludes the whole group per run - so the notice is tidying the STORED list,")
+    print("  not repairing the library.")
+
+    for label, bucket in (("new id, show already excluded", new_id_excluded),
+                          ("new id, show already in catalog", new_id_other),
+                          ("genuinely new show", new_show)):
+        if not bucket:
+            continue
+        print("\n  sample - %s:" % label)
+        for item_id in bucket[:samples]:
+            print("      id=%-8d %s" % (item_id, after[("series", item_id)][1][:60]))
+    print()
 
 
 if __name__ == "__main__":
