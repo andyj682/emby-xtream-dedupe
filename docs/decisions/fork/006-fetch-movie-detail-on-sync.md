@@ -4,10 +4,10 @@
 upstream ADR — see [README.md](README.md).)*
 
 **Date**: 2026-09-11
-**Status**: PROPOSED — designed, not built. All open questions resolved, including by the
-author of the consuming plugin (2026-09-15). **One measurement is outstanding before
-building**: whether the detail marker's fields actually discriminate on real data — see
-"The detail marker" below.
+**Status**: ACCEPTED — designed and measured, not yet built. Every open question is resolved,
+including by the author of the consuming plugin (2026-09-15) and by measurement against live
+data (2026-09-16). **The marker is `director` OR `cast`; `release_date` is never written and
+must not be used.**
 **Affects**: `StrmSyncService.SyncMoviesAsync` (a new per-title call after the review
 gate), `PluginConfiguration` (one opt-in field), `README.md`
 **Depends on**: ADR-F004 stage 3, which must be shipped and running first — see
@@ -189,14 +189,15 @@ throttled through the existing sync concurrency limit.**
 
 ## Consequences
 
-- **The first enabled run is the expensive one**, because that is when most of the wanted
-  set still carries no detail. At ~2,400 titles it is bounded by the per-call cost and the
-  concurrency limit; at a guessed 0.5s and the default limit of 3 that is roughly seven
-  minutes of added sync time. ⚠️ **The 0.5s is an estimate and has never been measured.** It
-  should be measured before this ships, cold and warm — timing a small sample twice in
-  succession gives both, since the second pass falls inside the proxy's 24-hour gate.
-  Afterwards the cost is near zero: titles that already carry detail are filtered out by a
-  field test, before any request is made.
+- **The first enabled run is the expensive one**, because that is when most of the wanted set
+  still carries no detail — measured at **97%** of it. At ~2,325 titles and a measured mean of
+  **1.02s** per call (median 0.65s, max 4.17s), that is **~13 minutes of added sync time at the
+  default concurrency of 3**, or ~40 serial. Afterwards it drops to the residue below, because
+  titles that carry the marker are filtered out by a field test before any request is made.
+- **Steady state is ~310 calls per run**, the titles whose providers supply no director or
+  cast, so the marker can never flip for them. Bounded and far below the ~2,400 per run that
+  was rejected — and those calls still refresh the row and still stamp the demand signal, so
+  they are invisible rather than wasted.
 - **A gated call is not a free call.** The proxy's 24-hour gate suppresses the refresh
   *work*, not the request: the HTTP round trip still happens. This is why the design does
   not simply call for the wanted set every run and lean on the gate to make it cheap.
@@ -289,18 +290,63 @@ reach for the timestamp again**; a small explicit contract is cheaper than a dai
 Keying on absence of stored detail is the constraint; this is how a client that cannot see
 relation records satisfies it.
 
-`xc_get_vod_streams` emits `director`, `cast` and `release_date` from the movie row's
-custom properties, alongside plot, genre, year and rating. Those are written by
-`refresh_movie_advanced_data`. **So their absence in the list payload is a usable marker for
-"this title has never had a detail refresh" — computed from a payload the sync already
-fetches every run, at no additional request cost.**
+`xc_get_vod_streams` emits `director` and `cast` from the movie row's custom properties, and
+`refresh_movie_advanced_data` writes exactly those two keys (`director`, `actors`) when the
+provider's detail response supplies them. **So their absence in the list payload is a usable
+marker for "this title has never had a detail refresh" — computed from a payload the sync
+already fetches every run, at no additional request cost.**
+
+⚠️ **Do not add `release_date` back.** The payload emits it, but nothing writes it to the
+movie row, so it is empty on every title in the catalogue. **A field appearing in the emitter
+says nothing about anything populating it** — check the writer, not the reader.
 
 That removes the harvest timestamp, the bootstrap concept and the manual procedure all at
 once. The rule becomes simply: *call for wanted titles whose list payload carries no
 detail.* On first enable that is most of the wanted set; afterwards it is new arrivals plus
 anything whose detail has genuinely gone.
 
-⚠️ **Two limits, and the second must be measured before this is built:**
+✅ **MEASURED ON REAL DATA 2026-09-16, and the marker works — with one field removed.**
+
+**`release_date` is out.** Populated on **0 of 37,561** movies. The refresh never writes it to
+the movie row at all, so it can never be part of the marker. It was in the first draft because
+it appears in the list payload's emitter — a field being *emitted* says nothing about anything
+*writing* it. **The marker is `director` OR `cast`.**
+
+**Current state of the wanted set:** 2,397 titles, of which **2,325 (97%) carry no marker** —
+as expected, since nothing has ever called `get_vod_info` here.
+
+**What a real call changes** (30 titles sampled from the unmarked population):
+
+| | count | of 30 |
+| --- | --- | --- |
+| detail response carried director/cast | 26 | 86.7% |
+| listing then showed the marker | 26 | 86.7% |
+
+🔑 **The two figures are identical, which is the important part: there were ZERO cases where the
+provider supplied the data and the listing failed to show it.** The mechanism is exact. Every
+miss is provider silence, which no change on either side can fix.
+
+🔑 **AND THE FAILURE DIRECTION IS THE SAFE ONE.** A silent provider leaves the marker empty, so
+the title is called again — costing a request. It can never cause a title that *needs* detail to
+be **skipped**, which would be a silent coverage gap. Over-calling is the error to prefer, and
+the marker only makes that one.
+
+**Cost, measured rather than guessed.** Per call: median 0.65s, mean 1.02s, max 4.17s — a long
+tail of cold titles doing real provider round trips, and about double the 0.5s this ADR
+originally assumed. First run over ~2,325 titles: **~13 minutes at the default concurrency of 3**
+(~40 serial). Steady state: **~310 titles re-called every run**, the residue whose providers
+supply no people.
+
+⚠️ **That 13% residue is 4 misses in 30, so the real figure is roughly 90–720 per run.** The
+decision holds across that whole interval — even the top end is far below the ~2,400 per run
+that was rejected — so a larger sample would buy precision, not a different answer.
+
+💡 **The residue is not wasted work.** Those calls still refresh the row and still stamp
+`detailed_fetched` / `last_advanced_refresh`, which is the demand signal this whole plan exists
+to produce. They are only invisible *to us*. If the per-run cost ever needs bounding, a
+per-run call budget can be added without redesigning anything.
+
+⚠️ **The original limits, for the record:**
 
 1. **The marker reads the movie row, not the relation.** It is exact when a movie row is
    pruned and recreated — new stream ID, empty properties, and the title re-enters the
@@ -309,13 +355,18 @@ anything whose detail has genuinely gone.
    the new highest-priority relation has no stored detail, so a title needing a re-call
    reads as done. This is the residual of the churn constraint above, and it is the one
    argument for a *long*-interval safety re-harvest — monthly, not daily.
-2. 🚨 **The marker is only useful if those fields actually discriminate, and that is
-   unmeasured.** Provider coverage is wildly uneven — one returns a full ffprobe block and
-   no TMDB IDs, another the reverse. If a provider never supplies `director`, every one of
-   its titles reads as "no detail" forever and the design degrades to calling the whole
-   wanted set every run, which is the daily cost this ADR exists to avoid. **Measure the
-   field-population rate across the wanted set before building.** `get_vod_streams` is a
-   read-only list call, so this costs nothing and triggers nothing.
+2. ✅ **"Only useful if those fields discriminate" — now answered, above.** They do, for ~87%
+   of titles. The residue is real but bounded, and it fails by calling too often rather than
+   too rarely. **The concern was correct to raise and the measurement is why this is a
+   decision rather than a hope**; `scripts/measure-detail-marker.py` and
+   `scripts/probe-detail-refresh.py` make it repeatable.
+   ⚠️ **An empty marker is ambiguous between "never refreshed" and "refreshed, but this
+   provider supplies no director".** That ambiguity is the residue, and it is why the marker
+   can only ever over-call. Do not try to resolve it from the list payload — the unambiguous
+   flags (`detailed_fetched`, `last_advanced_refresh`) live on the *relation*, and there is
+   **no bulk relation endpoint** to read them from: only `movies`/`episodes`/`series`/
+   `categories`/`all` are routed, so reading them means one request per title, which is not
+   cheaper than simply making the call.
 
 ### Constraints from the consuming plugin, to honor when building
 
