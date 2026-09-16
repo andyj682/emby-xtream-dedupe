@@ -8,6 +8,30 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Added
+
+- **You can now restore a saved configuration from the settings page.** The plugin has been keeping
+  copies for a while — a rollback taken immediately before it writes, and a scheduled backup — but
+  putting one back meant stopping Emby, copying a file over the live configuration by hand, and
+  starting it again, because Emby holds the configuration in memory and would otherwise overwrite
+  the file on its next save.
+
+  **Restore a Saved Configuration** on the Settings tab lists every copy with the date it was taken
+  and, in plain words, what restoring it would change — "nothing", or something like "2 settings,
+  +8,554 movie exclusions". So you can tell the copies apart without knowing what was in them.
+  Restoring replaces your whole configuration with that copy, including connection and sync settings
+  and not only your exclusions and reviewed marks — the confirmation says so, and a copy of the
+  current state is taken first, so a restore you did not mean can be undone the same way.
+
+  Two things it will refuse. A copy whose decision stores cannot be read is listed but not
+  restorable, since applying it would replace a readable store with an unreadable one — the exact
+  loss the copies exist to protect against. And restoring while a sync is running is refused,
+  because the sync writes its own results as it finishes and would overwrite what you just restored.
+
+  You always start a restore. The plugin never does one on its own: it has no way to tell a
+  deliberate bulk change from data loss, and deciding your current settings are wrong is not a
+  judgement it should be making.
+
 ## [1.7.1] - 2026-09-14
 
 ### Fixed

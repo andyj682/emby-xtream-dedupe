@@ -396,8 +396,23 @@ what they were — a media scan cannot rebuild them.
   sync — both under the **Backup and records folder**, which defaults to `xtream-backups` beside
   the configuration.
 
+**Putting one back.** Under **Restore a Saved Configuration** on the Settings tab, **Show saved
+copies** lists every rollback and backup with the date it was taken and what restoring it would
+change — "nothing", or something like "2 settings, +8,554 movie exclusions" — so you can tell them
+apart without having to remember what was in them. Restoring replaces your whole configuration with
+that copy — every setting, not only the exclusions and reviewed marks — and takes a rollback copy of
+the current state first, so a restore can itself be undone. You start it; the plugin never restores
+anything on its own.
+
+A copy whose decision stores cannot be read is listed but refused, because restoring it would
+replace a readable store with an unreadable one. Restoring is also refused while a sync is running,
+since the sync would write its own results over it moments later.
+
 **What it does not do.** By default all of that lives on the same disk as the file it protects. It
-covers a bad write; it does not survive losing the volume.
+covers a bad write; it does not survive losing the volume. And if you point the backup folder at
+another drive, note that the pointer lives in the configuration itself — so after losing the
+configuration entirely, the plugin looks in the default location and will not find copies kept
+elsewhere. Put them back by hand first, then restore.
 
 **So point the backup folder at a different drive** if you have one — that single setting upgrades
 the backups and snapshots from same-disk to real ones. For anything off-machine, the whole

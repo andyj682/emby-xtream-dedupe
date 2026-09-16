@@ -828,6 +828,23 @@
                             Set 0 to disable.
                         </div>
                     </div>
+
+                </div>
+
+                <hr style="border:none; border-top:1px solid rgba(128,128,128,0.2); margin:0.25em 0 1.25em;" />
+
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Restore a Saved Configuration</h2>
+                    <div class="fieldDescription" style="margin-bottom:0.75em;">
+                        Puts back one of the copies listed above. Replaces every setting with the one
+                        you pick, including your exclusions and reviewed marks. A copy of the current
+                        configuration is kept first, so a restore can itself be undone. You start a
+                        restore; the plugin never does one on its own.
+                    </div>
+                    <button class="btnLoadConfigCopies raised button-secondary" is="emby-button" type="button">
+                        Show saved copies
+                    </button>
+                    <div class="configCopiesResult" style="margin-top:0.75em; font-size:0.9em;"></div>
                 </div>
 
                 <hr style="border:none; border-top:1px solid rgba(128,128,128,0.2); margin:0.25em 0 1.25em;" />

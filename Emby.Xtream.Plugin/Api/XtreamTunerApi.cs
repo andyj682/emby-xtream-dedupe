@@ -166,6 +166,17 @@ namespace Emby.Xtream.Plugin.Api
     {
     }
 
+    [Route("/XtreamTuner/ConfigurationCopies", "GET", Summary = "Lists saved configurations that can be restored")]
+    public class GetConfigurationCopies : IReturn<ConfigurationCopyList>
+    {
+    }
+
+    [Route("/XtreamTuner/RestoreConfiguration", "POST", Summary = "Replaces the live configuration with a saved copy")]
+    public class RestoreConfiguration : IReturn<RestoreConfigurationResult>
+    {
+        public string Path { get; set; }
+    }
+
     [Route("/XtreamTuner/TestTmdbLookup", "GET", Summary = "Tests TMDB fallback lookup")]
     public class TestTmdbLookup : IReturn<TestConnectionResult>
     {
@@ -1608,6 +1619,25 @@ namespace Emby.Xtream.Plugin.Api
             }
 
             return result;
+        }
+
+        public object Get(GetConfigurationCopies request)
+        {
+            var service = Plugin.Instance.StrmSyncService;
+            return service.ListConfigurationCopies(Plugin.Instance.Configuration);
+        }
+
+        public object Post(RestoreConfiguration request)
+        {
+            try
+            {
+                var service = Plugin.Instance.StrmSyncService;
+                return service.RestoreConfiguration(Plugin.Instance.Configuration, request.Path);
+            }
+            catch (Exception ex)
+            {
+                return new RestoreConfigurationResult { Message = "Restore failed: " + ex.Message };
+            }
         }
 
         public void Post(RestartEmby request)

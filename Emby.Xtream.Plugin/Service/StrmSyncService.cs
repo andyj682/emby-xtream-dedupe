@@ -32,6 +32,81 @@ namespace Emby.Xtream.Plugin.Service
         public string AbortReason = string.Empty;
     }
 
+    /// <summary>
+    /// One saved configuration offered as a restore candidate (ADR-F005 mechanism 9).
+    /// </summary>
+    public class ConfigurationCopy
+    {
+        public string Path { get; set; }
+
+        /// <summary>"backup" (scheduled, under the records root) or "rollback" (pre-write).</summary>
+        public string Source { get; set; }
+
+        /// <summary>When the copy was taken, from its filename. See DescribeConfigurationCopy.</summary>
+        public string Taken { get; set; }
+
+        public long SizeBytes { get; set; }
+
+        // Sizes are strings so that UNPARSEABLE reaches the UI intact rather than being flattened
+        // to a number. The two exclusion stores round-trip as int[] and cannot be unparseable.
+        public string ExcludedVodStreamIds { get; set; }
+        public string ExcludedSeriesIds { get; set; }
+        public string ReviewedVodStreamIdsJson { get; set; }
+        public string ReviewedSeriesIdsJson { get; set; }
+
+        /// <summary>
+        /// How many ordinary settings differ from the configuration in force now. Decision stores
+        /// and internal bookkeeping are excluded — the stores are reported above as counts, and
+        /// counting them here would turn "the exclusion list moved" into a large, meaningless
+        /// settings number.
+        /// </summary>
+        public int DifferingSettings { get; set; }
+
+        /// <summary>Whether any of the four decision stores differ from the current ones.</summary>
+        public bool DecisionStoresDiffer { get; set; }
+
+        /// <summary>
+        /// What restoring this copy would change, in words: "nothing", or something like
+        /// "2 settings, +8,554 movie exclusions, -118 movies reviewed". Labeled deltas rather than
+        /// four bare store sizes, which nobody can read without a key and which are identical on
+        /// every copy of a settled install — while still carrying the magnitude that identifies the
+        /// right copy after a wipe, which is the case this whole feature exists for.
+        /// </summary>
+        public string ChangeSummary { get; set; }
+
+        /// <summary>True when restoring this copy would change nothing at all.</summary>
+        public bool IdenticalToCurrent { get; set; }
+
+        /// <summary>False when this copy must not be applied; <see cref="Problem"/> says why.</summary>
+        public bool Restorable { get; set; }
+
+        public string Problem { get; set; }
+    }
+
+    /// <summary>
+    /// The restore candidates, plus the configuration they would be replacing.
+    /// </summary>
+    /// <remarks>
+    /// The current state is returned alongside deliberately: a list of store counts cannot be
+    /// judged without the baseline they are being compared against, and asking the user to
+    /// remember four numbers from another page is not a comparison.
+    /// </remarks>
+    public class ConfigurationCopyList
+    {
+        public ConfigurationCopy Current { get; set; }
+        public List<ConfigurationCopy> Copies { get; set; }
+    }
+
+    /// <summary>Outcome of applying a saved configuration.</summary>
+    public class RestoreConfigurationResult
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; }
+
+        /// <summary>The rollback copy taken of the pre-restore state, when one was.</summary>
+        public string RollbackPath { get; set; }
+    }
+
     public class SyncHistoryEntry
     {
         public DateTime StartTime { get; set; }
@@ -174,6 +249,15 @@ namespace Emby.Xtream.Plugin.Service
         /// published name has a differently-named configuration file.
         /// </summary>
         internal string ConfigRollbackSourcePath;
+
+        /// <summary>
+        /// How a restored configuration is applied. Null means the real path —
+        /// <c>Plugin.UpdateConfiguration</c>, which is what makes the write go through the
+        /// plugin's own save path and take a rollback copy of the pre-restore state. Overridden in
+        /// tests, which have no plugin instance, so the restore rules are testable rather than
+        /// stopping at "not initialized".
+        /// </summary>
+        internal Action<PluginConfiguration> ApplyRestoredConfiguration;
 
         /// <summary>One root for every durable record the plugin keeps — see ADR-F005 mechanism 8.</summary>
         internal const string RecordsRootName = "xtream-backups";
@@ -418,6 +502,540 @@ namespace Emby.Xtream.Plugin.Service
 
             var directory = string.IsNullOrEmpty(source) ? null : Path.GetDirectoryName(source);
             return string.IsNullOrEmpty(directory) ? null : Path.Combine(directory, RecordsRootName);
+        }
+
+        /// <summary>
+        /// Applies a saved configuration, replacing the live one (ADR-F005 mechanism 9).
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The write goes through <c>Plugin.UpdateConfiguration</c> rather than copying XML over
+        /// the live file. That removes the two dangerous steps in the manual procedure — stopping
+        /// the server and hand-copying — because Emby's in-memory copy is updated with it, so
+        /// nothing overwrites the file on the next save.
+        /// </para>
+        /// <para>
+        /// It also makes a restore chosen in error recoverable by the same action: that override
+        /// already takes a rollback copy before a write lands, and the configuration it copies is
+        /// still the pre-restore one at that moment.
+        /// </para>
+        /// <para>
+        /// The user always initiates this. Nothing here runs on a schedule or in response to a
+        /// detected condition — an automatic restore would be the plugin deciding the present
+        /// state is wrong, which is the judgement it is not allowed to make.
+        /// </para>
+        /// </remarks>
+        internal RestoreConfigurationResult RestoreConfiguration(PluginConfiguration config, string path)
+        {
+            // A sync writes watermarks and reviewed IDs back as it finishes. Replacing the
+            // configuration underneath one interleaves two states and the sync's wins.
+            if (_movieProgress.IsRunning || _seriesProgress.IsRunning)
+            {
+                return new RestoreConfigurationResult
+                {
+                    Message = "A sync is running. Wait for it to finish before restoring, or the "
+                        + "sync would write its own results over the restored configuration.",
+                };
+            }
+
+            if (!IsRestoreCandidate(config, path))
+            {
+                return new RestoreConfigurationResult
+                {
+                    Message = "That file is not one of the saved copies this plugin manages.",
+                };
+            }
+
+            if (!File.Exists(path))
+            {
+                return new RestoreConfigurationResult { Message = "That copy no longer exists." };
+            }
+
+            // Re-validate rather than trusting what the listing said: the list was built when the
+            // page loaded and the file could have changed, and this is the last point at which
+            // refusing costs nothing.
+            var described = DescribeConfigurationCopy(path, "restore");
+            if (!described.Restorable)
+            {
+                return new RestoreConfigurationResult
+                {
+                    Message = described.Problem ?? "That copy cannot be restored.",
+                };
+            }
+
+            var restored = ReadConfigurationFile(path);
+            if (restored == null)
+            {
+                return new RestoreConfigurationResult
+                {
+                    Message = "That copy could not be read as a plugin configuration.",
+                };
+            }
+
+            var apply = ApplyRestoredConfiguration;
+            if (apply == null)
+            {
+                var plugin = Plugin.InstanceOrNull;
+                if (plugin == null)
+                {
+                    return new RestoreConfigurationResult { Message = "The plugin is not initialized." };
+                }
+
+                apply = plugin.UpdateConfiguration;
+            }
+
+            var previousRoot = ResolveRecordsRoot(config);
+
+            _logger.Info(
+                "Restoring configuration from {0}. Before: {1} / {2} / {3} / {4}",
+                path,
+                config.ExcludedVodStreamIds?.Length ?? 0,
+                config.ExcludedSeriesIds?.Length ?? 0,
+                DescribeIdSetSize(config.ReviewedVodStreamIdsJson),
+                DescribeIdSetSize(config.ReviewedSeriesIdsJson));
+
+            apply(restored);
+
+            _logger.Info(
+                "Configuration restored from {0}. After: {1} / {2} / {3} / {4}",
+                path,
+                described.ExcludedVodStreamIds,
+                described.ExcludedSeriesIds,
+                described.ReviewedVodStreamIdsJson,
+                described.ReviewedSeriesIdsJson);
+
+            // The durable history would otherwise show an unexplained step change with nothing
+            // recording why — the damage the shared line format exists to prevent. Written against
+            // the RESTORED configuration, because that is the records root the plugin will use
+            // from here on; see the relocation note below for when those differ.
+            AppendDecisionStoreCounts(restored);
+
+            var message = string.Format(
+                CultureInfo.InvariantCulture,
+                "Restored the configuration saved at {0}. Decision stores are now {1} / {2} / {3} / {4}. "
+                + "A copy of the previous configuration was kept, so this can be undone.",
+                described.Taken,
+                described.ExcludedVodStreamIds,
+                described.ExcludedSeriesIds,
+                described.ReviewedVodStreamIdsJson,
+                described.ReviewedSeriesIdsJson);
+
+            // Restoring replaces every setting, so it can move the records root as a side effect of
+            // recovering decisions — and relocating that root does not migrate what is already
+            // there, which splits the counts history in two. Worth naming rather than leaving the
+            // user to notice their history stopped growing.
+            var restoredRoot = ResolveRecordsRoot(restored);
+            if (!string.Equals(previousRoot, restoredRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.Info(
+                    "Restore changed the records root from {0} to {1}", previousRoot, restoredRoot);
+
+                message += string.Format(
+                    CultureInfo.InvariantCulture,
+                    " Note: this copy also changed the backup and records folder to '{0}'. New records go "
+                    + "there; anything already written stays where it was, so move it by hand if you want "
+                    + "one continuous history.",
+                    restoredRoot);
+            }
+
+            return new RestoreConfigurationResult { Success = true, Message = message };
+        }
+
+        /// <summary>
+        /// Where the pre-write rollback copies live. Beside the configuration rather than under
+        /// the relocatable records root — see <see cref="RollbackFolderName"/>.
+        /// </summary>
+        internal string ResolveRollbackDirectory()
+        {
+            var source = ConfigRollbackSourcePath;
+            if (string.IsNullOrEmpty(source))
+            {
+                source = Plugin.InstanceOrNull?.ConfigPath;
+            }
+
+            var directory = string.IsNullOrEmpty(source) ? null : Path.GetDirectoryName(source);
+            return string.IsNullOrEmpty(directory) ? null : Path.Combine(directory, RollbackFolderName);
+        }
+
+        /// <summary>
+        /// The two directories a restore candidate may come from: the scheduled backups under the
+        /// records root, and the pre-write rollback copies beside the configuration.
+        /// </summary>
+        /// <remarks>
+        /// Both are offered because they answer different questions and neither substitutes for
+        /// the other (ADR-F005 mechanism 9). A rollback copy is the state as of one save ago, so
+        /// it undoes a bad save losing nothing else; a backup is older but survives the case a
+        /// rollback cannot, since rollbacks churn one per changed save. Restricting the list to
+        /// backups would leave the likeliest case — noticing a bulk save was wrong minutes later
+        /// — recovered by hand-copying a file, which is the procedure this exists to remove.
+        /// </remarks>
+        internal List<string> ResolveRestoreDirectories(PluginConfiguration config)
+        {
+            var directories = new List<string>();
+
+            var root = ResolveRecordsRoot(config);
+            if (!string.IsNullOrEmpty(root))
+            {
+                directories.Add(Path.Combine(root, ConfigBackupFolderName));
+            }
+
+            var rollback = ResolveRollbackDirectory();
+            if (!string.IsNullOrEmpty(rollback))
+            {
+                directories.Add(rollback);
+            }
+
+            return directories;
+        }
+
+        /// <summary>
+        /// Reads a saved configuration from disk.
+        /// </summary>
+        /// <remarks>
+        /// Uses the framework serializer directly rather than Emby's wrapper so that reading a
+        /// candidate needs no running plugin instance, which keeps the whole restore path
+        /// unit-testable. The configuration is a plain data class, so the two agree; and the
+        /// tolerance that matters is shared — elements absent from a copy taken by an older build
+        /// simply keep their defaults.
+        /// <para>Returns null when the file cannot be read or is not a configuration at all.</para>
+        /// </remarks>
+        internal static PluginConfiguration ReadConfigurationFile(string path)
+        {
+            try
+            {
+                var serializer = new System.Xml.Serialization.XmlSerializer(typeof(PluginConfiguration));
+                using (var stream = File.OpenRead(path))
+                {
+                    return serializer.Deserialize(stream) as PluginConfiguration;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Describes one restore candidate: when it was taken, where from, and the four decision
+        /// store sizes it holds.
+        /// </summary>
+        /// <remarks>
+        /// The store sizes are the only reviewable facts at whole-file granularity — a difference
+        /// of tens of thousands of individual IDs is not something anyone can inspect — and they
+        /// are the same four numbers the sync summary and the counts log already report, so a
+        /// candidate can be compared against history the user already has.
+        /// <para>
+        /// Sizes are strings, not numbers, so that <c>UNPARSEABLE</c> survives all the way to the
+        /// UI. Reporting a damaged store as <c>0</c> would hide exactly the condition that makes a
+        /// copy unsafe to restore.
+        /// </para>
+        /// </remarks>
+        internal ConfigurationCopy DescribeConfigurationCopy(string path, string source)
+        {
+            var copy = new ConfigurationCopy { Path = path, Source = source };
+
+            try
+            {
+                var info = new FileInfo(path);
+                copy.SizeBytes = info.Length;
+                // The FILE NAME is when the copy was taken; the file's own timestamp is when the
+                // state inside it was written, because File.Copy preserves the source's. For a
+                // rollback copy those differ by design — the mtime predates the save it protects
+                // against — so the name is the correct label here.
+                copy.Taken = ParseCopyStamp(Path.GetFileNameWithoutExtension(path))
+                    ?? info.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+            }
+            catch (Exception ex)
+            {
+                copy.Problem = "Could not read the file: " + ex.Message;
+                return copy;
+            }
+
+            var config = ReadConfigurationFile(path);
+            if (config == null)
+            {
+                copy.Problem = "This file is not a readable plugin configuration.";
+                return copy;
+            }
+
+            copy.ExcludedVodStreamIds = (config.ExcludedVodStreamIds?.Length ?? 0)
+                .ToString(CultureInfo.InvariantCulture);
+            copy.ExcludedSeriesIds = (config.ExcludedSeriesIds?.Length ?? 0)
+                .ToString(CultureInfo.InvariantCulture);
+            copy.ReviewedVodStreamIdsJson = DescribeIdSetSize(config.ReviewedVodStreamIdsJson);
+            copy.ReviewedSeriesIdsJson = DescribeIdSetSize(config.ReviewedSeriesIdsJson);
+
+            // A store that does not parse makes the copy unsafe to restore: applying it would
+            // write the unreadable field back as the live one, which is the wipe this whole ADR
+            // exists to prevent, arriving through the tool built to recover from it.
+            if (copy.ReviewedVodStreamIdsJson == UnparseableStore
+                || copy.ReviewedSeriesIdsJson == UnparseableStore)
+            {
+                copy.Problem = "A decision store in this copy could not be parsed, so restoring it "
+                    + "would replace a readable store with an unreadable one.";
+                return copy;
+            }
+
+            copy.Restorable = true;
+            return copy;
+        }
+
+        /// <summary>
+        /// Configuration properties that are the plugin's own bookkeeping rather than settings a
+        /// user chose, so a difference in them says nothing about whether a copy is the one wanted.
+        /// The four decision stores are here because they are reported separately, as counts.
+        /// </summary>
+        private static readonly HashSet<string> NonSettingProperties = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "ExcludedVodStreamIds", "ExcludedSeriesIds",
+            "ReviewedVodStreamIdsJson", "ReviewedSeriesIdsJson",
+            "VodDecisionTmdbIdsJson", "SeriesEpisodeHashesJson",
+            "LastMovieSyncTimestamp", "LastSeriesSyncTimestamp",
+            "SyncHistoryJson", "LastInstalledVersion",
+            "StrmNamingVersion", "EpisodeFilenameMigrationVersion",
+        };
+
+        /// <summary>
+        /// Fills in how a copy differs from the configuration in force.
+        /// </summary>
+        /// <remarks>
+        /// Four identical store counts are the normal case on a settled install, which leaves the
+        /// timestamp carrying the whole burden of telling copies apart — and a timestamp does not
+        /// say whether restoring would change anything. This answers that directly.
+        /// </remarks>
+        internal static void CompareWithCurrent(ConfigurationCopy copy, PluginConfiguration saved, PluginConfiguration current)
+        {
+            if (copy == null || saved == null || current == null)
+            {
+                return;
+            }
+
+            var differing = 0;
+            foreach (var property in typeof(PluginConfiguration).GetProperties())
+            {
+                if (!property.CanRead || NonSettingProperties.Contains(property.Name))
+                {
+                    continue;
+                }
+
+                if (!ValuesEqual(property.GetValue(saved, null), property.GetValue(current, null)))
+                {
+                    differing++;
+                }
+            }
+
+            copy.DifferingSettings = differing;
+
+            var storeChanges = new List<string>();
+            AppendStoreDelta(storeChanges, "movie exclusions",
+                saved.ExcludedVodStreamIds?.Length ?? 0, current.ExcludedVodStreamIds?.Length ?? 0);
+            AppendStoreDelta(storeChanges, "series exclusions",
+                saved.ExcludedSeriesIds?.Length ?? 0, current.ExcludedSeriesIds?.Length ?? 0);
+            AppendStoreDelta(storeChanges, "movies reviewed",
+                CountIdSet(saved.ReviewedVodStreamIdsJson), CountIdSet(current.ReviewedVodStreamIdsJson));
+            AppendStoreDelta(storeChanges, "series reviewed",
+                CountIdSet(saved.ReviewedSeriesIdsJson), CountIdSet(current.ReviewedSeriesIdsJson));
+
+            copy.DecisionStoresDiffer = storeChanges.Count > 0;
+            copy.IdenticalToCurrent = differing == 0 && !copy.DecisionStoresDiffer;
+
+            // Built here rather than in the page because there are no tests for the page, and this
+            // is the line a user actually reads to choose a copy.
+            var parts = new List<string>();
+            if (differing > 0)
+            {
+                parts.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    differing == 1 ? "{0} setting" : "{0} settings", differing));
+            }
+
+            parts.AddRange(storeChanges);
+            copy.ChangeSummary = parts.Count == 0 ? "nothing" : string.Join(", ", parts);
+        }
+
+        /// <summary>
+        /// Adds a readable "+8,554 movie exclusions" when a store's size would change, and nothing
+        /// when it would not — so a settled install shows an empty summary rather than four zeroes.
+        /// </summary>
+        private static void AppendStoreDelta(List<string> into, string label, int saved, int current)
+        {
+            var delta = saved - current;
+            if (delta == 0)
+            {
+                return;
+            }
+
+            into.Add(string.Format(
+                CultureInfo.InvariantCulture, "{0}{1:N0} {2}", delta > 0 ? "+" : "-", Math.Abs(delta), label));
+        }
+
+        /// <summary>Store size, treating an unreadable store as 0 — such copies are refused anyway.</summary>
+        private static int CountIdSet(string json)
+        {
+            var ids = DeserializeIdSet(json);
+            return ids == null ? 0 : ids.Count;
+        }
+
+        /// <summary>
+        /// Value equality that understands arrays, which <see cref="object.Equals(object)"/> compares
+        /// by reference — so the category selections would otherwise read as different every time.
+        /// </summary>
+        private static bool ValuesEqual(object a, object b)
+        {
+            if (a == null || b == null)
+            {
+                return a == null && b == null;
+            }
+
+            var arrayA = a as Array;
+            var arrayB = b as Array;
+            if (arrayA != null && arrayB != null)
+            {
+                if (arrayA.Length != arrayB.Length)
+                {
+                    return false;
+                }
+
+                for (var i = 0; i < arrayA.Length; i++)
+                {
+                    if (!Equals(arrayA.GetValue(i), arrayB.GetValue(i)))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            return Equals(a, b);
+        }
+
+        /// <summary>
+        /// Every restore candidate, newest first, alongside the configuration in force.
+        /// </summary>
+        internal ConfigurationCopyList ListConfigurationCopies(PluginConfiguration config)
+        {
+            var copies = new List<ConfigurationCopy>();
+
+            foreach (var directory in ResolveRestoreDirectories(config))
+            {
+                if (!Directory.Exists(directory))
+                {
+                    continue;
+                }
+
+                var source = string.Equals(
+                    Path.GetFileName(directory), ConfigBackupFolderName, StringComparison.OrdinalIgnoreCase)
+                    ? "backup"
+                    : "rollback";
+
+                foreach (var file in Directory.GetFiles(directory, "*.xml"))
+                {
+                    var copy = DescribeConfigurationCopy(file, source);
+                    if (copy.Restorable)
+                    {
+                        CompareWithCurrent(copy, ReadConfigurationFile(file), config);
+                    }
+
+                    copies.Add(copy);
+                }
+            }
+
+            copies.Sort((a, b) => string.Compare(b.Taken, a.Taken, StringComparison.Ordinal));
+
+            return new ConfigurationCopyList
+            {
+                Current = new ConfigurationCopy
+                {
+                    Source = "current",
+                    Taken = "in force now",
+                    ExcludedVodStreamIds = (config.ExcludedVodStreamIds?.Length ?? 0)
+                        .ToString(CultureInfo.InvariantCulture),
+                    ExcludedSeriesIds = (config.ExcludedSeriesIds?.Length ?? 0)
+                        .ToString(CultureInfo.InvariantCulture),
+                    ReviewedVodStreamIdsJson = DescribeIdSetSize(config.ReviewedVodStreamIdsJson),
+                    ReviewedSeriesIdsJson = DescribeIdSetSize(config.ReviewedSeriesIdsJson),
+                },
+                Copies = copies,
+            };
+        }
+
+        /// <summary>
+        /// Whether a path is one of the copies this plugin manages.
+        /// </summary>
+        /// <remarks>
+        /// Not a security control — the caller is already a server administrator, and could read
+        /// any file by other means. It keeps the candidate list authoritative and stops a mistyped
+        /// or stale path being deserialized over the live configuration.
+        /// </remarks>
+        internal bool IsRestoreCandidate(PluginConfiguration config, string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            string full;
+            try
+            {
+                full = Path.GetFullPath(path);
+            }
+            catch
+            {
+                return false;
+            }
+
+            if (!string.Equals(Path.GetExtension(full), ".xml", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            foreach (var directory in ResolveRestoreDirectories(config))
+            {
+                string parent;
+                try
+                {
+                    parent = Path.GetFullPath(directory);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                // Compare the containing directory rather than testing a prefix, so a sibling
+                // directory whose name merely starts with the same characters cannot match.
+                if (string.Equals(Path.GetDirectoryName(full), parent, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Reads the timestamp a copy's filename encodes, or null when it is not in that form.
+        /// Both writers stamp <c>yyyyMMdd-HHmmss-fff</c>, optionally with a collision suffix.
+        /// </summary>
+        private static string ParseCopyStamp(string name)
+        {
+            if (string.IsNullOrEmpty(name) || name.Length < 15 || name[8] != '-')
+            {
+                return null;
+            }
+
+            DateTime parsed;
+            if (!DateTime.TryParseExact(
+                    name.Substring(0, 15),
+                    "yyyyMMdd-HHmmss",
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.None,
+                    out parsed))
+            {
+                return null;
+            }
+
+            return parsed.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
         }
 
         /// <summary>
@@ -793,11 +1411,18 @@ namespace Emby.Xtream.Plugin.Service
         /// most alarming thing this line can say, so it must not be able to say it quietly.
         /// </para>
         /// </summary>
+        /// <summary>
+        /// What a store that could not be read reports as. Deliberately not <c>0</c>: absent and
+        /// unreadable are different answers, and conflating them hides the failure the counts
+        /// exist to catch.
+        /// </summary>
+        internal const string UnparseableStore = "UNPARSEABLE";
+
         private static string DescribeIdSetSize(string json)
         {
             var ids = DeserializeIdSet(json);
             return ids == null
-                ? "UNPARSEABLE"
+                ? UnparseableStore
                 : ids.Count.ToString(CultureInfo.InvariantCulture);
         }
 

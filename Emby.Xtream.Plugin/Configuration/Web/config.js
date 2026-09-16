@@ -130,6 +130,10 @@ function (BaseView, loading) {
             validatePath(view, '.txtRecordsPath', '.recordsPathValidationResult');
         });
 
+        view.querySelector('.btnLoadConfigCopies').addEventListener('click', function () {
+            loadConfigCopies(view);
+        });
+
         view.querySelector('.btnCloseBrowser').addEventListener('click', function () {
             closeBrowser(view);
         });
@@ -3612,6 +3616,117 @@ function updateEpgVisibility(view) {
                 var text = items[i].textContent.toLowerCase();
                 items[i].style.display = text.indexOf(filter) >= 0 ? '' : 'none';
             }
+        });
+    }
+
+    // ---- Restore a saved configuration (ADR-F005 mechanism 9) ----
+
+    function loadConfigCopies(view) {
+        var target = view.querySelector('.configCopiesResult');
+        target.innerHTML = '<span style="opacity:0.5;">Loading saved copies...</span>';
+
+        ApiClient.getJSON(ApiClient.getUrl('XtreamTuner/ConfigurationCopies')).then(function (data) {
+            var copies = (data && data.Copies) || [];
+            if (!copies.length) {
+                target.innerHTML = '<span style="opacity:0.7;">No saved copies found yet. ' +
+                    'Backups are written by the scheduled task, and rollback copies when settings are saved.</span>';
+                return;
+            }
+
+            var html = '';
+
+            // The configuration in force, stated once and labeled. This is the key for the deltas
+            // below, and it costs nothing here where four numbers per row would be unreadable.
+            if (data.Current) {
+                html += '<div style="opacity:0.7; margin-bottom:0.6em;">Right now: ' +
+                    escapeHtml(data.Current.ExcludedVodStreamIds) + ' movie exclusions, ' +
+                    escapeHtml(data.Current.ExcludedSeriesIds) + ' series exclusions, ' +
+                    escapeHtml(data.Current.ReviewedVodStreamIdsJson) + ' movies reviewed, ' +
+                    escapeHtml(data.Current.ReviewedSeriesIdsJson) + ' series reviewed.</div>';
+            }
+
+            html += '<table style="width:100%; border-collapse:collapse;">' +
+                '<tr style="text-align:left; opacity:0.7;">' +
+                '<th style="padding:0.25em 0.5em 0.25em 0;">Taken</th>' +
+                '<th style="padding:0.25em 0.5em;">From</th>' +
+                '<th style="padding:0.25em 0.5em;">Restoring would change</th>' +
+                '<th></th></tr>';
+
+            copies.forEach(function (copy, index) {
+                var effect;
+                if (!copy.Restorable) {
+                    effect = '<span style="opacity:0.5;">&mdash;</span>';
+                } else if (copy.IdenticalToCurrent) {
+                    effect = '<span style="opacity:0.6;">nothing</span>';
+                } else {
+                    effect = escapeHtml(copy.ChangeSummary || '');
+                }
+
+                var action = copy.Restorable
+                    ? '<button class="btnRestoreConfig raised button-secondary" is="emby-button" type="button" ' +
+                      'data-index="' + index + '" style="margin:0;">Restore</button>'
+                    : '<span style="color:#cc0000;" title="' + escapeHtml(copy.Problem || '') + '">Cannot restore</span>';
+
+                html += '<tr style="border-top:1px solid rgba(128,128,128,0.2);">' +
+                    '<td style="padding:0.4em 0.5em 0.4em 0; white-space:nowrap;">' + escapeHtml(copy.Taken || '') + '</td>' +
+                    '<td style="padding:0.4em 0.5em; opacity:0.7;">' + escapeHtml(copy.Source || '') + '</td>' +
+                    '<td style="padding:0.4em 0.5em;">' + effect + '</td>' +
+                    '<td style="padding:0.4em 0 0.4em 0.5em; text-align:right;">' + action + '</td>' +
+                    '</tr>';
+            });
+
+            html += '</table>';
+            target.innerHTML = html;
+
+            // Keep the descriptions out of the DOM: the confirm text is built from the record,
+            // not re-read from the markup.
+            target.querySelectorAll('.btnRestoreConfig').forEach(function (btn) {
+                btn.addEventListener('click', function () {
+                    restoreConfig(view, copies[parseInt(btn.getAttribute('data-index'), 10)]);
+                });
+            });
+        }).catch(function () {
+            target.innerHTML = '<span style="color:#cc0000;">Could not list saved copies. Check the server log.</span>';
+        });
+    }
+
+    function restoreConfig(view, copy) {
+        // Blocking confirm, naming what is being replaced and with what. The whole configuration
+        // changes, not only the decision stores, and that has to be said before the click lands.
+        var message = 'Restore the configuration saved at ' + copy.Taken + '?\n\n' +
+            (copy.IdenticalToCurrent
+                ? 'This copy matches your current configuration, so restoring it changes nothing.\n\n'
+                : 'This would change: ' + copy.ChangeSummary + '\n\n') +
+            'Every setting is replaced by the one in this copy, including connection and sync\n' +
+            'settings, not only your exclusions and reviewed marks.\n' +
+            'A copy of the current configuration is kept first, so this can be undone.';
+
+        if (!confirm(message)) {
+            return;
+        }
+
+        var target = view.querySelector('.configCopiesResult');
+        target.innerHTML = '<span style="opacity:0.5;">Restoring...</span>';
+
+        ApiClient.ajax({
+            type: 'POST',
+            url: ApiClient.getUrl('XtreamTuner/RestoreConfiguration'),
+            data: JSON.stringify({ Path: copy.Path }),
+            contentType: 'application/json',
+            dataType: 'json'
+        }).then(function (result) {
+            if (result.Success) {
+                target.innerHTML = '<span style="color:#52B54B;">' + escapeHtml(result.Message) + '</span>';
+                // The open page still holds the pre-restore configuration, and saving it would
+                // write the restore straight back out. Reload so every control reflects what is
+                // now stored.
+                alert(result.Message + '\n\nThe settings page will now reload.');
+                window.location.reload();
+            } else {
+                target.innerHTML = '<span style="color:#cc0000;">' + escapeHtml(result.Message) + '</span>';
+            }
+        }).catch(function () {
+            target.innerHTML = '<span style="color:#cc0000;">Restore request failed. Check the server log.</span>';
         });
     }
 

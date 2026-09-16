@@ -441,7 +441,18 @@ minutes later — recovered by hand-copying out of `xtream-rollback/`, which is 
 this feature exists to remove. **The rollback/backup distinction remains real in retention
 and location; it is not a reason to hide one at the moment of recovery.**
 
-Each candidate is listed with its timestamp, its source, and its four store sizes.
+Each candidate is listed with its timestamp, its source, and **what restoring it would change**,
+in words: "nothing", or something like "2 settings, +8,554 movie exclusions, -118 movies reviewed".
+
+The first draft listed four raw store sizes per row instead. That was wrong twice over: nobody can
+read `61697 / 18901 / 4343 / 3144` without a key, and on a settled install every copy carries the
+same four numbers, so the column said nothing while the timestamp did all the work. **The magnitude
+still has to survive**, because after a wipe it is exactly what identifies the good copy — so it is
+kept as a labeled delta against the configuration in force, which is stated once above the list.
+Stores that did not move are omitted rather than reported as zero.
+
+Settings and decision stores are counted separately. Rolling them together would report a churned
+exclusion list as "47 settings differ", which reads as though someone edited the settings.
 
 > Note when displaying rollback timestamps: `File.Copy` preserves the source's last-write
 > time, so a rollback copy's **filename** is when the copy was taken and its **file mtime**
@@ -461,11 +472,11 @@ These are binding, not implementation detail:
 3. **Only from the directories the plugin manages.** Not a security control; the caller is
    already an administrator. It keeps the candidate list authoritative and stops a mistyped
    path pointing at an unrelated file.
-4. **Show the four store sizes, current against candidate, before committing.** At
-   whole-file granularity these are the only reviewable facts — a diff of tens of thousands
-   of individual IDs is not something anyone can review. They are also the same four numbers
-   the sync summary and the counts log already report, so they are directly comparable to
-   the history the user already has.
+4. **Show what would change, candidate against current, before committing.** At whole-file
+   granularity the store sizes are the only reviewable facts — a diff of tens of thousands
+   of individual IDs is not something anyone can review — and they are the same quantities
+   the sync summary and the counts log already report, so they stay comparable to the history
+   the user already has. Shown as labeled differences rather than raw sizes; see mechanism 9.
 5. **Confirm, blocking.** Naming the file, its timestamp and the differences. Consistent
    with the confirmation already required for bulk actions over 500 titles, and with
    choosing a blocking dialog over a toast for anything of this weight.
