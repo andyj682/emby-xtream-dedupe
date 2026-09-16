@@ -177,6 +177,39 @@ def fetch_catalogue(base, user, password, kind, category_ids=None, timeout=300):
     return list(seen.values())
 
 
+def fetch_raw(base, user, password, kind, category_ids=None, timeout=300, keep=None):
+    """Like fetch_catalogue, but keeps the provider's entry fields rather than a projection.
+
+    fetch_catalogue reduces each entry to (id, tmdb, name, category) because that is all the
+    identity tooling needs. Anything asking about the *content* of a listing — which fields
+    the provider actually populates — needs the fields themselves.
+
+    ``keep`` limits which ones are retained, and callers should almost always pass it: a full
+    catalogue is tens of thousands of entries and one of the fields is the plot, which is a
+    paragraph per title. Keeping everything costs a few hundred MB, which is enough to get a
+    memory-capped diagnostic container OOM-killed — and that looks like a silent death rather
+    than an error. None keeps everything.
+
+    Same per-category scoping and same dedupe-by-id rule as fetch_catalogue, so both see the
+    same rows.
+    """
+    id_field = CATALOGUE_ID_FIELD[kind]
+    scopes = list(category_ids) if category_ids else [None]
+    wanted = set(keep) | {id_field} if keep else None
+
+    seen = {}
+    for category_id in scopes:
+        for entry in _fetch_list(base, user, password, kind, category_id, timeout):
+            try:
+                item_id = int(entry.get(id_field) or 0)
+            except (TypeError, ValueError):
+                continue
+            if item_id <= 0 or item_id in seen:
+                continue
+            seen[item_id] = {k: entry.get(k) for k in wanted} if wanted else entry
+    return seen
+
+
 def normalise_name(name):
     return _WHITESPACE.sub(" ", str(name or "")).strip().casefold()
 
