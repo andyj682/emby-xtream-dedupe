@@ -4,9 +4,12 @@
 upstream ADR — see [README.md](README.md).)*
 
 **Date**: 2026-09-11
-**Status**: PROPOSED
+**Status**: PROPOSED — designed, not built. All open questions resolved, including by the
+author of the consuming plugin (2026-09-15). **One measurement is outstanding before
+building**: whether the detail marker's fields actually discriminate on real data — see
+"The detail marker" below.
 **Affects**: `StrmSyncService.SyncMoviesAsync` (a new per-title call after the review
-gate), `PluginConfiguration` (one new opt-in field), `README.md`
+gate), `PluginConfiguration` (one opt-in field), `README.md`
 **Depends on**: ADR-F004 stage 3, which must be shipped and running first — see
 "Ordering" below. That is now met.
 
@@ -116,11 +119,19 @@ set the high-water mark is taken over, and a maximum never rises from a deletion
 **Call `get_vod_info` once per movie the sync actually writes, behind an opt-in setting,
 throttled through the existing sync concurrency limit.**
 
-- **Scope it to titles we write, not the whole catalog.** The review gate already
-  computes "titles the user wants". Held titles are by definition not yet wanted, and
-  calling for them would both waste the call and churn rows for content nobody asked for.
-  This is the scoping signal from the Context, and it is also the cheaper option — ~2,397
-  calls rather than 37,544.
+- **Scope it to the *wanted set*: every title that clears the review gate, whether or not
+  its `.strm` was rewritten this run.** Held titles are by definition not yet wanted, and
+  calling for them would waste the call and churn rows for content nobody asked for. This
+  is the scoping signal from the Context, and the cheaper option — ~2,400 calls rather than
+  37,544.
+
+  **"Titles we write" is not the same as "titles written this run", and the difference is
+  load-bearing.** In steady state this sync writes approximately nothing: a representative
+  run reported `0 written, 3531 skipped`, because everything wanted is already on disk and
+  smart-skipped. Scoping the call to titles actually written would mean that **enabling the
+  setting on an established library harvests nothing at all** — only newly-added titles
+  would ever be called for, and the existing library, which is the entire point, would
+  never be covered. The wanted set is the union of written and smart-skipped titles.
 - **Opt-in, default off.** The first run adds real time (below), and the call has a
   deliberate side effect on someone else's database. A setting that silently makes
   everyone's first sync 20 minutes longer and merges their movie rows is not a reasonable
@@ -135,12 +146,37 @@ throttled through the existing sync concurrency limit.**
   writing a `.strm`. A failed call must not fail the title, and must not touch the
   watermark or any counter that means "the sync did not write this".
 
+- 🔑 **Decide what to call for from the ABSENCE OF STORED DETAIL, never from our own record
+  of what we have already called for.** This is the single most important constraint in the
+  design, and it came from the consuming plugin's author (see "Resolved" below).
+
+  Relation rows churn wholesale — one provider's entire set of ~31,470 was deleted and
+  recreated twice in a single week, with fresh primary keys each time. The stored detail
+  goes with them. **A client that remembers "I already called for this title" would then
+  silently skip precisely the titles that just lost their data**, and the gap would be
+  invisible from either side. Keying on absence instead makes churn self-healing.
+
+- **Do not call more often than the proxy's gate, and do not mistake a gated call for a
+  cheap one.** Confirmed from the proxy's source: `xc_get_vod_info` invokes the refresh only
+  when the relation has never been fetched, has no refresh timestamp, or was last refreshed
+  more than 24 hours ago — and the refresh task re-checks the same condition itself. The
+  timestamp is written **inside** that guarded path, so a call within the window is a
+  complete no-op for bookkeeping.
+
+  🚨 **The corollary is the opposite of the intuition, and an earlier draft of this ADR had
+  it wrong.** A periodic full pass at any interval *above* 24 hours does not produce mostly
+  gated no-ops: the previous pass is what wrote the timestamp, so **by construction
+  essentially every call clears the gate and performs a real provider fetch.** A daily pass
+  over ~2,400 titles is ~2,400 real inline detail fetches per day, not a cheap re-stamp. For
+  scale, the heaviest night the consuming plugin's own sweep has ever run was 406. This is
+  why there is no periodic re-harvest.
+
 ## Alternatives considered
 
 1. **Do nothing.** Movie stream selection stays inert indefinitely — no other component
    is positioned to supply the demand signal. Rejected: this is the only step that
    unblocks the other two.
-2. **Call for the whole catalog.** 37,544 titles rather than ~2,397, hours of added sync
+2. **Call for the whole catalog.** 37,544 titles rather than ~2,400, hours of added sync
    time, and it induces merges for titles nobody wants. Rejected: strictly worse on cost
    and on risk, with no benefit — the goal needs the *wanted* set, not every set.
 3. **Have the proxy run an untargeted `ffprobe` pass instead.** Removes us from the
@@ -153,8 +189,17 @@ throttled through the existing sync concurrency limit.**
 
 ## Consequences
 
-- **First run costs roughly 20 minutes** at ~2,397 titles and ~0.5s each; cheap after
-  that, since the proxy's ~24-hour per-relation gate makes repeat calls near-free.
+- **The first enabled run is the expensive one**, because that is when most of the wanted
+  set still carries no detail. At ~2,400 titles it is bounded by the per-call cost and the
+  concurrency limit; at a guessed 0.5s and the default limit of 3 that is roughly seven
+  minutes of added sync time. ⚠️ **The 0.5s is an estimate and has never been measured.** It
+  should be measured before this ships, cold and warm — timing a small sample twice in
+  succession gives both, since the second pass falls inside the proxy's 24-hour gate.
+  Afterwards the cost is near zero: titles that already carry detail are filtered out by a
+  field test, before any request is made.
+- **A gated call is not a free call.** The proxy's 24-hour gate suppresses the refresh
+  *work*, not the request: the HTTP round trip still happens. This is why the design does
+  not simply call for the wanted set every run and lean on the gate to make it cheap.
 - **One call refreshes one relation**, the highest-priority one — so this never yields
   complete coverage across providers, by design. It is a sampling of the best relation,
   not an exhaustive sweep.
@@ -168,20 +213,182 @@ throttled through the existing sync concurrency limit.**
   appeared in a provider payload, 0 of 959. It can only come from step 3.
 - The returns land in sibling tooling by design. That is the point, not a flaw.
 
-## Open
+## Resolved, 2026-09-15
 
-- Whether the setting should also gate on the review gate being enabled. With the gate
-  off, "titles we write" is the whole included catalog, which is closer to alternative 2's
-  cost profile than to this decision's. Leaning toward requiring the gate, or warning
-  when it is off.
-- Whether to log a per-run summary of what detail was harvested. It would be useful
-  evidence that the step is doing anything, but this plugin does not consume the data, so
-  it can only report that calls were made.
+### Warn when the review gate is off; do not require it
+
+**The cost argument for requiring it was overstated and is corrected here.** The earlier
+draft said that with the gate off, the scope becomes "the whole included catalog, closer to
+alternative 2's cost profile" — implying ~37,544. That conflates the *catalog* with the
+*included* set. On a curated install they are nothing alike: 37,553 total minus 34,022
+excluded leaves **3,531 included**, which splits into 2,398 written and 1,133 held for
+review. So turning the gate off takes the scope from ~2,400 to ~3,500 — about 1.5×, not
+15×. The 37,544 figure only describes someone who has excluded nothing.
+
+The stronger argument was never cost but **signal quality**: the review gate is a positive
+statement of demand, whereas "not excluded" is only the absence of rejection. But that
+distinction also collapses under curation — someone who has excluded 34,022 titles has
+expressed demand just as clearly, by a different route. **The signal tracks how curated the
+install is, not which mechanism did the curating.**
+
+Requiring the gate would therefore force an unrelated behavioral change — held titles, a
+review queue — on a user who curates by exclusion alone and already has a good signal, in
+order to solve a cost problem they do not have. So: **the setting works independently, and
+the sync logs the scope before spending it**, naming the count and whether the gate was on.
+An uncurated install sees a five-figure number in the log before the calls are made rather
+than after.
+
+### Log counts only, not payload coverage
+
+A per-run line reporting calls made and calls failed. **Not** a breakdown of what the
+payloads contained.
+
+Inspecting payloads was considered — counting how many carried stream metadata or a TMDB ID
+would measure the provider-coverage gap that step 2 says will remain, and the data is
+already in hand. **It was rejected because the consuming tooling measures the same thing
+better.** It sees the stored rows after merging, across all relations; this plugin would see
+a single payload from a single relation at call time. Two "coverage" numbers that
+legitimately disagree is the same failure as two incompatible log formats: it forces someone
+to relitigate which is authoritative at exactly the wrong moment. One measurement, taken
+where the data lives.
+
+### Report progress while detail is being fetched
+
+A run with many titles to fetch adds minutes to the sync with no other outward sign, and a
+sync that appears stalled is indistinguishable from one that has hung.
+
+The per-title counters already advance during the pass, because the call is made inline in
+the existing loop rather than as a separate phase — so the progress bar keeps moving on its
+own, just more slowly. What is missing is *why*. **The phase string says so during a
+harvest run.** A separate phase was considered and rejected: it would need either its own
+progress object or a deliberate reset of `Total`/`Completed`, and getting that wrong
+corrupts the end-of-run summary for no gain over one honest string.
+
+### Answered by the consuming plugin, 2026-09-15: no periodic re-harvest
+
+The question put to it was whether it needs the refresh timestamp to be *recent* or only
+*ever set*. The answer was **neither — it reads neither field.** As of its v1.2.0 it does
+not write `detailed_fetched` or `last_advanced_refresh` and has never read them; its sweep
+resumes on the presence of stored `detailed_info`, and its own bookkeeping lives under its
+own key. So nothing shipping today depends on the answer either way.
+
+The question was really about the future ffprobe pass, and the answer there is **do not buy
+recency at that price**, for the cost reason recorded in the Decision above. In principle
+recency is the better signal — a wanted set shrinks as well as grows, and a boolean can
+never express "no longer wanted", so an ever-set marker makes the probe population only
+accumulate. But ~2,400 real provider fetches a day is not the way to buy expiry.
+
+🔑 **If expiry turns out to matter when the ffprobe pass is designed, the designated path is
+to publish the wanted set directly** — a settings row or a file whose contents this plugin
+already knows — which is always current and costs nothing recurring. That was previously set
+aside as coupling cost, but that judgement predates anyone pricing the alternative. **Do not
+reach for the timestamp again**; a small explicit contract is cheaper than a daily load.
+
+### The detail marker: deciding what to call for, at zero cost
+
+Keying on absence of stored detail is the constraint; this is how a client that cannot see
+relation records satisfies it.
+
+`xc_get_vod_streams` emits `director`, `cast` and `release_date` from the movie row's
+custom properties, alongside plot, genre, year and rating. Those are written by
+`refresh_movie_advanced_data`. **So their absence in the list payload is a usable marker for
+"this title has never had a detail refresh" — computed from a payload the sync already
+fetches every run, at no additional request cost.**
+
+That removes the harvest timestamp, the bootstrap concept and the manual procedure all at
+once. The rule becomes simply: *call for wanted titles whose list payload carries no
+detail.* On first enable that is most of the wanted set; afterwards it is new arrivals plus
+anything whose detail has genuinely gone.
+
+⚠️ **Two limits, and the second must be measured before this is built:**
+
+1. **The marker reads the movie row, not the relation.** It is exact when a movie row is
+   pruned and recreated — new stream ID, empty properties, and the title re-enters the
+   wanted set as new regardless. It is **wrong in the narrower case where relations churn
+   but the movie row survives** on another provider: movie-level `director` persists while
+   the new highest-priority relation has no stored detail, so a title needing a re-call
+   reads as done. This is the residual of the churn constraint above, and it is the one
+   argument for a *long*-interval safety re-harvest — monthly, not daily.
+2. 🚨 **The marker is only useful if those fields actually discriminate, and that is
+   unmeasured.** Provider coverage is wildly uneven — one returns a full ffprobe block and
+   no TMDB IDs, another the reverse. If a provider never supplies `director`, every one of
+   its titles reads as "no detail" forever and the design degrades to calling the whole
+   wanted set every run, which is the daily cost this ADR exists to avoid. **Measure the
+   field-population rate across the wanted set before building.** `get_vod_streams` is a
+   read-only list call, so this costs nothing and triggers nothing.
+
+### Constraints from the consuming plugin, to honor when building
+
+- **Key on `tmdb_id`, never on the movie ID or UUID.** These calls deliberately induce
+  merges, and a merge makes a movie row disappear — the relation is re-pointed onto the
+  canonical row and the freshly-minted duplicate is left relation-less and later pruned. Any
+  cached proxy-side ID for that title breaks. ADR-F004 stage 3 already stores the pairs.
+- **One call refreshes one relation**, resolved as
+  `order_by('-m3u_account__priority', 'id').first()` — the single highest-priority account,
+  not all of a movie's relations. A nine-relation movie gets detail for one. **Do not size a
+  later probe pass as "whatever step 2 left over" without accounting for this.**
+- **Do not run during the provider ingest window.** Not a correctness constraint: these
+  calls are inline and would contend with ingest for the same provider connection slots.
+  Scheduling the sync clear of the ingest and sweep windows is an operational note for the
+  README, not a code change.
+- **Keep not writing the proxy's bookkeeping fields.** Already committed to above. The
+  reason is now sharper: those fields are the only record anywhere that a client asked for a
+  movie's detail, and the entire ffprobe scoping design rests on that meaning staying
+  uncontaminated.
+- **Prerequisites are met.** The consuming plugin's destructive-merge protection and its
+  clobber guard are both live in its deployed version. The clobber case specifically is
+  covered: a refresh replaces stored detail wholesale, and it restores the TMDB and stream
+  fields where the new payload left a hole, so these calls cannot silently cost it its
+  detail-tier identity.
+
+## Implementation design
+
+All of it sits inside the existing per-title loop in `SyncMoviesAsync`, which is already
+throttled by the sync concurrency semaphore. No new concurrency domain, no new pass.
+
+**Configuration** — one field: `EnableMovieDetailFetch`, opt-in, default off.
+
+🔑 **No persisted bookkeeping field.** An earlier draft of this section specified a
+`LastMovieDetailHarvestUnix` timestamp driving a one-off bootstrap pass. **That is exactly
+the pattern the churn constraint forbids** — it is our own memory of what we have called
+for, and after a wholesale relation recreation it reports coverage that no longer exists.
+It is recorded here as rejected so it is not re-derived; the detail marker replaces it and
+needs nothing persisted.
+
+**One call site**, in the loop body: **immediately after the review gate's hold decision**,
+where a title is known to be wanted, and **before the smart-skip probe**. A title is called
+for when the setting is on and its list payload carries no detail.
+
+Placing it before the skip probe is what makes the scope the *wanted* set rather than the
+*written* set. This **reverses the earlier implementation note**, which placed the call
+after the probe "so a skipped title costs no call" — correct for steady state, and the
+reason an established library would never have been covered at all. The marker is what keeps
+the cost down instead: a skipped title that already has detail costs nothing, because the
+check is a field test on data already in memory.
+
+**Everything else:**
+
+- Failures increment a private counter only, never `_movieProgress.Failed`, which means "the
+  sync did not write this".
+- Nothing is persisted about what was called for. A run that fails or is interrupted simply
+  leaves those titles still showing no detail, so the next run retries them — the
+  self-healing property is a consequence of keying on absence, not something to implement.
+- The summary line is emitted only when calls were actually made, keeping ordinary runs
+  silent — the same rule the collapse-group logging follows, and for the same reason.
+
+**Testing.** The call is an HTTP request through the existing fake handler, so scope
+selection, the detail-marker filter, the held-title exclusion and non-fatal failure handling
+are all unit-testable with no network. The case most worth pinning is a title that is
+smart-skipped but carries no detail: it must still be called for, since that is the whole
+reason the call site sits before the skip probe. ⚠️ **Register one response per expected
+call** — the fake handler's single-response registration is one-shot, and a per-title call
+across a multi-title fixture will exhaust it otherwise.
 
 ## Implementation references
 
-- `Emby.Xtream.Plugin/Service/StrmSyncService.cs` (`SyncMoviesAsync`, after the review
-  gate and after the smart-skip probe, so a skipped title costs no call)
-- `Emby.Xtream.Plugin/PluginConfiguration.cs` (one new opt-in field)
+- `Emby.Xtream.Plugin/Service/StrmSyncService.cs` (`SyncMoviesAsync`: the review gate's
+  hold decision, and the smart-skip probe — the two call sites in the implementation design
+  above)
+- `Emby.Xtream.Plugin/PluginConfiguration.cs` (the opt-in field and the harvest timestamp)
 - [ADR-F004](004-survive-provider-id-churn.md) (stage 3, the hard prerequisite)
 - [ADR-F002](002-require-review-before-sync.md) (the review gate, which defines "wanted")

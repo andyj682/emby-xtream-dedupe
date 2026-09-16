@@ -4,8 +4,8 @@
 upstream ADR — see [README.md](README.md).)*
 
 **Date**: 2026-09-10
-**Status**: ACCEPTED — mechanisms 1–3 implemented and verified; mechanisms 5–7 accepted,
-not yet implemented (see the 2026-09-13 amendment)
+**Status**: ACCEPTED — mechanisms 1–3 and 5–8 implemented and verified; mechanism 9
+(restore) PROPOSED, designed but not built (see the 2026-09-15 amendment)
 **Affects**: `StrmSyncService` (sync summary logging, `CleanupOrphans`,
 `RemoveExcludedContent`), `Plugin` / configuration save path, `PluginConfiguration` (new
 opt-out and retention fields), `README.md`, `scripts/` (one script retired from the
@@ -352,6 +352,9 @@ it a safeguard would be theatre.
 
 ### Deferred: restore, and why a button is right here
 
+*(Superseded by the 2026-09-15 amendment below, which builds it. The reasoning here is
+what that amendment rests on, so it is kept rather than rewritten.)*
+
 Restoring from a backup is **not** in this amendment. It is the first thing that would let
 the plugin overwrite its own configuration from user-supplied data, and taking backups is
 both the urgent half and purely additive.
@@ -370,6 +373,115 @@ rule says it cannot make.
 What it would buy is real: it removes the two dangerous steps in the current procedure —
 stopping Emby and hand-copying a file over the live configuration — because the write goes
 through the plugin's own save path.
+
+## Amendment, 2026-09-15: restore
+
+**Status of this amendment**: PROPOSED — designed, nothing built. Targeted at 1.8.0.
+
+The deferred half. Mechanisms 5–8 made the plugin take backups; nothing yet lets it put one
+back. Today that still means the procedure this ADR set out to remove: stop Emby, copy a
+file over the live configuration, start Emby — because Emby holds the configuration in
+memory and would otherwise overwrite the file on its next save.
+
+### 9. Restore, initiated by the user, always
+
+The constraint stated when this was deferred stands unchanged and is the first thing to
+say: **the user initiates a restore. The plugin never restores automatically.** Automatic
+repair is right for an invisible failure, which is why ADR-F004 re-points dead IDs without
+asking. Automatic restore would be the plugin deciding, on its own, that the present state
+is wrong — the judgment the "nothing alarms automatically" rule forbids it from making. A
+restore answers a problem the user already knows they have.
+
+#### The primitive: re-save, do not copy
+
+Restore deserializes the chosen copy into a `PluginConfiguration` and passes it to
+`Plugin.UpdateConfiguration`. It does not write XML over the live file. Three things follow:
+
+1. **The dangerous steps disappear.** The write goes through the plugin's own save path, so
+   Emby's in-memory copy is updated with it. No stopping the server, no file handling, and
+   no window where the on-disk and in-memory states disagree.
+2. **The restore is itself undoable, at no cost.** `Plugin.UpdateConfiguration` is already
+   overridden to take a rollback copy before a write lands, and `Configuration` is still
+   the *old* values at that moment. So restoring captures the pre-restore state in
+   `xtream-rollback/` automatically. **A restore chosen in error is recovered by the same
+   button** — which matters, because this is the first feature that lets the plugin
+   overwrite its own configuration from data the user supplied.
+3. **The serializer is Emby's own.** `BasePlugin<T>.XmlSerializer` is the serializer that
+   wrote the file, tolerant converters included, so a copy taken by an older build restores
+   with fields added since at their defaults. That is correct, and the UI says so.
+
+#### It replaces the whole configuration
+
+Not a subset. A narrower "restore only the four decision stores" is tempting — it matches
+the failure that actually happens and has a smaller blast radius — but it can assemble a
+state that never existed. **Exclusions and the category selections they were made against
+are interdependent**: restoring decisions taken under one set of selected categories on top
+of a different set produces a configuration no one ever ran, and the inconsistency would be
+silent. Whole-file restore always yields a state that genuinely existed at a known moment.
+
+The cost is real and is met by disclosure rather than by narrowing: settings changed since
+the copy was taken are reverted too. The confirmation says so, and the automatic rollback
+copy means the decision is reversible.
+
+#### Both rollbacks and backups are offered, labeled by source
+
+The two answer different questions and neither substitutes for the other:
+
+- A **rollback** copy is taken immediately before a save, so it is the state as of one save
+  ago. After a bad save — a bulk mark-reviewed or bulk-exclude that was not what the user
+  meant, ADR-F004's silent-swallow class, or the incidental mutation `healPartialExclusions`
+  performs on load — it is exactly the right copy, with no legitimate work lost.
+- A **backup** is taken on a timer and skips when nothing changed, so it can be hours or
+  days old. Restoring one undoes the mistake *and* anything legitimate done since. But it
+  survives the case a rollback cannot: rollbacks churn, ten deep by default and one per
+  changed save, so the pre-mistake copy is gone ten saves later.
+
+Listing only backups would leave the most likely case — noticing a bulk save was wrong
+minutes later — recovered by hand-copying out of `xtream-rollback/`, which is the procedure
+this feature exists to remove. **The rollback/backup distinction remains real in retention
+and location; it is not a reason to hide one at the moment of recovery.**
+
+Each candidate is listed with its timestamp, its source, and its four store sizes.
+
+> Note when displaying rollback timestamps: `File.Copy` preserves the source's last-write
+> time, so a rollback copy's **filename** is when the copy was taken and its **file mtime**
+> is when the state inside it was written. The filename is the correct label — it names the
+> save the copy was taken before.
+
+#### Safety rules
+
+These are binding, not implementation detail:
+
+1. **Refuse while a sync is running.** A sync writes watermarks and reviewed IDs back at the
+   end of a run; restoring underneath one interleaves two configurations and the sync wins.
+2. **Validate before applying, and refuse a damaged copy.** All four stores must parse under
+   the same `0`-versus-unparseable contract `config-counts-canary.py` uses. **Restoring a
+   damaged backup would itself be the wipe** — the failure this ADR exists to prevent,
+   arriving through the tool built to recover from it.
+3. **Only from the directories the plugin manages.** Not a security control; the caller is
+   already an administrator. It keeps the candidate list authoritative and stops a mistyped
+   path pointing at an unrelated file.
+4. **Show the four store sizes, current against candidate, before committing.** At
+   whole-file granularity these are the only reviewable facts — a diff of tens of thousands
+   of individual IDs is not something anyone can review. They are also the same four numbers
+   the sync summary and the counts log already report, so they are directly comparable to
+   the history the user already has.
+5. **Confirm, blocking.** Naming the file, its timestamp and the differences. Consistent
+   with the confirmation already required for bulk actions over 500 titles, and with
+   choosing a blocking dialog over a toast for anything of this weight.
+6. **Append a counts line after restoring.** Otherwise the durable history shows an
+   unexplained step change with nothing recording why — the precise damage the
+   byte-compatible format exists to prevent.
+7. **Log it**: the source path, and the store sizes before and after.
+
+#### What it still cannot do
+
+**Restore cannot find copies whose location was recorded only in the configuration that was
+lost.** If `RecordsPath` pointed at another volume and the configuration is gone, the plugin
+resolves the *default* root and will not see them. This is inherent — the pointer lived in
+the thing that was lost — and the answer is host-level recovery first, then the button. It
+is stated here rather than solved, in keeping with the rest of this ADR being explicit about
+its limits.
 
 ## Implementation references
 
@@ -392,3 +504,16 @@ Added by the 2026-09-13 amendment:
   external repair tooling can read either)
 - [ADR-F004](004-survive-provider-id-churn.md) (stage 3, which this amendment deliberately
   does *not* treat as making the snapshot redundant — see mechanism 6)
+
+Added by the 2026-09-15 amendment (mechanism 9, restore — not yet built):
+
+- `Emby.Xtream.Plugin/Plugin.cs` (`UpdateConfiguration`, which restore writes through and
+  which already provides the pre-restore rollback copy; `BasePlugin<T>.XmlSerializer`, to be
+  exposed the same way `ConfigPath` already is)
+- `Emby.Xtream.Plugin/Api/XtreamTunerApi.cs` (listing the candidates, and applying one)
+- `Emby.Xtream.Plugin/Configuration/Web/` (the restore control, beside the backup settings)
+- `Emby.Xtream.Plugin/Service/StrmSyncService.cs` (`ResolveRecordsRoot` and the rollback
+  folder, which together define the directories a candidate may come from; the counts line
+  appended after a restore)
+- `scripts/config-counts-canary.py` (the `0`-versus-unparseable contract the pre-restore
+  validation must mirror)
