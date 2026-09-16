@@ -32,6 +32,22 @@ starting at 1.0.0 — independent of upstream
   deliberate bulk change from data loss, and deciding your current settings are wrong is not a
   judgement it should be making.
 
+- **`scripts/analyse-new-arrivals.py` can now classify series arrivals.** It compares two catalog
+  snapshots and sorts new arrivals into "already decided" and "genuinely new", but it did that by
+  TMDB ID — which providers do not supply for series, so every series arrival came back as "cannot
+  tell". It now classifies them by name instead, which is the key the plugin's own series grouping
+  uses. That answers whether a batch of new series IDs is new content or the same shows arriving
+  under new IDs, and how much of it is shows you had already excluded.
+
+### Changed
+
+- **The de-dup view's self-heal notice now names the shows it extended your exclusions to**, up to
+  fifteen of them, instead of only counting them. The heal runs in your browser and writes nothing
+  to the server log, so the count on that banner was the only record it had happened — and it
+  disappeared as soon as the page reloaded. On a quiet day it covers a show or two; when a provider
+  reissues IDs in bulk it can cover hundreds, and knowing which ones is the difference between a
+  number and something you can check.
+
 ## [1.7.1] - 2026-09-14
 
 ### Fixed

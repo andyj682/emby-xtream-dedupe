@@ -1815,7 +1815,15 @@ function updateEpgVisibility(view) {
         var excluded = {};
         list.forEach(function (id) { excluded[id] = true; });
 
+        // Name a sample of what was extended, not just how many. A count cannot be reviewed,
+        // and this heal runs entirely in the browser — nothing about it reaches the server
+        // log — so without this the only record of a 499-title morning is a number on a
+        // banner that disappears when the page reloads. Same sample size as the review
+        // gate's held-titles list, for the same reason.
+        var HEAL_SAMPLE_SIZE = 15;
+
         var healedTitles = 0;
+        var healedNames = [];
         var data = instance[cfg.dataKey] || [];
         for (var i = 0; i < data.length; i++) {
             var ids = data[i].Ids || [];
@@ -1829,9 +1837,12 @@ function updateEpgVisibility(view) {
                     if (!excluded[ids[j]]) { list.push(ids[j]); excluded[ids[j]] = true; }
                 }
                 healedTitles++;
+                if (healedNames.length < HEAL_SAMPLE_SIZE && data[i].Name) {
+                    healedNames.push(data[i].Name);
+                }
             }
         }
-        return healedTitles;
+        return { count: healedTitles, names: healedNames };
     }
 
     // The sync can now add to the reviewed set on its own — the review gate marks a title
@@ -1901,10 +1912,20 @@ function updateEpgVisibility(view) {
             var healed = healPartialExclusions(instance, type);
             var healEl = view.querySelector('.' + cfg.prefix + 'DedupedHealNotice');
             if (healEl) {
-                if (healed > 0) {
-                    healEl.textContent = 'Extended your exclusions to ' + healed +
-                        (healed === 1 ? ' title' : ' titles') + ' with new duplicate copies. ' +
-                        'Syncs already skip these — saving just tidies the stored list.';
+                if (healed.count > 0) {
+                    var healHtml = escapeHtml('Extended your exclusions to ' + healed.count +
+                        (healed.count === 1 ? ' title' : ' titles') + ' with new duplicate copies. ' +
+                        'Syncs already skip these — saving just tidies the stored list.');
+                    if (healed.names.length) {
+                        healHtml += '<div style="opacity:0.75; margin-top:0.25em;">' +
+                            escapeHtml(healed.names.join(', '));
+                        if (healed.count > healed.names.length) {
+                            healHtml += escapeHtml(', and ' +
+                                (healed.count - healed.names.length) + ' more');
+                        }
+                        healHtml += '</div>';
+                    }
+                    healEl.innerHTML = healHtml;
                     healEl.style.display = '';
                 } else {
                     healEl.style.display = 'none';
