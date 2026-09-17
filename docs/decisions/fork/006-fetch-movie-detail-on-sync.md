@@ -4,10 +4,77 @@
 upstream ADR — see [README.md](README.md).)*
 
 **Date**: 2026-09-11
-**Status**: ACCEPTED — designed and measured, not yet built. Every open question is resolved,
-including by the author of the consuming plugin (2026-09-15) and by measurement against live
-data (2026-09-16). **The marker is `director` OR `cast`; `release_date` is never written and
-must not be used.**
+**Status**: 🚫 **WITHDRAWN 2026-09-16 — built, measured, and withdrawn before shipping.** Every
+open question was resolved and the implementation was complete and passing (644/648) when
+measurement showed the call has no consumer. The code was discarded; this record is kept
+because the measurements are the valuable part and they say precisely what would have to
+change for the answer to differ.
+
+**Do not rebuild this from the design below without reading "Why it was withdrawn" first.**
+The design is sound and the code paths described are real — that is exactly the trap. What
+fails is not the mechanism but the premise that anything consumes what it produces.
+
+---
+
+## Why it was withdrawn
+
+Three benefits were claimed. All three were measured away, and the third only became visible
+once the end goal was restated precisely.
+
+1. **Demand signal → superseded.** The wanted-set file (below) carries it losslessly, stays
+   current, self-expires, and survives relation churn. The refresh timestamp does none of
+   those under this ADR's own cadence.
+2. **De-duplication → measured at zero.** 16 candidates chosen specifically to conflict
+   produced no merges, because a row is ID-less precisely because its provider cannot
+   identify it, so its *detail* endpoint has no ID either.
+3. 🔑 **Metadata harvest → belongs to the consuming side, structurally.** The goal is video
+   and audio data for **all the relations** of each wanted movie, because the consumer ranks
+   candidates against one another and partial coverage is worse than none — a ranking
+   function returning 0 for "no data" sorts an enriched stereo track above an unenriched
+   possible-surround one. **`xc_get_vod_info` refreshes exactly ONE relation per movie**
+   (`order_by('-m3u_account__priority','id').first()`), and that is structural in core, not
+   configuration. The consuming plugin's sweep calls detail **per relation** directly against
+   the provider, bypassing the priority pick. So it covers all N where this covers 1/N.
+
+   That limitation was recorded in the first draft of this ADR as a caveat. **Nobody connected
+   it to "therefore the harvest belongs to whoever can reach all N" for three weeks.**
+
+**And nothing on this side consumes what the call uniquely produces.** Core's refresh writes
+`director`, `actors`, `backdrop_path` and `youtube_trailer` to the *movie row*, which the
+consuming plugin's sweep never touches — so those come from this call or from nowhere. But
+`NfoWriter.WriteMovieNfo` emits only `<title>`, `<year>` and a TMDB `<uniqueid>`: a **pointer**,
+not metadata. Combined with the `[tmdbid=]` folder suffix, **Emby scrapes TMDB itself** for
+cast, director and artwork. A grep of the whole plugin for those fields matches only the word
+"directory". Nothing reads `detailed_fetched` either.
+
+**The last hope checked and closed:** a detail refresh writes `tmdb_id` to the movie row, which
+appears on the *list* payload — which the review gate matches against library folders and which
+ADR-F004 stage 3 stores as identity pairs. Better coverage there would have helped directly.
+**Measured at ~zero across 54 observations** (0 of 16, plus 38 ID-less relations probed earlier
+returning zero detail TMDBs).
+
+**Why discarded rather than shipped dormant.** Opt-in and default off is a fair resting state
+for an uncertain feature, and the argument against is not runtime cost — it is that the call
+site sits **inside the upstream sync loop**. ADR-F001's work made that loop the one place fork
+logic lives in upstream's write path, and the standing instruction at every upstream merge is to
+diff `SyncMoviesAsync` first and confirm the insertion points still hold. A second insertion
+there, for a feature with no consumer, is a tax paid at every future merge forever. A dormant
+setting with an encouraging name is also a trap: someone enables it in a year on the strength of
+the description without reading this.
+
+**What would change the answer.** A provider whose *detail* endpoint returns TMDB IDs for
+ID-less rows; a library where the consuming plugin's per-relation sweep is not available; or
+Emby-side consumption of descriptive metadata that does not come from TMDB. None hold here.
+
+**What was kept:** this record, `scripts/measure-detail-marker.py` and
+`scripts/probe-detail-refresh.py`. The scripts are general diagnostics and are independent of
+the feature — they answered questions it never could, including a timing correction to a figure
+this ADR had been quoting.
+
+---
+
+**Original status line, for context:** *ACCEPTED — designed and measured, not yet built. The
+marker is `director` OR `cast`; `release_date` is never written and must not be used.*
 **Affects**: `StrmSyncService.SyncMoviesAsync` (a new per-title call after the review
 gate), `PluginConfiguration` (one opt-in field), `README.md`
 **Depends on**: ADR-F004 stage 3, which must be shipped and running first — see
@@ -88,6 +155,25 @@ refreshed". The delta stays truthful and `SmartSkipExisting` is unaffected.
 
 ## Ordering: ADR-F004 stage 3 is a hard prerequisite
 
+⚠️ **THE RISK THIS SECTION IS BUILT ON WAS MEASURED ON 2026-09-16 AND IS FAR SMALLER THAN
+DESCRIBED — read this before weighing anything below.** The premise is that bulk detail
+fetching deliberately induces ID churn at scale. **On this library it induces approximately
+none**: 16 candidates chosen specifically to conflict produced zero merges, because none of
+their detail payloads carried a TMDB ID (see the duplicate-row bullet). A merge needs an
+ID-less row to *gain* a TMDB another row already holds, and the measurement says that input
+does not arrive.
+
+**Stage 3 stays a prerequisite anyway, and the ordering is unchanged** — it is already
+shipped and running, so the requirement costs nothing, and the analysis below is exactly
+what governs a library whose providers do supply detail TMDBs. **But do not cite this
+section as evidence that the feature is dangerous here.** An overstated risk gets discounted
+wholesale once someone notices it did not materialise, which would take the accurate parts
+down with it.
+
+⚠️ **And note the direction correction further down**: with the consuming plugin's guard
+installed, the row that dies is the ID-LESS one, so stage 3 cannot recover decisions against
+it. That makes stage 3 *less* protective here than this section implies, not more.
+
 Bulk detail fetching **deliberately induces ID churn**, and the shape of it matters.
 
 When the detail payload supplies a TMDB ID that another movie row already holds, the
@@ -100,16 +186,91 @@ it. Reading that code settles the direction, which is the opposite of the obviou
 
 Three consequences, and they are why the ordering is not negotiable:
 
-- **The title we called on keeps its ID, its URL and its `.strm`.** We do not break what
-  we just synced.
-- **A different row's ID dies.** Without stage 3 that silently detaches any decision
-  stored against it, and the title reappears in the review queue — the exact damage of
-  the 2026-09-09 re-ingest, induced deliberately. With stage 3 the consolidation is
-  transparent: the deleted row **had** a TMDB ID, so a stage-3 pair exists for it and the
-  decision re-points on the next sync.
-- **It is also the cure for the duplicate-row problem**, where one copy of a film is
-  excluded and the other is not, and the sync writes a folder that excluded-content
-  cleanup then deletes by name, every run. Merging collapses the pair.
+🚨 **THE DIRECTION FLIPS DEPENDING ON WHETHER THE CONSUMING PLUGIN'S PROTECTION IS
+INSTALLED, AND THE CONCLUSION BELOW WAS DRAWN FOR THE WRONG ONE. Settled against both
+sources 2026-09-16.** The two bullets above describe **core unprotected**, and that reading
+is correct — verified unchanged from v0.30.0 to v0.31.0. **With the protection installed —
+which is the case on this install — the relation is re-pointed onto the tmdb-holder inside a
+transaction and NOTHING is deleted.** The ID-less row we called simply loses that relation,
+and is orphaned and pruned later if it had no others. **So the row that dies is the ID-LESS
+one, the opposite of core's behaviour**, and these follow:
+
+- 🚨 **Stage 3 CANNOT recover decisions against the dying row.** It stores `StreamId → TMDB`
+  **pairs**, and a row with no TMDB has no pair by construction. **A quiet `Movie identity:`
+  line after inducing these merges is therefore CORRECT, not a failure** — the earlier claim
+  that this and stage 3 "compose correctly" holds only for core's unprotected direction,
+  which nobody actually runs.
+- ⚠️ **The title we called on does NOT reliably keep its ID, URL and `.strm`.** If it is
+  orphaned and pruned, its stream ID dies with it and any `.strm` written for it breaks,
+  until the canonical is reviewed and written under its own ID. Only bites titles that were
+  in the library already; an excluded or un-reviewed one has no file to lose.
+- ⚠️ **The returning duplicate may carry a NEW ID rather than the original.**
+  `cleanup_orphaned_vod_content` deletes relation-less movies **globally** at the end of
+  *any* account's refresh, so if the orphan goes before its own provider rescans,
+  `lookup_by_name_year` finds nothing and core mints a fresh row. Which path a row takes
+  depends on whether it had other relations.
+- 💡 **For our recovery mechanism specifically, core's destructive direction is the more
+  recoverable one** — a dead tmdb-holder has a pair; a dead ID-less row does not. The
+  protection is still plainly the right trade, since losing an exclusion mark on a duplicate
+  is far cheaper than deleting the canonical row with most of the relations and the UUID
+  clients have indexed. **But the cost lands on us rather than on them.**
+
+🔑 **THE PAIR IS NOT LOST, ONLY UNREACHABLE — do not write this up as impossible.** Every
+protected merge writes an audit entry carrying `previous_movie_id`, `canonical_id`,
+`canonical_uuid`, `tmdb_id`, `stream_id` and account — which **is** the `dying ID → TMDB`
+mapping, recorded at the moment of the merge, for exactly the population stage 3 cannot
+cover. It lives in a `CoreSettings` row and we speak XC, so it is out of reach today. If
+recovering these is ever worth it, the natural shape is **the mirror of the wanted-set
+file**: they write a merge-event file into the same exchange directory and we read it.
+- 🚨 **MEASURED 2026-09-16: IT IS NOT A CURE FOR THE DUPLICATE-ROW PROBLEM AT ALL ON THIS
+  LIBRARY. Not "scoped to one provider" — it does not happen.** 16 ID-less rows selected
+  specifically as merge candidates were called; **none of the 16 detail payloads contained a
+  TMDB ID**, so `handle_movie_id_conflicts` was never reached, no row merged, no relation
+  re-pointed, and the consuming plugin's guard never fired. Zero change on their side.
+
+  **The reason is structural and should have been predictable:** a row is ID-less precisely
+  because the provider could not identify it, and a provider with no ID in its *listing*
+  generally has none in its *detail* either. Calling detail on exactly the population that
+  lacks IDs is asking the least likely source for the thing it has already failed to supply.
+
+  🔑 **So de-duplication is retired as a justification for this feature, not merely narrowed.**
+  The metadata harvest and the demand signal stand on their own. **Do not resurrect
+  "it also fixes duplicates" from the reasoning below** — that reasoning describes what the
+  code paths would do, and the measurement says the input that triggers them does not arrive.
+
+  💡 It also explains the empty stratum 1a from the other direction: on the provider inside
+  the merge plugin's scope everything reachable has already been healed, and on the providers
+  outside it there is nothing to heal with.
+
+  *(The durability analysis below remains correct and is kept, because it governs what would
+  happen IF a merge were ever induced — on another library, or if a provider's detail
+  coverage improves.)*
+
+- ⚠️ **Were a merge ever induced, it would be durable only on providers inside the merge
+  plugin's configured scope.** The mechanism is worth keeping because it is the same one that
+  creates the duplicates:
+
+  At the provider's next M3U refresh, core re-derives the relation's movie from the listing
+  entry. That entry has no TMDB ID — which is why the row was ID-less to begin with — so
+  core keys it by `(name, year)`, and `lookup_by_name_year` matches **only rows where both
+  tmdb and imdb are null**. The canonical now carries a TMDB ID, so it cannot be seen. Core
+  finds the old ID-less row, which still exists, and re-points the relation back to it.
+  **The merge reverts exactly and the duplicate returns, within a day.**
+
+  Durability comes from the merge plugin re-injecting the ID on every scan, not from the
+  merge being written once — so it holds only where that plugin is scoped. On this install
+  that was **13 of 16** sampled conflict candidates sitting off-scope.
+
+  **Do not justify this feature on fewer duplicates.** The metadata harvest and the demand
+  signal stand on their own; de-duplication is a side effect scoped to one provider, and
+  widening it is a configuration change on the consuming side rather than anything here.
+  ⚠️ **The library is protected regardless** — ADR-F007 stops the sync deleting a folder it
+  just wrote, which is what made that delete-recreate cycle harmless. A returning duplicate
+  is a row in the de-dup view, not a missing film.
+
+  💡 **Consequence for ADR-F004 stage 3: it may be exercised TWICE per off-scope row** — once
+  when the merge lands and the old ID dies, once when the revert brings it back. Expect that
+  rather than reading the second re-point as a fault.
 
 The watermark cannot move as a result: deleting rows only removes `added` values from the
 set the high-water mark is taken over, and a maximum never rises from a deletion.
@@ -285,6 +446,57 @@ already knows — which is always current and costs nothing recurring. That was 
 aside as coupling cost, but that judgement predates anyone pricing the alternative. **Do not
 reach for the timestamp again**; a small explicit contract is cheaper than a daily load.
 
+### Publish the wanted set as a file, alongside calling
+
+**Agreed with the consuming plugin's author, 2026-09-16.** The call and the demand signal are two
+jobs, and this ADR had them riding on one mechanism. They separate cleanly:
+
+- **The file** is the demand signal — lossless, current, self-expiring, and it survives relation
+  churn because TMDB IDs do.
+- **The call** is purely a metadata harvest, justified on its own terms: provider data is free
+  where it exists, so the later probe pass only has to cover the remainder.
+
+🔑 **What forced it: under this ADR's chosen cadence the refresh timestamp never expires.** Calling
+once per newly-marked title means a stable title keeps an old timestamp forever, so recency carries
+no information and the signal degenerates to a boolean — it can say "was wanted once" and never "no
+longer wanted". For scoping a pass where each probe costs a real provider connection slot, the
+population would accumulate titles the user has since dropped. **That is lossy on precisely the axis
+that matters, and it is the one thing the consuming side cannot reconstruct later.**
+
+**The contract:**
+
+```json
+{ "schema": 1, "generated_at": "<ISO 8601 UTC>", "generator": "emby-strm",
+  "count": 2412, "tmdb_ids": [603, 27205], "unidentified": [{"stream_id": 419883}] }
+```
+
+Written at the end of each movie sync, to a configurable path, blank meaning do not write.
+
+- **An object, not a bare array**, for the same reason that disqualified the refresh timestamp: if
+  the generator stops writing, a stale bare array is indistinguishable from a current one forever.
+  `generated_at` lets a consumer refuse to act on a set nobody has confirmed in months.
+- **`count` guards a partial write.** A sync can abort part-way for reasons unrelated to this file;
+  a count disagreeing with the array length is the cheapest possible signal that it did. It covers
+  `tmdb_ids` only — stated in the README so nobody has to guess.
+- **Written atomically** — temp file, then rename within the same directory. The consumer is an
+  unattended nightly pass and a truncated JSON read at 3am is miserable to diagnose.
+- 🔑 **`unidentified` is closer to the CORE of the probe population than its margin**, which
+  inverts the obvious reading. It looks like a ~5% tail — the titles a provider shipped with no
+  TMDB ID. But on a real library that correlates hard with shipping no *metadata at all*, so the
+  free API route can never populate them and a self-probe is the only thing that ever will.
+  **Do not drop this array as a simplification**; the 5% figure makes it look optional and it is
+  not. We supply `stream_id` only, having no account concept; the consumer resolves accounts.
+- Entries will sometimes fail to resolve, because `stream_id` is `Movie.id` and those rows churn.
+  Expected, not corruption. ADR-F004 stage 3 keeps the *decision* attached across that churn; it
+  is only this file's pointer that goes stale, and the next sync rewrites it.
+
+**Transport: a file, not an HTTP endpoint**, though the plugin already has an authenticated API and
+both containers share a network. Serving it would mean storing an Emby API key in the consumer's
+plugin settings — **a credential lifecycle introduced to solve a file-placement problem**, in a
+plugin that otherwise holds nothing sensitive. A read-only mount adds no secret. Two smaller
+reasons point the same way: the consumer runs unattended overnight, where a missing file fails
+louder than a 401 nobody sees; and a file can be inspected with `cat` at 3am.
+
 ### The detail marker: deciding what to call for, at zero cost
 
 Keying on absence of stored detail is the constraint; this is how a client that cannot see
@@ -340,6 +552,19 @@ supply no people.
 ⚠️ **That 13% residue is 4 misses in 30, so the real figure is roughly 90–720 per run.** The
 decision holds across that whole interval — even the top end is far below the ~2,400 per run
 that was rejected — so a larger sample would buy precision, not a different answer.
+
+🔑 **AND THE 87% WILL DRIFT ONCE MERGES START FIRING — raised by the consuming plugin's author
+2026-09-16, and we had missed it.** `director` and `cast` live on the **movie row**, and a merge
+changes which row backs a title: the relation is re-pointed onto the canonical, whose people
+fields may differ from the row the call just populated. **So the marker can appear or disappear
+as a side effect of merging rather than of fetching, and "flipped the marker" is not quite the
+same event as "got detail".**
+
+Self-correcting — a title whose marker went away is simply called again — and it does not change
+the design, because the failure direction is still only ever an extra call. But **the 87% was
+measured in a window with no merges firing**, and these calls deliberately induce them. Expect the
+figure to move once the feature runs at scale, and **do not treat that drift as a regression or go
+hunting for a cause**: it is this, and it is benign.
 
 💡 **The residue is not wasted work.** Those calls still refresh the row and still stamp
 `detailed_fetched` / `last_advanced_refresh`, which is the demand signal this whole plan exists
