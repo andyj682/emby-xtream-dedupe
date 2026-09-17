@@ -21,9 +21,10 @@ fails is not the mechanism but the premise that anything consumes what it produc
 Three benefits were claimed. All three were measured away, and the third only became visible
 once the end goal was restated precisely.
 
-1. **Demand signal → superseded.** The wanted-set file (below) carries it losslessly, stays
-   current, self-expires, and survives relation churn. The refresh timestamp does none of
-   those under this ADR's own cadence.
+1. **Demand signal → superseded** by the wanted-set file, now
+   **[ADR-F008](008-publish-the-wanted-set.md)**. It carries the signal losslessly, stays
+   current, self-expires, and survives relation churn. The refresh timestamp does none of those
+   under this ADR's own cadence.
 2. **De-duplication → measured at zero.** 16 candidates chosen specifically to conflict
    produced no merges, because a row is ID-less precisely because its provider cannot
    identify it, so its *detail* endpoint has no ID either.
@@ -446,56 +447,19 @@ already knows — which is always current and costs nothing recurring. That was 
 aside as coupling cost, but that judgement predates anyone pricing the alternative. **Do not
 reach for the timestamp again**; a small explicit contract is cheaper than a daily load.
 
-### Publish the wanted set as a file, alongside calling
+### Publish the wanted set as a file — MOVED to ADR-F008
 
-**Agreed with the consuming plugin's author, 2026-09-16.** The call and the demand signal are two
-jobs, and this ADR had them riding on one mechanism. They separate cleanly:
+This section used to carry the whole contract. It now lives in
+**[ADR-F008](008-publish-the-wanted-set.md)**, because the file is the part of this plan that
+**survived** and is being built, and leaving a live contract inside a WITHDRAWN ADR is how it
+gets missed. Kept as a pointer rather than deleted so the trail from here is not broken.
 
-- **The file** is the demand signal — lossless, current, self-expiring, and it survives relation
-  churn because TMDB IDs do.
-- **The call** is purely a metadata harvest, justified on its own terms: provider data is free
-  where it exists, so the later probe pass only has to cover the remainder.
-
-🔑 **What forced it: under this ADR's chosen cadence the refresh timestamp never expires.** Calling
-once per newly-marked title means a stable title keeps an old timestamp forever, so recency carries
-no information and the signal degenerates to a boolean — it can say "was wanted once" and never "no
-longer wanted". For scoping a pass where each probe costs a real provider connection slot, the
-population would accumulate titles the user has since dropped. **That is lossy on precisely the axis
-that matters, and it is the one thing the consuming side cannot reconstruct later.**
-
-**The contract:**
-
-```json
-{ "schema": 1, "generated_at": "<ISO 8601 UTC>", "generator": "emby-strm",
-  "count": 2412, "tmdb_ids": [603, 27205], "unidentified": [{"stream_id": 419883}] }
-```
-
-Written at the end of each movie sync, to a configurable path, blank meaning do not write.
-
-- **An object, not a bare array**, for the same reason that disqualified the refresh timestamp: if
-  the generator stops writing, a stale bare array is indistinguishable from a current one forever.
-  `generated_at` lets a consumer refuse to act on a set nobody has confirmed in months.
-- **`count` guards a partial write.** A sync can abort part-way for reasons unrelated to this file;
-  a count disagreeing with the array length is the cheapest possible signal that it did. It covers
-  `tmdb_ids` only — stated in the README so nobody has to guess.
-- **Written atomically** — temp file, then rename within the same directory. The consumer is an
-  unattended nightly pass and a truncated JSON read at 3am is miserable to diagnose.
-- 🔑 **`unidentified` is closer to the CORE of the probe population than its margin**, which
-  inverts the obvious reading. It looks like a ~5% tail — the titles a provider shipped with no
-  TMDB ID. But on a real library that correlates hard with shipping no *metadata at all*, so the
-  free API route can never populate them and a self-probe is the only thing that ever will.
-  **Do not drop this array as a simplification**; the 5% figure makes it look optional and it is
-  not. We supply `stream_id` only, having no account concept; the consumer resolves accounts.
-- Entries will sometimes fail to resolve, because `stream_id` is `Movie.id` and those rows churn.
-  Expected, not corruption. ADR-F004 stage 3 keeps the *decision* attached across that churn; it
-  is only this file's pointer that goes stale, and the next sync rewrites it.
-
-**Transport: a file, not an HTTP endpoint**, though the plugin already has an authenticated API and
-both containers share a network. Serving it would mean storing an Emby API key in the consumer's
-plugin settings — **a credential lifecycle introduced to solve a file-placement problem**, in a
-plugin that otherwise holds nothing sensitive. A read-only mount adds no secret. Two smaller
-reasons point the same way: the consumer runs unattended overnight, where a missing file fails
-louder than a 401 nobody sees; and a file can be inspected with `cat` at 3am.
+The short version, for context while reading the rest of this record: the call and the demand
+signal are two jobs, and this ADR had them riding on one mechanism. The file carries the signal
+losslessly, stays current, self-expires, and survives relation churn — none of which the proxy's
+refresh timestamp does under the cadence that made the call affordable. That is what made the
+call's remaining justification the metadata harvest alone, which then turned out to belong to
+whoever can reach all of a movie's relations rather than one.
 
 ### The detail marker: deciding what to call for, at zero cost
 
