@@ -4,7 +4,7 @@
 upstream ADR — see [README.md](README.md).)*
 
 **Date**: 2026-09-16
-**Status**: PROPOSED — contract agreed with the consuming plugin's author, not yet built.
+**Status**: ACCEPTED — contract agreed with the consuming plugin's author, implemented.
 **Affects**: `StrmSyncService.SyncMoviesAsync` (one file write at the end), `PluginConfiguration`
 (one path field), `README.md` (a setup section — this feature requires a Docker change)
 **Supersedes**: the demand-signal half of [ADR-F006](006-fetch-movie-detail-on-sync.md), which
@@ -183,6 +183,154 @@ connection slots spent on a set nobody asked for.
 - **We never write the proxy's own bookkeeping fields**, unchanged from ADR-F006 and worth
   keeping: those fields are the only record anywhere that a *client* asked for a movie's detail,
   and that meaning stays uncontaminated only if we stay out of them.
+
+## Amendment — what building it settled
+
+Four things the decision above left unstated, recorded here because each is a real choice and
+none is visible from the diff.
+
+### A partial catalogue fetch publishes nothing
+
+**Not covered above, and it is the one case where writing is worse than not writing.** When some
+VOD categories fail to answer, the sync still runs over the ones that did — so the wanted set
+computed from that run lists a subset, and **a subset is indistinguishable from a smaller set the
+user chose.** `count` cannot catch it, because it agrees with the array.
+
+Under "fail closed on scope" the consumer would then do *less* work than asked, with no symptom on
+either side. Leaving the previous file untouched instead lets `generated_at` age, which is a signal
+the consumer already handles. Same reasoning as the catalogue snapshot's own partial-fetch skip.
+
+### A resolved ID goes beside the stream ID, never into `tmdb_ids`
+
+The plugin can resolve a missing ID through Emby's metadata providers. **`tmdb_ids` carries only
+the provider's own ID**, from the list payload. Promoting a resolved one was rejected for two
+reasons, and the consuming author independently supplied a third that is the decisive one:
+
+1. The fallback only runs under certain flag combinations, so using it would make that list's
+   contents depend on settings that have nothing to do with it.
+2. It would move titles out of `unidentified` **without changing the fact that the provider has no
+   stream metadata for them** — which is the whole reason they are the center of the consumer's
+   job. A resolved ID would make the population look healthier while removing exactly the titles
+   the probe is for.
+3. 🔑 **It is not a usable lookup key on their side.** They resolve `tmdb_ids` against their own
+   rows, and a row is unidentified there for the same reason it is here — the provider supplied no
+   ID, so their row carries none. A promoted ID **would match nothing and silently drop the title
+   out of scope**, which is worse than omitting it. Our resolved value is knowledge we derived;
+   their database has never seen it.
+
+**It is published, though, as a separate field on the unidentified entry** — added at their
+request, on a churn argument. `stream_id` is their `Movie.id`, and those rows get recreated
+wholesale: one provider's entire relation set was recreated twice inside a week. When that happens
+the stream ID here is dead and the title is skipped with nothing to say it should not have been. A
+second key costs nothing to try and starts working the moment their own enrichment tags the
+recreated row with that same ID. **Dead handle, live fallback** — it can only add reach, never
+redirect a lookup that would otherwise have succeeded.
+
+### The durable key is actually the provider's raw name
+
+```json
+"unidentified": [{"stream_id": 419883, "name": "XX - Example Film (2019)", "resolved_tmdb_id": 12345}]
+```
+
+🔑 **Reached by working out what `resolved_tmdb_id` costs, and finding a free key sitting in the
+same object.** The resolved ID needs TMDB folder naming **and** fallback lookup on, and that
+lookup has no cache of any kind — it re-searches every non-provider-identified title on **every
+sync, forever**, with no negative cache, so the queries that keep failing are the ones that keep
+being retried. It covers only the fraction TMDB can match. The install this was built against runs
+folder naming on and fallback **off**, deliberately, so the field would have been permanently
+absent there.
+
+The name has none of that: **free, always present, independent of every setting, and covers 100%
+of unidentified titles.** And it is the better match key on its merits — the reader's rows are
+built from the same provider feed, so the untouched string has a counterpart there.
+
+⚠️ **Published RAW, never cleaned.** `EnableContentNameCleaning` exists to produce a tidy folder
+on this side; applying it here would move the string *away* from the feed the reader's rows came
+from, which is the only thing this key is for. Cleaning is also a setting, and the point of this
+field is to be the one key no setting can take away.
+
+🔑 **AND THE CONSUMING AUTHOR SUPPLIED THE SHARPER REASON, which neither of us had said out loud:
+the string is not a foreign provider's title, it is a snapshot of THEIR OWN `Movie.name`.** We
+consume the proxy's XC output, so the verbatim value we carry is the exact field they would match
+against. **That makes this an exact-string comparison against a remembered value of their own
+column — not cross-provider name normalisation**, which is a technique that has produced three
+wrong answers on this project and which they would have refused outright. So cleaning would not
+merely be untidy: it would convert a snapshot of their field into a *derived* string, and the
+match would stop being exact. Record this as the reason, not the tidiness argument.
+
+⚠️ **A name match is still fuzzy in the sense that a title can appear more than once, so it is a
+fallback after the stream ID is already dead** — not a primary key, and not a competitor to
+`tmdb_ids`.
+
+### The reader resolves in a strict order, and only `stream_id` is a key
+
+Recorded because it is a shared contract, and because it is what makes an unverified
+`resolved_tmdb_id` safe to publish at all:
+
+1. **`stream_id`** — authoritative while the row exists.
+2. **`name`, only if it matches EXACTLY ONE current row.** Ambiguity means skip, never guess —
+   multiple matches *are* the duplicate problem by definition.
+3. **`resolved_tmdb_id`** — never on its own. Where it and `name` both resolve they must agree; if
+   they disagree the reader trusts neither.
+
+🔑 **That third rule is the answer to the unverified-first-result problem.** A wrong ID is worse
+than a missing one because it is invisible — but it stops being dangerous once it can only ever
+*corroborate* a match something else already made. **These are corroborating signals, not
+alternatives.** Anyone extending this later must not promote `name` or `resolved_tmdb_id` to a
+standalone key.
+
+### The honest limit: it recovers row churn, not catalogue re-identification
+
+⚠️ **The name fallback fails exactly when a provider changes its naming convention** — and that
+has happened on the install this was built against: a re-ingest produced dotted filenames, mangled
+whitespace and doubled prefixes, so **the IDs and the names moved at the same time.** Neither key
+resolves and the title is skipped.
+
+Accepted, and deliberately not solved here. **Stated so the field is not over-trusted: these two
+events look identical from our side and are different problems.** Row churn is recoverable; a
+re-identified catalogue is not, by any key in this file.
+
+⚠️ **Consequence: the file now contains titles**, which puts it in the same class as the catalogue
+snapshots. No credentials, but not something to publish beyond the host.
+
+🚨 **The publish still logs when no resolved ID is present** — the reader is told to treat absence
+as normal, so an install that never resolves would otherwise look identical to one where TMDB
+genuinely cannot name these films. **But the log states the fact and stops; it does not suggest
+turning the fallback lookup on.** That lookup takes the *first* search result unverified and, with
+folder naming on, bakes it into the folder name — so recommending it would trade a missing key for
+a confidently wrong identification, on exactly the obscure titles where a first-result name search
+is least reliable. Note that the population argument cuts both ways here, and this is the direction
+it cuts against.
+
+### File mode is the umask's, not ours
+
+The 0644/0755 above stands as the target, but **netstandard2.0 has no API to set a Unix file
+mode**, so the plugin cannot enforce it. What it relies on is the default: `File.WriteAllText`
+creates 0666 and `Directory.CreateDirectory` 0777, masked by the usual 022, which lands exactly on
+the contract. **Recorded because it is an assumption about the environment rather than a guarantee
+in the code** — a container running with a different umask produces different modes and nothing
+here will notice.
+
+### The review gate being off warns, and does not refuse
+
+ADR-F006 left open whether to require the review gate. **Answered: no.** With the gate off, "the
+titles this sync keeps" genuinely is the whole included catalog — the file is honest, just much
+larger. Refusing would mean the plugin deciding a legitimate configuration is wrong, which is the
+judgement it declines to make elsewhere (see mechanism 9's "the user always initiates this"). It
+logs the situation plainly at each publish instead, and the consumer's own scope guard is the
+backstop.
+
+### 🔒 The file's contents are PII, and both sides hold the same rule
+
+**Once it carries `name` it holds real library titles, which makes it PII under this project's
+standing rules** — provider names and specific titles are treated the same as credentials for
+anything that leaves the machine. Agreed explicitly with the consuming author and written down on
+both records, because it is the kind of rule that only fails when one side assumes the other has it.
+
+Neither side quotes its contents into a released artifact: no upstream bug report, no release
+notes, no public README, no test fixture. **Genericised placeholders at the point of writing,
+never scrubbed afterwards** — this ADR's own examples are synthetic for that reason, and the
+README's advice not to move the file off the host is the same rule seen from the producer's end.
 
 ## Implementation references
 

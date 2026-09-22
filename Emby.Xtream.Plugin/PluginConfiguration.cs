@@ -168,6 +168,30 @@ namespace Emby.Xtream.Plugin
         public int CatalogueSnapshotCount { get; set; } = 10;
 
         /// <summary>
+        /// Where to write the wanted set — the movies this plugin actually keeps on disk
+        /// (ADR-F008). Empty means do not write it.
+        /// <para>
+        /// This plugin is the only component that knows which titles a person wants: the
+        /// review gate already computes it, and nothing downstream records demand at all.
+        /// Tooling that wants to go and fetch the stream metadata providers omit for movies
+        /// needs that set to scope the work, because probing a whole catalog to improve the
+        /// fraction anyone watches is not a tractable job.
+        /// </para>
+        /// <para>
+        /// <b>Unlike <see cref="RecordsPath"/>, this starts empty because it must.</b> The
+        /// file is only useful where another container can read it, which takes a mount that
+        /// does not exist by default — so a path chosen for the user would write records
+        /// nobody reads. Setting it is what asserts that mount exists.
+        /// </para>
+        /// <para>
+        /// A full directory path. The file is named <c>wanted-set.json</c> and is rewritten
+        /// from scratch at the end of every movie sync: it is a projection, never a store,
+        /// and holds nothing that exists nowhere else.
+        /// </para>
+        /// </summary>
+        public string WantedSetPath { get; set; } = string.Empty;
+
+        /// <summary>
         /// Reviewed-checkpoint: JSON array of VOD StreamIds the user has marked
         /// "reviewed" in the de-duplicated view. Stored as a JSON string (not int[])
         /// because the set grows toward the full library size; the client keeps it in

@@ -8,6 +8,42 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Added
+
+- **The plugin can now publish the list of movies you keep, so other tools can use it.** Providers
+  describe TV episodes well and movies poorly — resolution and audio codec usually arrive with a
+  series and usually do not with a film — so anything that picks the best stream for you can do it
+  for episodes and not for movies. Closing that gap means something has to go and fetch what is
+  missing, and whatever does that needs to know which movies are worth the effort: probing a whole
+  provider catalog to improve the handful anyone watches is not a job that finishes.
+
+  This plugin is the only thing on your system that knows which movies you want, because you told
+  it. **Wanted list folder**, under **Log Wanted Movies for Dispatcharr** in Settings, writes
+  `wanted-set.json` there at the end of every movie sync — the metadata IDs of the movies it keeps,
+  plus the wanted titles your provider gave no ID for, by stream ID. Blank, the default, turns it
+  off.
+
+  Titles with no provider ID are listed with the provider's own name for them, sent through
+  exactly as the provider wrote it even if you have Name Cleaning on. Stream IDs die when a
+  provider renumbers its catalog and names do not, so this is what keeps a film findable
+  afterwards — and leaving it uncleaned is what keeps it matchable against anything else built
+  from the same provider feed. Where the plugin has also worked out a metadata ID itself it
+  includes that too, though that needs TMDB Folder Naming and Fallback Lookup on, so most setups
+  will not see it; the plugin notes as much in the log rather than leaving you to guess.
+
+  Because the file lists titles, treat it like a catalog snapshot — no credentials in it, but keep
+  it on your own host.
+
+  The file is rewritten in full each sync and holds nothing that exists nowhere else, so deleting it
+  costs you at most one sync's wait. It is skipped when any VOD category failed to answer, because
+  a list missing a whole category looks exactly like a shorter list you chose, and a reader acting
+  on it would quietly do too little work.
+
+  **It does nothing until another container can actually read that folder**, which usually means
+  adding a shared mount and restarting Emby. A path nothing else can see looks identical to a
+  working one, so the README says how to check, and the plugin logs the path and the counts every
+  time it publishes.
+
 ## [1.8.0] - 2026-09-16
 
 ### Added

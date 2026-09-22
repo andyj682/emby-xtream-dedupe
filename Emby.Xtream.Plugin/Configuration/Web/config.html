@@ -784,6 +784,33 @@
 
                 <hr style="border:none; border-top:1px solid rgba(128,128,128,0.2); margin:0.25em 0 1.25em;" />
 
+                <!-- Deliberately OUTSIDE .dispatcharrSettings above: that block is hidden unless
+                     "Enable Dispatcharr" is ticked, but the wanted-set write does not depend on it,
+                     so placing it there would leave an active setting invisible. -->
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Log Wanted Movies for Dispatcharr</h2>
+                    <div style="display:flex; gap:0.5em; align-items:flex-end;">
+                        <div class="inputContainer" style="flex:1; min-width:0; margin-bottom:0;">
+                            <input class="txtWantedSetPath" type="text" is="emby-input"
+                                   label="Wanted list folder" />
+                        </div>
+                        <button class="btnBrowseWantedSetPath raised button-secondary" is="emby-button" type="button"
+                                style="flex-shrink:0; margin-bottom:4px;" title="Browse">
+                            Browse
+                        </button>
+                    </div>
+                    <div class="fieldDescription" style="margin-top:0.25em;">
+                        After every movie sync, writes <code>wanted-set.json</code> to this folder, listing the
+                        movies you sync. Useful for a Dispatcharr plugin that needs to know which movies you
+                        actually want, something it can't work out from the sync itself. The folder must be one
+                        Dispatcharr can read: a folder it can't see looks exactly like this is working. Leave
+                        blank to turn this off.
+                    </div>
+                    <div class="wantedSetPathValidationResult" style="margin-top:0.25em; margin-bottom:0.75em; font-size:0.9em;"></div>
+                </div>
+
+                <hr style="border:none; border-top:1px solid rgba(128,128,128,0.2); margin:0.25em 0 1.25em;" />
+
                 <div class="verticalSection">
                     <h2 class="sectionTitle">Config and Records Backup</h2>
                     <div style="display:flex; gap:0.5em; align-items:flex-end;">

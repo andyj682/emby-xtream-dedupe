@@ -283,6 +283,18 @@ namespace Emby.Xtream.Plugin.Service
         /// <summary>The first line of a snapshot. Readers skip it because it starts with '#'.</summary>
         internal const string SnapshotHeader = "#kind\tid\ttmdb\tname\tcategory";
 
+        /// <summary>The wanted set's filename, inside <see cref="PluginConfiguration.WantedSetPath"/>.</summary>
+        internal const string WantedSetFileName = "wanted-set.json";
+
+        /// <summary>
+        /// Schema version of the wanted-set file. Consumers must refuse a value they do not
+        /// recognize rather than guess at the shape (ADR-F008).
+        /// </summary>
+        internal const int WantedSetSchemaVersion = 1;
+
+        /// <summary>Identifies who wrote a wanted-set file, for a directory with more than one producer.</summary>
+        internal const string WantedSetGenerator = "emby-strm";
+
         // Single-flight gates. Each sync replaces its progress object wholesale and shares a
         // written-path set, so two overlapping runs of the same kind corrupt each other's state.
         // Movies and series are gated separately because they touch different roots and are
@@ -1353,6 +1365,279 @@ namespace Emby.Xtream.Plugin.Service
         }
 
         /// <summary>
+        /// Writes the wanted set — the movies this sync keeps on disk — as a JSON file for
+        /// another component to read (ADR-F008). Never throws.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <b>It is a projection, never a store.</b> Recomputed in full on every run, holding
+        /// nothing that exists nowhere else. That single property is what makes everything
+        /// else here safe: a deletion costs at most one sync interval of staleness, a partial
+        /// write is repaired by the next run, and no upgrade or wipe on either side can lose
+        /// anything. The tempting change is to make it incremental for efficiency — do not.
+        /// It would convert a disposable projection into a state store, and buy nothing: the
+        /// set is a few thousand integers.
+        /// </para>
+        /// <para>
+        /// Skipped entirely when the catalogue fetch was partial, for the same reason
+        /// <see cref="WriteCatalogueSnapshot"/> is: a file listing only the categories that
+        /// answered is indistinguishable from one listing everything the user wants, and
+        /// under-reporting demand is a silent instruction to do less work. Leaving the
+        /// previous file in place ages its <c>generated_at</c> instead, which is the signal
+        /// the consumer already acts on.
+        /// </para>
+        /// <para>
+        /// <b>The identified list carries only the provider's own TMDB id</b>, from the
+        /// <c>get_vod_streams</c> payload, never one the fallback lookup resolved. Two reasons:
+        /// the fallback runs only under certain flag combinations, so using it would make this
+        /// list's contents depend on unrelated settings; and a provider that ships no id also
+        /// ships no stream metadata, which is exactly what puts those titles at the center of
+        /// the consumer's job rather than its margin. Promoting a resolved id would move a
+        /// title out of the unidentified list without changing that fact.
+        /// </para>
+        /// <para>
+        /// A resolved id is still published, as a <i>separate</i> field on the unidentified
+        /// entry. It is a second lookup key beside the stream id, which is the one that dies
+        /// when the provider renumbers its catalog — so it can only add reach, never redirect
+        /// a lookup that would otherwise have worked. It is absent whenever the resolve did
+        /// not run, and the publish says so explicitly, because a reader is told to treat its
+        /// absence as normal and could not otherwise tell "not resolvable" from "never tried".
+        /// </para>
+        /// <para>
+        /// <b>The provider's raw name is the key those entries actually rely on</b>, and is the
+        /// only one here that is free, always present and independent of every setting. It is
+        /// published untouched rather than cleaned: the reader's rows are built from the same
+        /// provider feed, so the unmodified string is the one with a counterpart there. Note
+        /// this makes the file contain titles, which puts it in the same class as the catalogue
+        /// snapshots — no credentials, but not something to publish outside the host.
+        /// </para>
+        /// <para>
+        /// File mode is left to the process umask — netstandard2.0 has no API to set it, and
+        /// the defaults (0666 and 0777 masked by the usual 022) already give the 0644 file in
+        /// a 0755 directory the contract asks for.
+        /// </para>
+        /// </remarks>
+        internal void WriteWantedSet(
+            PluginConfiguration config,
+            List<Tuple<VodStreamInfo, string>> wanted,
+            bool catalogueComplete,
+            bool reviewGateOn)
+        {
+            var configured = config?.WantedSetPath;
+            if (string.IsNullOrWhiteSpace(configured) || wanted == null)
+            {
+                return;
+            }
+
+            if (!catalogueComplete)
+            {
+                _logger.Warn(
+                    "Wanted set not written: some VOD categories did not answer, so the set would "
+                    + "under-report what you keep. The previous file is left as it was.");
+                return;
+            }
+
+            try
+            {
+                var directory = configured.Trim();
+
+                // Deduplicated: two StreamIds can carry the same TMDB id, and the consumer is
+                // identifying titles, not counting rows. Sorted so two runs over an unchanged
+                // set produce an identical file, which makes a diff meaningful.
+                var tmdbIds = new HashSet<int>();
+                var unidentified = new Dictionary<int, WantedSetEntry>();
+                foreach (var pair in wanted)
+                {
+                    var movie = pair.Item1;
+                    int tmdb;
+                    if (IsValidTmdbId(movie.TmdbId)
+                        && int.TryParse(movie.TmdbId.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out tmdb))
+                    {
+                        tmdbIds.Add(tmdb);
+                        continue;
+                    }
+
+                    // The provider gave no id, so anything resolved for this title came from
+                    // the fallback lookup. Carried as a SEPARATE field rather than promoted
+                    // into TmdbIds: on the consuming side those ids are looked up against its
+                    // own rows, and a row is unidentified there for the same reason it is here
+                    // — so a promoted id would resolve to nothing and silently drop the title
+                    // out of scope. As a second key beside the stream id it can only help,
+                    // because the stream id is the one that dies in a re-ingest.
+                    int? resolved = null;
+                    int parsedResolved;
+                    if (IsValidTmdbId(pair.Item2)
+                        && int.TryParse(pair.Item2.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out parsedResolved))
+                    {
+                        resolved = parsedResolved;
+                    }
+
+                    WantedSetEntry existing;
+                    if (!unidentified.TryGetValue(movie.StreamId, out existing))
+                    {
+                        unidentified[movie.StreamId] = new WantedSetEntry
+                        {
+                            StreamId = movie.StreamId,
+                            // 🔑 The provider's RAW name, deliberately not the cleaned one. This
+                            // is a match key for a database built from the same provider feed,
+                            // so the untouched string is the one that has a counterpart there —
+                            // cleaning moves it AWAY from what the reader holds. It is also the
+                            // only key here that is free, always present, and independent of
+                            // every setting, which is why it exists at all: the resolved id
+                            // above needs two flags on and covers a fraction of these titles.
+                            Name = string.IsNullOrWhiteSpace(movie.Name) ? null : movie.Name,
+                            ResolvedTmdbId = resolved,
+                        };
+                    }
+                    else if (existing.ResolvedTmdbId == null && resolved != null)
+                    {
+                        existing.ResolvedTmdbId = resolved;
+                    }
+                }
+
+                var orderedTmdb = tmdbIds.ToList();
+                orderedTmdb.Sort();
+                var orderedUnidentified = unidentified.Keys.ToList();
+                orderedUnidentified.Sort();
+                var resolvedCount = unidentified.Values.Count(v => v.ResolvedTmdbId != null);
+
+                var payload = new WantedSetFile
+                {
+                    Schema = WantedSetSchemaVersion,
+                    // Explicitly UTC with a 'Z'. The records this plugin writes for a human to
+                    // read use local time; this one is parsed by another process to decide
+                    // whether the set is stale, and an unqualified local timestamp would make
+                    // that answer depend on two containers agreeing about the zone.
+                    GeneratedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
+                    Generator = WantedSetGenerator,
+                    // Covers TmdbIds only — stated here, in the ADR and in the README, because
+                    // a count that silently meant something else would be worse than none.
+                    Count = orderedTmdb.Count,
+                    TmdbIds = orderedTmdb,
+                    Unidentified = orderedUnidentified.Select(id => unidentified[id]).ToList(),
+                };
+
+                Directory.CreateDirectory(directory);
+                var path = Path.Combine(directory, WantedSetFileName);
+                var tempPath = path + ".tmp";
+
+                // Write then rename, within the same directory so the rename cannot cross a
+                // filesystem and degrade into a copy. The consumer is an unattended nightly
+                // pass: a half-written file read at 3am is miserable to diagnose, and the
+                // failure would look like corruption rather than a race.
+                //
+                // A rename that throws leaves the temp file behind. Deliberately not cleaned
+                // up: the name is fixed, so the next run overwrites it rather than
+                // accumulating, and the alternative is a delete site for no gain.
+                File.WriteAllText(tempPath, STJ.JsonSerializer.Serialize(payload), new UTF8Encoding(false));
+                if (File.Exists(path))
+                {
+                    File.Replace(tempPath, path, null);
+                }
+                else
+                {
+                    File.Move(tempPath, path);
+                }
+
+                // Numerator and denominator, never the ratio: "95% identified" hides whether
+                // the set itself collapsed.
+                _logger.Info(
+                    "Wanted set: {0} movies you keep — {1} with a TMDB id, {2} without ({3} of those "
+                    + "identified by fallback lookup) — written to {4}",
+                    wanted.Count, orderedTmdb.Count, orderedUnidentified.Count, resolvedCount, path);
+
+                // 🚨 Said out loud because the alternative is indistinguishable from good news.
+                // The resolved id only exists where the fallback lookup ran, and the reader is
+                // told to treat a missing key as normal — so an install that never resolves
+                // looks exactly like one where TMDB genuinely cannot name these films.
+                //
+                // ⚠️ States the fact and stops. It deliberately does NOT suggest turning the
+                // fallback lookup on: that lookup takes the FIRST search result unverified and,
+                // with folder naming on, bakes it into the folder name — so recommending it
+                // would be trading a missing key for a confidently wrong identification. The
+                // name above is the durable key these entries actually rely on, which is why
+                // this is a note and not a warning.
+                if (orderedUnidentified.Count > 0 && resolvedCount == 0)
+                {
+                    _logger.Info(
+                        "Wanted set: none of the {0} movies without a provider TMDB id carry a "
+                        + "fallback-resolved one, so anything reading this file identifies them by "
+                        + "provider stream id and name. The stream id changes when the provider "
+                        + "renumbers its catalog; the name does not.",
+                        orderedUnidentified.Count);
+                }
+
+                if (!reviewGateOn)
+                {
+                    _logger.Warn(
+                        "Wanted set was written with \"require review before sync\" off, so it lists your "
+                        + "whole included catalogue rather than the titles you have chosen. Anything scoping "
+                        + "work to this file will size that work accordingly.");
+                }
+            }
+            catch (Exception ex)
+            {
+                // Error, not Debug: unlike the snapshot and the counts log, this file is the
+                // only input to another component's work, and its absence is defined there as
+                // "do nothing" — so a silent failure here disables that work with no symptom.
+                _logger.Error(
+                    "Could not write the wanted set to '{0}': [{1}] {2}",
+                    configured, ex.GetType().Name, ex.Message);
+            }
+        }
+
+        /// <summary>The wanted-set file's shape. Property names are the wire contract (ADR-F008).</summary>
+        internal class WantedSetFile
+        {
+            [STJ.Serialization.JsonPropertyName("schema")]
+            public int Schema { get; set; }
+
+            [STJ.Serialization.JsonPropertyName("generated_at")]
+            public string GeneratedAt { get; set; }
+
+            [STJ.Serialization.JsonPropertyName("generator")]
+            public string Generator { get; set; }
+
+            [STJ.Serialization.JsonPropertyName("count")]
+            public int Count { get; set; }
+
+            [STJ.Serialization.JsonPropertyName("tmdb_ids")]
+            public List<int> TmdbIds { get; set; }
+
+            [STJ.Serialization.JsonPropertyName("unidentified")]
+            public List<WantedSetEntry> Unidentified { get; set; }
+        }
+
+        /// <summary>
+        /// A wanted title the provider gave no TMDB id for, identified by the id that does
+        /// exist. An object rather than a bare integer so a later field can be added without
+        /// a schema bump for every consumer.
+        /// </summary>
+        internal class WantedSetEntry
+        {
+            [STJ.Serialization.JsonPropertyName("stream_id")]
+            public int StreamId { get; set; }
+
+            /// <summary>
+            /// The provider's own name for the title, verbatim. The durable half of this entry:
+            /// the stream id dies in a re-ingest and this does not, and it is the string the
+            /// reader's own rows were built from.
+            /// </summary>
+            [STJ.Serialization.JsonPropertyName("name")]
+            [STJ.Serialization.JsonIgnore(Condition = STJ.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+            public string Name { get; set; }
+
+            /// <summary>
+            /// A TMDB id this plugin resolved for a title the provider gave none for, when it
+            /// has one. Omitted rather than null when it does not, so the reader's "is this
+            /// key present" test is the only test it needs.
+            /// </summary>
+            [STJ.Serialization.JsonPropertyName("resolved_tmdb_id")]
+            [STJ.Serialization.JsonIgnore(Condition = STJ.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+            public int? ResolvedTmdbId { get; set; }
+        }
+
+        /// <summary>
         /// The last non-empty line of a file, read from the tail rather than the whole file — the
         /// counts log is append-only and never pruned, so checking one line must not mean loading
         /// years of them.
@@ -2360,6 +2645,15 @@ namespace Emby.Xtream.Plugin.Service
                 _logger.Info("Starting movie STRM sync for {0} streams", allStreams.Count);
 
                 var writtenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                // The wanted set (ADR-F008): every title this run keeps on disk, paired with
+                // whatever TMDB id had been resolved for it by that point. Collected
+                // unconditionally rather than only when the feature is configured — the
+                // collection point is load-bearing and a flag-gated one would be a second
+                // thing to get right. It holds references to objects the catalogue already
+                // owns, so the cost is a pointer and a string reference per title.
+                var wantedMovies = new List<Tuple<VodStreamInfo, string>>();
+
                 var semaphore = new SemaphoreSlim(ResolveSyncParallelism(config));
 
                 // Shared Dispatcharr VOD client — only queried per-movie, after smart-skip
@@ -2457,6 +2751,25 @@ namespace Emby.Xtream.Plugin.Service
 
                         var movieDir = Path.Combine(config.StrmLibraryPath, subFolder, folderName);
                         var strmPath = Path.Combine(movieDir, folderName + ".strm");
+
+                        // The title is wanted from here on: not excluded, past the review gate,
+                        // and resolved to a folder this run owns.
+                        //
+                        // 🔑 THE PLACEMENT IS THE FEATURE. It has to be ABOVE the smart-skip
+                        // return, because in steady state almost every wanted title skips — a
+                        // capture point after the write would produce a nearly empty file every
+                        // night and every other test would still pass. It has to be BELOW the
+                        // review gate and the null-subFolder return, or it would claim titles
+                        // the sync deliberately does not keep. A failed write below still counts:
+                        // the user wants the title, and the next run retries it.
+                        //
+                        // tmdbId is whatever has been resolved by HERE, which is the provider's
+                        // id or a fallback lookup when folder naming is on, and null otherwise.
+                        // It is only ever used for titles the provider gave no id for, and the
+                        // publish warns when that leaves it empty — deliberately NOT re-read
+                        // after the NFO-path resolve below, which would mean two collection
+                        // points and still miss every smart-skipped title.
+                        lock (wantedMovies) { wantedMovies.Add(Tuple.Create(movie, tmdbId)); }
 
                         // Smart skip: if file already exists AND the movie is not new (delta), skip
                         var isNewMovie = lastMovieTs == 0 || movie.Added > lastMovieTs;
@@ -2689,6 +3002,10 @@ namespace Emby.Xtream.Plugin.Service
 
                 // Logged after the write-back above, so the numbers are the post-sync state.
                 LogDecisionStoreSizes(config);
+
+                // After the review gate's write-back and after cleanup, so the set describes
+                // what is on disk now rather than what was intended at the start of the run.
+                WriteWantedSet(config, wantedMovies, !vodFetch.HadFailures, reviewGateOn);
 
                 NotifyEmbyLibraryChanged(config, "Movies", _movieProgress.Added, _movieProgress.Deleted);
             }

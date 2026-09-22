@@ -130,6 +130,14 @@ function (BaseView, loading) {
             validatePath(view, '.txtRecordsPath', '.recordsPathValidationResult');
         });
 
+        view.querySelector('.btnBrowseWantedSetPath').addEventListener('click', function () {
+            openBrowser(view, '.txtWantedSetPath', '.wantedSetPathValidationResult');
+        });
+
+        view.querySelector('.txtWantedSetPath').addEventListener('blur', function () {
+            validatePath(view, '.txtWantedSetPath', '.wantedSetPathValidationResult');
+        });
+
         view.querySelector('.btnLoadConfigCopies').addEventListener('click', function () {
             loadConfigCopies(view);
         });
@@ -641,6 +649,7 @@ function (BaseView, loading) {
             view.querySelector('.chkCleanupOrphans').checked = !!config.CleanupOrphans;
             view.querySelector('.txtOrphanSafetyThreshold').value = Math.round((config.OrphanSafetyThreshold != null ? config.OrphanSafetyThreshold : 0.20) * 100);
             view.querySelector('.txtRecordsPath').value = config.RecordsPath || '';
+            view.querySelector('.txtWantedSetPath').value = config.WantedSetPath || '';
             view.querySelector('.txtConfigBackupCount').value = config.ConfigBackupCount != null ? config.ConfigBackupCount : 10;
             view.querySelector('.txtConfigRollbackCount').value = config.ConfigRollbackCount != null ? config.ConfigRollbackCount : 10;
             view.querySelector('.txtCatalogueSnapshotCount').value = config.CatalogueSnapshotCount != null ? config.CatalogueSnapshotCount : 10;
@@ -776,6 +785,9 @@ function (BaseView, loading) {
             config.CleanupOrphans = view.querySelector('.chkCleanupOrphans').checked;
             config.OrphanSafetyThreshold = (parseInt(view.querySelector('.txtOrphanSafetyThreshold').value, 10) || 0) / 100;
             config.RecordsPath = view.querySelector('.txtRecordsPath').value.replace(/\/+$/, '');
+            // Trailing slashes stripped the same way: the plugin appends a filename to this, and
+            // a blank value is the documented way to publish nothing.
+            config.WantedSetPath = view.querySelector('.txtWantedSetPath').value.replace(/\/+$/, '');
             // parseInt||0 is deliberate for all three: a blank or junk box means "off", and 0 is
             // the documented way to disable each of them.
             config.ConfigBackupCount = parseInt(view.querySelector('.txtConfigBackupCount').value, 10) || 0;
