@@ -807,8 +807,6 @@ namespace Emby.Xtream.Plugin.Service
 
                 _logger.Info("Movie STRM sync completed: {0} written, {1} skipped, {2} failed",
                     moviesWrittenCount, _movieProgress.Skipped, _movieProgress.Failed);
-
-                NotifyEmbyLibraryChanged(config, "Movies", _movieProgress.Added, _movieProgress.Deleted);
             }
             catch (Exception ex)
             {
@@ -819,6 +817,10 @@ namespace Emby.Xtream.Plugin.Service
             }
             finally
             {
+                // In the finally: a sync that wrote files and then failed on a later step still
+                // changed the library. A run that changed nothing reports nothing.
+                NotifyEmbyLibraryChanged(config, "Movies", _movieProgress.Added, _movieProgress.Deleted);
+
                 _movieProgress.IsRunning = false;
                 if (string.IsNullOrEmpty(_movieProgress.AbortReason))
                 {
@@ -1535,11 +1537,6 @@ namespace Emby.Xtream.Plugin.Service
                         ? string.Format(CultureInfo.InvariantCulture, ", {0} in unmapped categories", unmappedSkippedCount)
                         : string.Empty,
                     _seriesProgress.Failed);
-
-                // Episodes added, not series written: a series counts as written even when every
-                // episode file already matched. Deletions come from the series counter, which
-                // also includes excluded series removed this run, not only orphaned episodes.
-                NotifyEmbyLibraryChanged(config, "Shows", _episodeProgress.Added, _seriesProgress.Deleted);
             }
             catch (Exception ex)
             {
@@ -1559,6 +1556,11 @@ namespace Emby.Xtream.Plugin.Service
             }
             finally
             {
+                // In the finally, as for movies. Episodes added, not series written: a series
+                // counts as written even when every episode file already matched. Deletions come
+                // from the series counter, which also includes excluded series removed this run.
+                NotifyEmbyLibraryChanged(config, "Shows", _episodeProgress.Added, _seriesProgress.Deleted);
+
                 _seriesProgress.IsRunning = false;
                 if (string.IsNullOrEmpty(_seriesProgress.AbortReason))
                 {
@@ -1703,6 +1705,9 @@ namespace Emby.Xtream.Plugin.Service
                     foreach (var s in succeeded)
                         _failedItems.Remove(s);
                 }
+
+                // Retried series are reported by the series sync below; movies are written here.
+                NotifyEmbyLibraryChanged(config, "Movies", _movieProgress.Added, 0);
 
                 // After the movie bookkeeping above, so a series sync that throws cannot leave
                 // successfully retried movies marked as failed. The series gate is held, so call

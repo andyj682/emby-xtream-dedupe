@@ -96,5 +96,43 @@ namespace Emby.Xtream.Plugin.Tests
             Assert.False(File.Exists(stale));
             Assert.Equal(new[] { ShowsRoot }, _notified);
         }
+
+        [Fact]
+        public async Task RetryThatWritesAMovie_NotifiesMoviesFolder()
+        {
+            var config = DefaultConfig();
+            // A file where the movie's folder should be makes the first write fail.
+            Directory.CreateDirectory(MoviesRoot);
+            var blocker = Path.Combine(MoviesRoot, "New Movie");
+            File.WriteAllText(blocker, "not a folder");
+            RegisterOneMovie();
+            var svc = MakeNotifyingService();
+            await svc.SyncMoviesAsync(config, None, SaveConfig);
+            Assert.Equal(1, svc.MovieProgress.Failed);
+            _notified.Clear();
+
+            File.Delete(blocker);
+            Assert.True(await svc.RetryFailedAsync(config, SaveConfig, None));
+
+            Assert.True(File.Exists(Path.Combine(MoviesRoot, "New Movie", "New Movie.strm")));
+            Assert.Equal(new[] { MoviesRoot }, _notified);
+        }
+
+        /// <summary>
+        /// A sync that wrote files and then failed on a later step still changed the library.
+        /// </summary>
+        [Fact]
+        public async Task SyncThatFailsAfterWriting_StillNotifies()
+        {
+            var config = DefaultConfig();
+            RegisterOneMovie();
+            var svc = MakeNotifyingService();
+
+            await Assert.ThrowsAnyAsync<IOException>(
+                () => svc.SyncMoviesAsync(config, None, () => throw new IOException("disk full")));
+
+            Assert.True(File.Exists(Path.Combine(MoviesRoot, "New Movie", "New Movie.strm")));
+            Assert.Equal(new[] { MoviesRoot }, _notified);
+        }
     }
 }
