@@ -245,7 +245,8 @@ namespace Emby.Xtream.Plugin.Tests
                 episodes = new System.Collections.Generic.Dictionary<string, object[]>()
             });
             Handler.RespondWith("action=get_series", list);
-            Handler.RespondWith("action=get_series_info&series_id=1", emptyDetail);
+            // Twice: an empty episode list is retried once before it counts as empty.
+            Handler.RespondWithSequence("action=get_series_info&series_id=1", new[] { emptyDetail, emptyDetail });
 
             // Must not throw
             await MakeService().SyncSeriesAsync(config, None, SaveConfig);
@@ -575,5 +576,61 @@ namespace Emby.Xtream.Plugin.Tests
 
             Assert.Equal(5000, config.LastSeriesSyncTimestamp);
         }
-    }
+    
+
+        // -----------------------------------------------------------------
+        // Empty episode list retry (from andyj682/emby-xtream-dedupe ff63da3)
+        // -----------------------------------------------------------------
+
+        private static string EmptySeriesDetailJson(int seriesId) =>
+            System.Text.Json.JsonSerializer.Serialize(new
+            {
+                info = new { series_id = seriesId, name = "Test Show", tmdb = "" },
+                seasons = new object[0],
+                episodes = new System.Collections.Generic.Dictionary<string, object[]>()
+            });
+
+        /// <summary>
+        /// get_series_info can answer 200 with no episodes when several detail requests arrive
+        /// at once. One retry recovers the episodes within the same sync.
+        /// </summary>
+        [Fact]
+        public async Task EmptyEpisodeList_ThenEpisodes_RecoveredInSameSync()
+        {
+            var config = DefaultConfig();
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Test Show", lastModified: "1000")));
+            Handler.RespondWithSequence("action=get_series_info&series_id=1",
+                new[] { EmptySeriesDetailJson(1), SeriesDetailJson(seriesId: 1) });
+
+            var svc = MakeService();
+            svc.SeriesDetailRetryDelayMs = 0;
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(EpisodeStrmPath("Test Show", season: 1, episode: 1, title: "Episode Title")));
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+            Assert.Equal(2, Handler.ReceivedUrls.FindAll(u => u.Contains("get_series_info&series_id=1")).Count);
+        }
+
+        /// <summary>
+        /// A series with genuinely no episodes is fetched again on every sync (it never gets an
+        /// episode hash), so the retry must stay at one extra request, not several.
+        /// </summary>
+        [Fact]
+        public async Task EmptyEpisodeList_EveryTime_RetriedOnceOnly()
+        {
+            var config = DefaultConfig();
+            Handler.RespondWith("action=get_series", SeriesListJson(
+                Series(seriesId: 1, name: "Test Show", lastModified: "1000")));
+            Handler.RespondWithSequence("action=get_series_info&series_id=1",
+                new[] { EmptySeriesDetailJson(1), EmptySeriesDetailJson(1), EmptySeriesDetailJson(1) });
+
+            var svc = MakeService();
+            svc.SeriesDetailRetryDelayMs = 0;
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.Equal(2, Handler.ReceivedUrls.FindAll(u => u.Contains("get_series_info&series_id=1")).Count);
+            Assert.Equal(0, svc.SeriesProgress.Failed);
+        }
+}
 }

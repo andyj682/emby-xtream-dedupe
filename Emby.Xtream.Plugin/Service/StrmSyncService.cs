@@ -127,6 +127,10 @@ namespace Emby.Xtream.Plugin.Service
         private SyncProgress _seriesProgress = new SyncProgress();
         private SyncProgress _episodeProgress = new SyncProgress();
 
+        // Delay before re-fetching an empty get_series_info answer (see FetchSeriesDetailAsync).
+        // Internal so tests can set it to zero.
+        internal int SeriesDetailRetryDelayMs = 1000;
+
         // Single-flight gates. Each sync replaces its progress object wholesale and shares a
         // written-path set, so two overlapping runs of the same kind corrupt each other's state.
         // Movies and series are gated separately because they touch different roots and are
@@ -2253,9 +2257,40 @@ namespace Emby.Xtream.Plugin.Service
                 "{0}/player_api.php?username={1}&password={2}&action=get_series_info&series_id={3}",
                 config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), seriesId);
 
+            var detail = await GetSeriesDetailAsync(url).ConfigureAwait(false);
+            if (HasEpisodes(detail))
+            {
+                return detail;
+            }
+
+            // Some providers answer 200 with an empty episode list when several detail requests
+            // arrive at once, and the same series comes back fine a moment later. Retry once.
+            // Only once: a series that really has no episodes never gets an episode hash, so it
+            // is fetched on every sync, and each extra attempt is paid on every one of them.
+            // Found in andyj682/emby-xtream-dedupe (ff63da3).
+            _logger.Debug("Series {0} returned no episodes; retrying once", seriesId);
+            if (SeriesDetailRetryDelayMs > 0)
+            {
+                await Task.Delay(SeriesDetailRetryDelayMs, cancellationToken).ConfigureAwait(false);
+            }
+
+            var retried = await GetSeriesDetailAsync(url).ConfigureAwait(false);
+            if (HasEpisodes(retried))
+            {
+                _logger.Info("Series {0} returned episodes on retry after an empty answer", seriesId);
+            }
+
+            return retried;
+        }
+
+        private async Task<SeriesDetailInfo> GetSeriesDetailAsync(string url)
+        {
             var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
             return STJ.JsonSerializer.Deserialize<SeriesDetailInfo>(json, JsonOptions);
         }
+
+        private static bool HasEpisodes(SeriesDetailInfo detail)
+            => detail != null && detail.Episodes != null && detail.Episodes.Count > 0;
 
         /// <summary>
         /// Deletes the on-disk folders of items the user has explicitly excluded.
