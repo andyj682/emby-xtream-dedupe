@@ -18,19 +18,27 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
-      - name: Build plugin (Emby 4.9.x)
+      # One DLL for Emby 4.9 and 4.10, compiled against the 4.9 SDK (ADR-017).
+      - name: Build plugin
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           dotnet publish Emby.Xtream.Plugin/Emby.Xtream.Plugin.csproj \
             -c Release -o out --no-self-contained -p:Version=$VERSION
 
-      - name: Build plugin (Emby 4.10+)
+      # Neither step produces a release file. They stop the release if the DLL would not
+      # load on one of the two Emby versions.
+      - name: Compile against Emby 4.10 SDK
+        run: dotnet build Emby.Xtream.Plugin/Emby.Xtream.Plugin.csproj -c Release_4_10 -v minimal
+
+      - name: Load plugin against Emby 4.9 and 4.10 SDKs
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          dotnet publish Emby.Xtream.Plugin/Emby.Xtream.Plugin.csproj \
-            -c Release_4_10 -o out_4_10 --no-self-contained -p:Version=$VERSION
+          for sdk in emby4_9 emby4_10; do
+            dotnet run --project scripts/sdk-load-check -- out/Emby.Xtream.Plugin.dll lib/$sdk
+          done
 
       - name: Generate release notes
         id: notes
@@ -52,8 +60,7 @@ jobs:
             echo ""
             echo "## Downloads"
             echo ""
-            echo "- **Emby 4.9.x** — \`Emby.Xtream.Plugin.dll\` (default for auto-update)"
-            echo "- **Emby 4.10+** — \`Emby.Xtream.Plugin-4.10.dll\` (for 4.10.0.17+ beta only)"
+            echo "\`Emby.Xtream.Plugin.dll\` works on Emby 4.9 and 4.10. \`Emby.Xtream.Plugin-4.10.dll\` is the same file under its old name, kept so that 4.10 installs from before this change still update correctly."
             echo ""
             if [ -n "$PREV_TAG" ]; then
               echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ github.ref_name }}"
@@ -62,11 +69,13 @@ jobs:
 
       - name: Create release
         run: |
-          # Rename 4.10 DLL so both assets coexist in the release
-          cp out_4_10/Emby.Xtream.Plugin.dll out_4_10/Emby.Xtream.Plugin-4.10.dll
+          # The same DLL under both names. The in-plugin updater downloads Emby.Xtream.Plugin.dll,
+          # and people who installed the old 4.10 build by hand look for the -4.10 name, so both
+          # must stay present and both must be the file that loads.
+          cp out/Emby.Xtream.Plugin.dll out/Emby.Xtream.Plugin-4.10.dll
           gh release create "$GITHUB_REF_NAME" \
             out/Emby.Xtream.Plugin.dll \
-            out_4_10/Emby.Xtream.Plugin-4.10.dll \
+            out/Emby.Xtream.Plugin-4.10.dll \
             --title "$GITHUB_REF_NAME" \
             --notes-file release_notes.md \
             --prerelease
