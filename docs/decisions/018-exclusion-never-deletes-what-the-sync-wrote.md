@@ -80,3 +80,10 @@ This does not yet make the job effective. Stryker reports every mutant in `StrmS
 as a compile error (`CS0165` definite-assignment failures in unrelated methods trigger its
 fallback mode), so the reported 95% comes from `StrmOwnership.cs` alone, both locally and in CI.
 That needs its own fix.
+
+**Resolved (issue #75):** the delete methods and their helpers moved to
+`StrmSyncService.Cleanup.cs`, a separate file of the same class, and Stryker mutates that whole
+file instead of a line range. The first run that actually reached this code scored 59.75%; tests
+for the threshold limits, emptied-folder removal and the deleted count
+(`OrphanCleanupBoundaryTests`) brought it to 77.6%, above the 75% break. `check-delete-sites.py`
+now requires every delete call of the sync service to stay in that file.
