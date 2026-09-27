@@ -11,6 +11,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Emby.Xtream.Plugin.Client.Models;
+using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Logging;
 using STJ = System.Text.Json;
 
@@ -129,6 +130,10 @@ namespace Emby.Xtream.Plugin.Service
         private SyncProgress _movieProgress = new SyncProgress();
         private SyncProgress _seriesProgress = new SyncProgress();
         private SyncProgress _episodeProgress = new SyncProgress();
+
+        // Replaces the call into Emby's library monitor; tests set it to see what would be
+        // reported. Null in production.
+        internal Action<string> LibraryChangedNotifier { get; set; }
 
         // Delay before re-fetching an empty get_series_info answer (see FetchSeriesDetailAsync).
         // Internal so tests can set it to zero.
@@ -316,6 +321,56 @@ namespace Emby.Xtream.Plugin.Service
         /// so the next run performs a full re-sync and regenerates files with corrected names.
         /// Returns true when a version upgrade was applied (timestamps were reset), false otherwise.
         /// </summary>
+        /// <summary>
+        /// Tells Emby that the Movies or Shows folder changed, so content this sync wrote or
+        /// removed shows up without waiting for a scheduled scan. Only when files were actually
+        /// added or removed: a sync that changed nothing must not make Emby scan (or wake the
+        /// disk). The folder is the one users add to Emby as a library, and it also covers the
+        /// category subfolders of the multiple and custom folder modes.
+        ///
+        /// Reports the change rather than starting a library scan, so Emby refreshes only that
+        /// folder. A failure is logged and ignored: the files are already correct and the
+        /// scheduled scan still picks them up. From andyj682/emby-xtream-dedupe (771ac8c).
+        /// </summary>
+        private void NotifyEmbyLibraryChanged(PluginConfiguration config, string rootFolder, int added, int deleted)
+        {
+            if (!config.RefreshEmbyLibraryAfterSync || (added <= 0 && deleted <= 0))
+            {
+                return;
+            }
+
+            var path = Path.Combine(config.StrmLibraryPath ?? string.Empty, rootFolder);
+            if (LibraryChangedNotifier != null)
+            {
+                LibraryChangedNotifier(path);
+                return;
+            }
+
+            // Null outside a running Emby.
+            var host = Plugin.InstanceOrNull?.ApplicationHost;
+            if (host == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var monitor = host.Resolve<ILibraryMonitor>();
+                if (monitor == null)
+                {
+                    _logger.Warn("Library refresh: Emby's library monitor is not available; '{0}' is picked up by the next scheduled scan", path);
+                    return;
+                }
+
+                monitor.ReportFileSystemChanged(path);
+                _logger.Info("Library refresh: told Emby that '{0}' changed ({1} added, {2} removed)", path, added, deleted);
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn("Library refresh failed for '{0}': {1}", path, ex.Message);
+            }
+        }
+
         internal bool CheckAndUpgradeNamingVersion(PluginConfiguration config, Action saveConfig)
         {
             if (config.StrmNamingVersion >= CurrentStrmNamingVersion)
@@ -752,6 +807,8 @@ namespace Emby.Xtream.Plugin.Service
 
                 _logger.Info("Movie STRM sync completed: {0} written, {1} skipped, {2} failed",
                     moviesWrittenCount, _movieProgress.Skipped, _movieProgress.Failed);
+
+                NotifyEmbyLibraryChanged(config, "Movies", _movieProgress.Added, _movieProgress.Deleted);
             }
             catch (Exception ex)
             {
@@ -1478,6 +1535,11 @@ namespace Emby.Xtream.Plugin.Service
                         ? string.Format(CultureInfo.InvariantCulture, ", {0} in unmapped categories", unmappedSkippedCount)
                         : string.Empty,
                     _seriesProgress.Failed);
+
+                // Episodes added, not series written: a series counts as written even when every
+                // episode file already matched. Deletions come from the series counter, which
+                // also includes excluded series removed this run, not only orphaned episodes.
+                NotifyEmbyLibraryChanged(config, "Shows", _episodeProgress.Added, _seriesProgress.Deleted);
             }
             catch (Exception ex)
             {
