@@ -131,6 +131,13 @@ namespace Emby.Xtream.Plugin
         public int SyncParallelism { get; set; } = 3;
         public bool CleanupOrphans { get; set; } = true;
 
+        /// <summary>
+        /// After a sync that added or removed files, tell Emby the Movies or Shows folder changed
+        /// so new content appears without waiting for a scheduled library scan. A sync that
+        /// changed nothing triggers nothing. Mainly for libraries with real-time monitoring off.
+        /// </summary>
+        public bool RefreshEmbyLibraryAfterSync { get; set; } = true;
+
         /// <summary>Max requests/second to the Xtream provider. 0 = disabled (no throttle).</summary>
         public int XtreamRequestsPerSecond { get; set; } = 0;
 
