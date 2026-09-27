@@ -134,8 +134,9 @@ namespace Emby.Xtream.Plugin.Tests
 
             Handler.RespondWith("get_series", SeriesListJson(Series(seriesId: 1, name: "Test Show")));
             // Provider hiccups and reports the show with no episodes at all.
-            Handler.RespondWith("get_series_info",
-                "{\"info\":{\"series_id\":1,\"name\":\"Test Show\"},\"seasons\":[],\"episodes\":{}}");
+            // Twice: an empty episode list is retried once before it counts as empty.
+            var emptyDetail = "{\"info\":{\"series_id\":1,\"name\":\"Test Show\"},\"seasons\":[],\"episodes\":{}}";
+            Handler.RespondWithSequence("get_series_info", new[] { emptyDetail, emptyDetail });
 
             var existingPath = SeedSeriesStrm("Test Show", "Season 01", "S01E01.strm");
 
@@ -157,8 +158,9 @@ namespace Emby.Xtream.Plugin.Tests
                 Series(seriesId: 1, name: "Good Show"),
                 Series(seriesId: 2, name: "Empty Show")));
             Handler.RespondWith("series_id=1", SeriesDetailJson(seriesId: 1));
-            Handler.RespondWith("series_id=2",
-                "{\"info\":{\"series_id\":2,\"name\":\"Empty Show\"},\"seasons\":[],\"episodes\":{}}");
+            // Twice: an empty episode list is retried once before it counts as empty.
+            var emptyDetail = "{\"info\":{\"series_id\":2,\"name\":\"Empty Show\"},\"seasons\":[],\"episodes\":{}}";
+            Handler.RespondWithSequence("series_id=2", new[] { emptyDetail, emptyDetail });
 
             var orphanPath = SeedSeriesStrm("Removed Show", "Season 01", "S01E01.strm");
 
@@ -177,8 +179,9 @@ namespace Emby.Xtream.Plugin.Tests
             config.CleanupOrphans = true;
 
             Handler.RespondWith("get_series", SeriesListJson(Series(seriesId: 1, name: "Empty Show")));
-            Handler.RespondWith("get_series_info",
-                "{\"info\":{\"series_id\":1,\"name\":\"Empty Show\"},\"seasons\":[],\"episodes\":{}}");
+            // Twice: an empty episode list is retried once before it counts as empty.
+            var emptyDetail = "{\"info\":{\"series_id\":1,\"name\":\"Empty Show\"},\"seasons\":[],\"episodes\":{}}";
+            Handler.RespondWithSequence("get_series_info", new[] { emptyDetail, emptyDetail });
 
             var existingPath = SeedSeriesStrm("Removed Show", "Season 01", "S01E01.strm");
 

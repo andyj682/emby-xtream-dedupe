@@ -44,8 +44,9 @@ namespace Emby.Xtream.Plugin.Tests
             EnableContentNameCleaning    = false,
         };
 
+        // No real wait before the empty-episode-list retry; tests that care set it themselves.
         protected StrmSyncService MakeService() =>
-            new StrmSyncService(new NullLogger(), HttpClient);
+            new StrmSyncService(new NullLogger(), HttpClient) { SeriesDetailRetryDelayMs = 0 };
 
         // ----- JSON factory helpers -----
 
