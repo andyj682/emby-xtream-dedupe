@@ -34,12 +34,20 @@ STRYKER_CONFIG = REPO_ROOT / "stryker-config.json"
 # into. See issue #75.
 MUTATED_FILE = "Service/StrmSyncService.Cleanup.cs"
 SERVICE_FILES = re.compile(r"^Service/StrmSyncService(\..+)?\.cs$")
-DELETE_CODE = re.compile(r"\b(?:File|Directory)\.Delete\s*\(|StrmOwnership\.DeleteOwnedFiles\s*\(")
+
+# Delete invocations. Matches ``File\Delete`` / ``Directory\Delete`` / ``StrmOwnership\DeleteOwnedFiles``
+# whether they sit on one line or split across lines: a method receiver on its own line followed by
+# a newline and ``.Delete`` / ``.DeleteOwnedFiles`` is a legal C# form and would otherwise slip past
+# the guard. We strip whitespace and newlines inside a small window before matching.
+DELETE_CODE = re.compile(
+    r"\b(?:File|Directory)\s*\.\s*Delete\s*\(|StrmOwnership\s*\.\s*DeleteOwnedFiles\s*\(",
+    re.DOTALL,
+)
 
 # Ownership verification lives here; deletes in this file are the sanctioned ones.
 SANCTIONED_FILE = "Service/StrmOwnership.cs"
 
-DELETE_CALL = re.compile(r"\b(?:File|Directory)\.Delete\s*\(")
+DELETE_CALL = re.compile(r"\b(?:File|Directory)\s*\.\s*Delete\s*\(", re.DOTALL)
 
 # Must be a real line comment carrying a reason, not the text "delete-ok:" appearing
 # anywhere. A string literal or an unrelated neighbouring line must not approve a delete.
@@ -69,6 +77,16 @@ def is_justified(lines, index: int) -> bool:
     return False
 
 
+# Find every delete invocation across the file (handles single- and multi-line forms) and
+# report the line where the invocation begins. The ``\s*`` in the regex already matches
+# newlines via re.DOTALL, so ``File\\n    .Delete(...)`` matches in one pass on the whole text.
+def _iter_pattern(pattern, text: str):
+    """Yield ``(line_number_1based, match_text)`` for each ``pattern`` hit in ``text``."""
+    for m in pattern.finditer(text):
+        line_no = text.count("\n", 0, m.start()) + 1
+        yield line_no, m.group(0)
+
+
 def find_unjustified(root: Path):
     problems = []
 
@@ -80,13 +98,12 @@ def find_unjustified(root: Path):
         if rel.startswith(("obj/", "bin/")):
             continue
 
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        for i, line in enumerate(lines):
-            if not DELETE_CALL.search(line):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        for line_no, _ in _iter_pattern(DELETE_CALL, text):
+            if is_justified(lines, line_no - 1):
                 continue
-            if is_justified(lines, i):
-                continue
-            problems.append((rel, i + 1, line.strip()))
+            problems.append((rel, line_no, lines[line_no - 1].strip()))
 
     return problems
 
@@ -96,18 +113,26 @@ def find_mutation_gaps(service_sources, stryker_config: str):
 
     ``service_sources`` maps a path relative to the plugin root to that file's text, for every
     StrmSyncService*.cs file.
+
+    The Stryker ``mutate`` list treats entries prefixed with ``!`` as exclusions. A config that
+    contains only ``!**/Service/StrmSyncService.Cleanup.cs`` would (a) pass the naive
+    ``endswith`` check below and (b) leave the cleanup file unmutated, defeating the whole point
+    of the guard. An exclusion that targets the cleanup file is treated as a gap too.
     """
     problems = []
     mutate = json.loads(stryker_config)["stryker-config"]["mutate"]
-    if not any(p.endswith(MUTATED_FILE) for p in mutate):
+    stripped = [p.lstrip("!") for p in mutate]
+    if not any(p.endswith(MUTATED_FILE) for p in stripped):
         problems.append((MUTATED_FILE, 0, "not in the mutate list of stryker-config.json"))
+    if any(p.startswith("!") and p.lstrip("!").endswith(MUTATED_FILE) for p in mutate):
+        problems.append((MUTATED_FILE, 0,
+                         "excluded from the mutate list of stryker-config.json"))
 
     for rel, text in sorted(service_sources.items()):
         if rel == MUTATED_FILE:
             continue
-        for i, line in enumerate(text.splitlines()):
-            if DELETE_CODE.search(line):
-                problems.append((rel, i + 1, line.strip()))
+        for line_no, matched in _iter_pattern(DELETE_CODE, text):
+            problems.append((rel, line_no, matched))
 
     return problems
 

@@ -73,6 +73,20 @@ CASES = [
         '    File.Delete("x"); } }',
         True,
     ),
+    (
+        "File and .Delete on separate lines is rejected",
+        'class A { void M() {\n'
+        '    File\n'
+        '        .Delete("x"); } }',
+        False,
+    ),
+    (
+        "Directory and .Delete on separate lines is rejected",
+        'class A { void M() {\n'
+        '    Directory\n'
+        '        .Delete("x", true); } }',
+        False,
+    ),
 ]
 
 
@@ -119,9 +133,25 @@ def main() -> int:
         ("DeleteOwnedFiles in the main service file is rejected",
          {"Service/StrmSyncService.Cleanup.cs": "", "Service/StrmSyncService.cs": "StrmOwnership.DeleteOwnedFiles(d);"},
          covered, False),
+        ("DeleteOwnedFiles split across lines in the main service file is rejected",
+         {"Service/StrmSyncService.Cleanup.cs": "",
+          "Service/StrmSyncService.cs": "StrmOwnership\n    .DeleteOwnedFiles(d);"},
+         covered, False),
         ("the cleanup file missing from Stryker is rejected",
          {"Service/StrmSyncService.Cleanup.cs": delete_line},
          not_covered, False),
+        ("the cleanup file excluded from Stryker is rejected",
+         {"Service/StrmSyncService.Cleanup.cs": delete_line,
+          "Service/StrmSyncService.cs": ""},
+         '{"stryker-config": {"mutate": ["!**/Service/StrmSyncService.Cleanup.cs"]}}',
+         False),
+        ("the cleanup file listed alongside an exclusion for another file is accepted",
+         {"Service/StrmSyncService.Cleanup.cs": delete_line,
+          "Service/StrmSyncService.cs": ""},
+         '{"stryker-config": {"mutate": ['
+         '"!**/Service/StrmSyncService.cs", '
+         '"**/Service/StrmSyncService.Cleanup.cs"]}}',
+         True),
     ]
     for name, sources, config, expected in range_cases:
         actual = not guard.find_mutation_gaps(sources, config)
