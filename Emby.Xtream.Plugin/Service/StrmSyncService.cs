@@ -481,6 +481,7 @@ namespace Emby.Xtream.Plugin.Service
                 var tasks = allStreams.Select(async movie =>
                 {
                     await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    string movieDirForFailure = null;
                     try
                     {
                         var cleanedName = config.EnableContentNameCleaning
@@ -531,6 +532,7 @@ namespace Emby.Xtream.Plugin.Service
                         }
 
                         var movieDir = Path.Combine(config.StrmLibraryPath, subFolder, folderName);
+                        movieDirForFailure = movieDir;
                         var strmPath = Path.Combine(movieDir, folderName + ".strm");
 
                         // Smart skip: if file already exists AND the movie is not new (delta), skip
@@ -655,6 +657,11 @@ namespace Emby.Xtream.Plugin.Service
                     catch (Exception ex)
                     {
                         _logger.Error("Failed to write STRM for movie '{0}': [{1}] {2}", movie.Name, ex.GetType().Name, ex.Message);
+
+                        // Keep what an earlier sync wrote for this movie in writtenPaths, so the
+                        // exclusion pass treats its folder as in use (ADR-018). Orphan cleanup is
+                        // unaffected: it does not run on a sync with a failed item.
+                        RecordExistingStrms(movieDirForFailure, writtenPaths);
                         lock (_failedItemsLock)
                         {
                             _failedItems.Add(new FailedSyncItem
@@ -684,11 +691,23 @@ namespace Emby.Xtream.Plugin.Service
                 // cleanup and independent of it — see RemoveExcludedContent remarks.
                 // Note both passes accumulate into Deleted, which therefore counts folders
                 // (exclusions) and files (orphans) together. The dashboard shows one number.
+                // Postponed when a category failed to load: a kept title that shares an excluded
+                // title's folder is only protected by being in writtenPaths, and titles from that
+                // category never got there. A failed item is recorded there by its catch block,
+                // so item failures do not postpone exclusions (ADR-012, ADR-018).
                 if (excludedMovies.Count > 0)
                 {
-                    _movieProgress.Phase = "Removing excluded movies";
-                    _movieProgress.Deleted += RemoveExcludedContent(
-                        config, excludedMovies, config.MovieFolderMode, categoryNames, folderMappings, "Movies");
+                    if (!vodFetch.HadFailures)
+                    {
+                        _movieProgress.Phase = "Removing excluded movies";
+                        _movieProgress.Deleted += RemoveExcludedContent(
+                            config, excludedMovies, config.MovieFolderMode, categoryNames, folderMappings, "Movies", writtenPaths);
+                    }
+                    else
+                    {
+                        _logger.Warn(
+                            "Removing excluded movies postponed to the next sync: a category failed to load");
+                    }
                 }
 
                 // Cleanup orphans. Skipped when any category failed to answer: those titles are
@@ -959,6 +978,8 @@ namespace Emby.Xtream.Plugin.Service
                 var tasks = allSeries.Select(async series =>
                 {
                     await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    string seriesSubFolderForFailure = null;
+                    string seriesNameForFailure = null;
                     try
                     {
                         var cleanedName = config.EnableContentNameCleaning
@@ -973,6 +994,8 @@ namespace Emby.Xtream.Plugin.Service
 
                         var subFolder = BuildContentFolderPath(
                             config.SeriesFolderMode, series.CategoryId, categoryNames, folderMappings, "Shows");
+                        seriesSubFolderForFailure = subFolder;
+                        seriesNameForFailure = seriesName;
 
                         if (subFolder == null)
                         {
@@ -1029,6 +1052,10 @@ namespace Emby.Xtream.Plugin.Service
                         catch (Exception ex)
                         {
                             _logger.Error("Failed to fetch detail for series '{0}' (id={1}): [{2}] {3}", series.Name, series.SeriesId, ex.GetType().Name, ex.Message);
+
+                            // Existing episodes still count as in use, so an exclusion that
+                            // matches this show's folder leaves it alone (ADR-018).
+                            RecordStrms(FindExistingSeriesStrms(config, subFolder, seriesName), writtenPaths);
                             lock (_failedItemsLock)
                             {
                                 _failedItems.Add(new FailedSyncItem
@@ -1233,6 +1260,11 @@ namespace Emby.Xtream.Plugin.Service
                     catch (Exception ex)
                     {
                         _logger.Error("Failed to write STRM for series '{0}' (id={1}): [{2}] {3}", series.Name, series.SeriesId, ex.GetType().Name, ex.Message);
+                        if (seriesSubFolderForFailure != null)
+                        {
+                            // As for a failed detail fetch: existing episodes still count as in use.
+                            RecordStrms(FindExistingSeriesStrms(config, seriesSubFolderForFailure, seriesNameForFailure), writtenPaths);
+                        }
                         lock (_failedItemsLock)
                         {
                             _failedItems.Add(new FailedSyncItem
@@ -1260,11 +1292,21 @@ namespace Emby.Xtream.Plugin.Service
                 // cleanup and independent of it — see RemoveExcludedContent remarks.
                 // Note both passes accumulate into Deleted, which therefore counts folders
                 // (exclusions) and files (orphans) together. The dashboard shows one number.
+                // Postponed when a category failed to load, as for movies above. A series whose
+                // episode list came back empty already keeps its existing files in writtenPaths.
                 if (excludedSeriesItems.Count > 0)
                 {
-                    _seriesProgress.Phase = "Removing excluded series";
-                    _seriesProgress.Deleted += RemoveExcludedContent(
-                        config, excludedSeriesItems, config.SeriesFolderMode, categoryNames, folderMappings, "Shows");
+                    if (!seriesFetch.HadFailures)
+                    {
+                        _seriesProgress.Phase = "Removing excluded series";
+                        _seriesProgress.Deleted += RemoveExcludedContent(
+                            config, excludedSeriesItems, config.SeriesFolderMode, categoryNames, folderMappings, "Shows", writtenPaths);
+                    }
+                    else
+                    {
+                        _logger.Warn(
+                            "Removing excluded series postponed to the next sync: a category failed to load");
+                    }
                 }
 
                 // Cleanup orphans. Skipped when any category failed to answer — see the
@@ -2226,6 +2268,13 @@ namespace Emby.Xtream.Plugin.Service
         ///
         /// Folder matching strips any metadata-ID suffix, so an excluded title is found whether it
         /// was written as "Some Movie", "Some Movie [tmdbid=123]" or "Some Show [tvdbid=456]".
+        ///
+        /// A folder this run wrote into is never touched. Matching is by cleaned name, ignoring
+        /// case, while the exclusion itself is by stream ID, so a kept entry whose name differs
+        /// only in case (or cleans to the same name) shares the excluded entry's folder. Without
+        /// this guard the kept title was deleted on every sync. Callers skip this pass when a
+        /// category failed to load, because titles from it never reached writtenPaths and so
+        /// are not protected. See ADR-018.
         /// </remarks>
         /// <param name="config">Active plugin configuration (supplies the library root).</param>
         /// <param name="excludedItems">Cleaned display name + category ID for each excluded item.</param>
@@ -2233,6 +2282,7 @@ namespace Emby.Xtream.Plugin.Service
         /// <param name="categoryNames">Category ID → name, used by "multiple" mode.</param>
         /// <param name="folderMappings">Category ID → folder, used by "custom" mode.</param>
         /// <param name="rootFolder">"Movies" or "Shows".</param>
+        /// <param name="writtenPaths">Every STRM this run wrote or kept.</param>
         /// <returns>The number of folders deleted.</returns>
         private int RemoveExcludedContent(
             PluginConfiguration config,
@@ -2240,7 +2290,8 @@ namespace Emby.Xtream.Plugin.Service
             string folderMode,
             Dictionary<int, string> categoryNames,
             Dictionary<int, string> folderMappings,
-            string rootFolder)
+            string rootFolder,
+            HashSet<string> writtenPaths)
         {
             if (excludedItems == null || excludedItems.Count == 0)
             {
@@ -2248,6 +2299,7 @@ namespace Emby.Xtream.Plugin.Service
             }
 
             var removed = 0;
+            var writtenDirs = BuildWrittenDirectories(writtenPaths, config.StrmLibraryPath);
 
             // subFolder → { folderNameWithoutIdSuffix → fullPath }. One readdir per subfolder.
             var dirIndexCache = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
@@ -2293,6 +2345,14 @@ namespace Emby.Xtream.Plugin.Service
                     continue;
                 }
 
+                if (writtenDirs.Contains(NormalizeDirectory(existingDir)))
+                {
+                    _logger.Info(
+                        "Keeping '{0}' for excluded item '{1}': this sync wrote an included title into the same folder",
+                        existingDir, sanitized);
+                    continue;
+                }
+
                 try
                 {
                     // Delete only the files this plugin actually wrote, verified by content, then
@@ -2334,6 +2394,79 @@ namespace Emby.Xtream.Plugin.Service
             return removed;
         }
 
+
+        /// <summary>
+        /// Every directory that holds a path in <paramref name="writtenPaths"/>, and its ancestors
+        /// up to (not including) the library root. Episodes sit in a season folder below the
+        /// show folder an exclusion matches, so the ancestors count as written too.
+        /// </summary>
+        private static HashSet<string> BuildWrittenDirectories(HashSet<string> writtenPaths, string libraryRoot)
+        {
+            var dirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (writtenPaths == null)
+            {
+                return dirs;
+            }
+
+            var root = NormalizeDirectory(libraryRoot);
+            string[] snapshot;
+            lock (writtenPaths) { snapshot = writtenPaths.ToArray(); }
+
+            foreach (var path in snapshot)
+            {
+                var dir = Path.GetDirectoryName(path);
+                while (!string.IsNullOrEmpty(dir))
+                {
+                    var normalized = NormalizeDirectory(dir);
+                    if (string.Equals(normalized, root, StringComparison.OrdinalIgnoreCase) || !dirs.Add(normalized))
+                    {
+                        break;
+                    }
+
+                    dir = Path.GetDirectoryName(dir);
+                }
+            }
+
+            return dirs;
+        }
+
+        /// <summary>
+        /// Adds the STRM files already in <paramref name="dir"/> to <paramref name="writtenPaths"/>.
+        /// Used when writing an item failed, so its existing files still count as in use.
+        /// </summary>
+        private void RecordExistingStrms(string dir, HashSet<string> writtenPaths)
+        {
+            if (string.IsNullOrEmpty(dir))
+            {
+                return;
+            }
+
+            try
+            {
+                if (Directory.Exists(dir))
+                {
+                    RecordStrms(Directory.GetFiles(dir, "*.strm"), writtenPaths);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("Could not list existing STRM files in '{0}': {1}", dir, ex.Message);
+            }
+        }
+
+        private static void RecordStrms(IEnumerable<string> paths, HashSet<string> writtenPaths)
+        {
+            lock (writtenPaths)
+            {
+                foreach (var path in paths)
+                {
+                    writtenPaths.Add(path);
+                }
+            }
+        }
+
+        private static string NormalizeDirectory(string path)
+            => Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
         private int CleanupOrphans(
             string rootPath, HashSet<string> validPaths, double safetyThreshold, PluginConfiguration config)

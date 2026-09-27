@@ -11,15 +11,29 @@ or carry a ``delete-ok:`` comment saying why it is not touching library content.
 comment is the point. It makes "I am deleting something the user did not give me"
 a decision someone had to write down.
 
+It also checks that the Stryker mutation range in ``stryker-config.json`` still covers the
+delete methods of ``StrmSyncService``. Stryker only takes a line range, and code added above
+those methods moves them out of it; the mutation job then tests unrelated code and keeps
+passing, which is how the range went stale unnoticed once already.
+
 Run: python3 scripts/check-delete-sites.py
 Exits non-zero and prints every unjustified site.
 """
 
+import json
 import re
 import sys
 from pathlib import Path
 
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent / "Emby.Xtream.Plugin"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_ROOT = REPO_ROOT / "Emby.Xtream.Plugin"
+STRYKER_CONFIG = REPO_ROOT / "stryker-config.json"
+
+# The file whose delete methods Stryker mutates by line range, and the methods that must
+# stay inside that range together with every delete call in the file.
+MUTATED_FILE = "Service/StrmSyncService.cs"
+MUTATED_METHODS = ("private int RemoveExcludedContent(", "private int CleanupOrphans(")
+MUTATE_RANGE = re.compile(r"StrmSyncService\.cs\{(\d+)\.\.(\d+)\}")
 
 # Ownership verification lives here; deletes in this file are the sanctioned ones.
 SANCTIONED_FILE = "Service/StrmOwnership.cs"
@@ -76,14 +90,47 @@ def find_unjustified(root: Path):
     return problems
 
 
+def find_uncovered_mutation_targets(source: str, stryker_config: str):
+    """Lines of the delete methods and delete calls that the Stryker range misses."""
+    patterns = [p for p in json.loads(stryker_config)["stryker-config"]["mutate"]
+                if MUTATE_RANGE.search(p)]
+    if len(patterns) != 1:
+        return [(0, "stryker-config.json must have exactly one StrmSyncService.cs{start..end} entry")]
+
+    start, end = (int(g) for g in MUTATE_RANGE.search(patterns[0]).groups())
+    lines = source.splitlines()
+    targets = []
+    for signature in MUTATED_METHODS:
+        found = [i + 1 for i, line in enumerate(lines) if signature in line]
+        if not found:
+            targets.append((0, f"method not found: {signature}"))
+        targets.extend((n, lines[n - 1].strip()) for n in found)
+    targets.extend((i + 1, line.strip()) for i, line in enumerate(lines) if DELETE_CALL.search(line))
+
+    return [(n, text) for n, text in targets if not start <= n <= end]
+
+
 def main() -> int:
     if not PLUGIN_ROOT.is_dir():
         print(f"error: plugin root not found at {PLUGIN_ROOT}", file=sys.stderr)
         return 2
 
+    uncovered = find_uncovered_mutation_targets(
+        (PLUGIN_ROOT / MUTATED_FILE).read_text(encoding="utf-8"),
+        STRYKER_CONFIG.read_text(encoding="utf-8"))
+    if uncovered:
+        print("The Stryker mutation range no longer covers the delete code in "
+              f"{MUTATED_FILE}.\n")
+        for line_no, text in uncovered:
+            print(f"  line {line_no}: {text}")
+        print("\nUpdate the StrmSyncService.cs{start..end} range in stryker-config.json so it"
+              " spans from the first delete method to the last delete call.")
+        return 1
+
     problems = find_unjustified(PLUGIN_ROOT)
     if not problems:
-        print("delete-site check: all delete calls are sanctioned or justified")
+        print("delete-site check: all delete calls are sanctioned or justified,"
+              " and the mutation range covers the delete methods")
         return 0
 
     print("Unjustified filesystem delete(s) found.\n")

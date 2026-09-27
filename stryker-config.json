@@ -3,7 +3,7 @@
     "project": "Emby.Xtream.Plugin.csproj",
     "mutate": [
       "**/Service/StrmOwnership.cs",
-      "**/Service/StrmSyncService.cs{1992..2243}"
+      "**/Service/StrmSyncService.cs{2221..2563}"
     ],
     "reporters": [
       "progress",

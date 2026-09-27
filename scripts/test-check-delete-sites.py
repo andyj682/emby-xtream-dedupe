@@ -105,11 +105,38 @@ def main() -> int:
         if guard.find_unjustified(root):
             failures.append("  StrmOwnership.cs should be exempt but was flagged")
 
+    # The mutation range must cover the delete methods and every delete call.
+    source = "\n".join([
+        "class S {",                                  # 1
+        "  private int RemoveExcludedContent(",       # 2
+        "  // delete-ok: test",                       # 3
+        "  File.Delete(x);",                          # 4
+        "  private int CleanupOrphans(",              # 5
+        "  // delete-ok: test",                       # 6
+        "  Directory.Delete(d);",                     # 7
+        "}",
+    ])
+
+    def config(rng):
+        return '{"stryker-config": {"mutate": ["**/Service/StrmSyncService.cs{%s}"]}}' % rng
+
+    range_cases = [
+        ("range covering everything is accepted", "2..7", True),
+        ("range that stops before the last delete is rejected", "2..6", False),
+        ("range that starts after the first method is rejected", "3..7", False),
+    ]
+    for name, rng, expected in range_cases:
+        actual = not guard.find_uncovered_mutation_targets(source, config(rng))
+        if actual != expected:
+            failures.append(
+                f"  {name}: expected {'accept' if expected else 'reject'}, "
+                f"got {'accept' if actual else 'reject'}")
+
     if failures:
         print("delete-site guard self-test FAILED:\n" + "\n".join(failures))
         return 1
 
-    print(f"delete-site guard self-test: {len(CASES) + 1} cases passed")
+    print(f"delete-site guard self-test: {len(CASES) + 1 + len(range_cases)} cases passed")
     return 0
 
 
