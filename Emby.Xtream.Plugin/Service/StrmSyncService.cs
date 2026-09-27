@@ -1130,6 +1130,21 @@ namespace Emby.Xtream.Plugin.Service
                                 _logger.Warn(
                                     "Series '{0}' (id={1}) returned no episodes but has {2} STRM file(s) on disk — keeping them and skipping orphan cleanup this run",
                                     series.Name, series.SeriesId, strandedStrms.Length);
+
+                                // In the failed list so the next sync fetches it again: the
+                                // watermark is already past it, so otherwise it is skipped as
+                                // unchanged until the provider touches it.
+                                lock (_failedItemsLock)
+                                {
+                                    _failedItems.Add(new FailedSyncItem
+                                    {
+                                        ItemType = "Series",
+                                        StreamId = series.SeriesId,
+                                        Name = series.Name,
+                                        CategoryId = series.CategoryId,
+                                        ErrorMessage = "Returned no episodes but has files on disk"
+                                    });
+                                }
                                 Interlocked.Increment(ref _seriesProgress.Failed);
                             }
 
@@ -1538,19 +1553,20 @@ namespace Emby.Xtream.Plugin.Service
 
                 await Task.WhenAll(tasks).ConfigureAwait(false);
 
-                // The series gate is held (above), so call the core rather than SyncSeriesAsync.
-                // It removes the series it processes from the failed list and adds back any that
-                // fail again, so series need none of the bookkeeping below.
-                if (hasSeriesItems)
-                {
-                    _movieProgress.Phase = "Retrying failed series";
-                    await SyncSeriesCoreAsync(config, cancellationToken, saveConfig, null).ConfigureAwait(false);
-                }
-
                 lock (_failedItemsLock)
                 {
                     foreach (var s in succeeded)
                         _failedItems.Remove(s);
+                }
+
+                // After the movie bookkeeping above, so a series sync that throws cannot leave
+                // successfully retried movies marked as failed. The series gate is held, so call
+                // the core rather than SyncSeriesAsync. It removes the series it processes from
+                // the failed list and adds back any that fail again.
+                if (hasSeriesItems)
+                {
+                    _movieProgress.Phase = "Retrying failed series";
+                    await SyncSeriesCoreAsync(config, cancellationToken, saveConfig, null).ConfigureAwait(false);
                 }
 
                 return true;

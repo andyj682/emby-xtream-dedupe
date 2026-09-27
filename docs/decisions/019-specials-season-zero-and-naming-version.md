@@ -62,5 +62,5 @@ old layout indefinitely.
   all episodes, the orphan ratio can exceed `OrphanSafetyThreshold` and cleanup refuses, every
   run, leaving the old `Season 01` copies as duplicates. That is the safe failure (ADR-013); the
   user clears it by raising the threshold for one sync.
-- Not covered: the "Retry failed items" path (`RetrySeriesItemAsync`) writes a different layout
-  from the main sync altogether. That is a separate fix.
+- The "Retry failed items" path used to write series in a layout of its own. ADR-020 removed it:
+  a series retry now runs the normal series sync.

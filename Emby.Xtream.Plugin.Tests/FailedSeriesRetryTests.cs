@@ -115,5 +115,36 @@ namespace Emby.Xtream.Plugin.Tests
 
             Assert.Contains(svc.FailedItems, i => i.ItemType == "Series" && i.StreamId == 1);
         }
-    }
+    
+
+        /// <summary>
+        /// An empty episode list for a show with files on disk counts as a failure, but it was
+        /// never put in the failed list, so the next sync skipped it as unchanged like any other.
+        /// </summary>
+        [Fact]
+        public async Task EmptyEpisodeListForShowOnDisk_IsProcessedAgainNextSync()
+        {
+            var config = DefaultConfig();
+            config.SmartSkipExisting = true;
+            var existing = EpisodePath("Test Show", 1, 1, "Episode Title");
+            Directory.CreateDirectory(Path.GetDirectoryName(existing));
+            File.WriteAllText(existing, "http://fake-xtream/series/user/pass/101.mp4");
+
+            var empty = "{\"info\":{\"series_id\":1,\"name\":\"Test Show\"},\"seasons\":[],\"episodes\":{}}";
+            Handler.RespondWith("action=get_series", SeriesListJson(Series(seriesId: 1, name: "Test Show", lastModified: "1000")));
+            Handler.RespondWithSequence("action=get_series_info&series_id=1", new[] { empty, empty });
+            var svc = MakeService();
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.Equal(1, svc.SeriesProgress.Failed);
+            Assert.Contains(svc.FailedItems, i => i.ItemType == "Series" && i.StreamId == 1);
+
+            Handler.RespondWith("action=get_series", SeriesListJson(Series(seriesId: 1, name: "Test Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", TwoEpisodeDetailJson());
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(EpisodePath("Test Show", 1, 2, "New Episode")));
+            Assert.DoesNotContain(svc.FailedItems, i => i.ItemType == "Series");
+        }
+}
 }
