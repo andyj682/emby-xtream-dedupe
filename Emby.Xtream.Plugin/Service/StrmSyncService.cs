@@ -105,7 +105,10 @@ namespace Emby.Xtream.Plugin.Service
         { Timeout = TimeSpan.FromSeconds(30) };
 
         // Increment when naming logic changes so existing installs force a full re-sync on next run.
-        internal const int CurrentStrmNamingVersion = 1;
+        // 2: specials moved from Season 01 / E01 to Season 00 / E00. The episode hash only covers
+        // episode IDs, so without the bump shows with misplaced specials would be skipped as
+        // unchanged and never corrected.
+        internal const int CurrentStrmNamingVersion = 2;
 
         private static void ApplyUserAgentToSharedClient()
         {
@@ -1191,10 +1194,24 @@ namespace Emby.Xtream.Plugin.Service
 
                         foreach (var seasonEntry in detail.Episodes)
                         {
+                            // The episodes map is keyed by season. Some providers only put the
+                            // season there and leave the per-episode field at 0, so the key is the
+                            // fallback, not season 1.
+                            int keySeason;
+                            var haveKeySeason = int.TryParse(
+                                seasonEntry.Key, NumberStyles.Integer, CultureInfo.InvariantCulture, out keySeason)
+                                && keySeason >= 0;
+
                             foreach (var episode in seasonEntry.Value)
                             {
-                                var seasonNum = episode.Season > 0 ? episode.Season : 1;
-                                var episodeNum = episode.EpisodeNum > 0 ? episode.EpisodeNum : 1;
+                                // Season 0 and episode 0 are specials. Forcing them to 1 put them on
+                                // the real Season 01 / E01, where a different title wrote a second
+                                // file beside the real episode. Emby files Season 00 under Specials.
+                                // From andyj682/emby-xtream-dedupe (4c3e0aa).
+                                var seasonNum = episode.Season > 0
+                                    ? episode.Season
+                                    : (haveKeySeason ? keySeason : 1);
+                                var episodeNum = episode.EpisodeNum >= 0 ? episode.EpisodeNum : 1;
                                 var seasonFolder = string.Format(CultureInfo.InvariantCulture, "Season {0:D2}", seasonNum);
                                 var seasonDir = Path.Combine(seriesDir, seasonFolder);
 

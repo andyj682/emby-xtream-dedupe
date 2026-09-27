@@ -632,5 +632,75 @@ namespace Emby.Xtream.Plugin.Tests
             Assert.Equal(2, Handler.ReceivedUrls.FindAll(u => u.Contains("get_series_info&series_id=1")).Count);
             Assert.Equal(0, svc.SeriesProgress.Failed);
         }
-}
+
+        // -----------------------------------------------------------------
+        // Specials (season 0 / episode 0) must not land on Season 01 / E01
+        // (from andyj682/emby-xtream-dedupe 4c3e0aa)
+        // -----------------------------------------------------------------
+
+        [Fact]
+        public async Task SeasonZeroAndEpisodeZero_WriteToSpecials_NotSeasonOne()
+        {
+            var config = DefaultConfig();
+            var detail = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                info = new { series_id = 1, name = "Test Show", tmdb = "" },
+                seasons = new object[0],
+                episodes = new System.Collections.Generic.Dictionary<string, object[]>
+                {
+                    ["0"] = new object[]
+                    {
+                        new { id = 1, episode_num = 2, title = "Special Two",   container_extension = "mp4", season = 0 },
+                        new { id = 2, episode_num = 0, title = "Pilot Special", container_extension = "mp4", season = 0 }
+                    },
+                    ["1"] = new object[]
+                    {
+                        new { id = 3, episode_num = 1, title = "Pilot",  container_extension = "mp4", season = 1 },
+                        new { id = 4, episode_num = 2, title = "Second", container_extension = "mp4", season = 1 }
+                    }
+                }
+            });
+            Handler.RespondWith("action=get_series", SeriesListJson(Series(seriesId: 1, name: "Test Show", lastModified: "2000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", detail);
+
+            await MakeService().SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(EpisodeStrmPath("Test Show", season: 0, episode: 2, title: "Special Two")));
+            Assert.True(File.Exists(EpisodeStrmPath("Test Show", season: 0, episode: 0, title: "Pilot Special")));
+            Assert.True(File.Exists(EpisodeStrmPath("Test Show", season: 1, episode: 1, title: "Pilot")));
+            Assert.True(File.Exists(EpisodeStrmPath("Test Show", season: 1, episode: 2, title: "Second")));
+
+            // Season 01 holds exactly the two real episodes, no specials beside them.
+            var seasonOneDir = Path.Combine(TempDir.Path, "Shows", "Test Show", "Season 01");
+            Assert.Equal(2, Directory.GetFiles(seasonOneDir, "*.strm").Length);
+        }
+
+        /// <summary>
+        /// Some providers leave the per-episode season field out and only key the episodes map
+        /// by season. Allowing season 0 through must not dump those shows into Season 00.
+        /// </summary>
+        [Fact]
+        public async Task MissingEpisodeSeasonField_FallsBackToEpisodesMapKey()
+        {
+            var config = DefaultConfig();
+            var detail = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                info = new { series_id = 1, name = "Test Show", tmdb = "" },
+                seasons = new object[0],
+                episodes = new System.Collections.Generic.Dictionary<string, object[]>
+                {
+                    ["2"] = new object[]
+                    {
+                        new { id = 201, episode_num = 5, title = "Late One", container_extension = "mp4" }
+                    }
+                }
+            });
+            Handler.RespondWith("action=get_series", SeriesListJson(Series(seriesId: 1, name: "Test Show", lastModified: "2000")));
+            Handler.RespondWith("action=get_series_info&series_id=1", detail);
+
+            await MakeService().SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.True(File.Exists(EpisodeStrmPath("Test Show", season: 2, episode: 5, title: "Late One")));
+        }
+    }
 }
