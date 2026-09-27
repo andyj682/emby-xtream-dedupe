@@ -108,6 +108,45 @@ def find_unjustified(root: Path):
     return problems
 
 
+# Stryker treats ``mutate`` entries as globs and follows the documented precedence:
+# a file is mutated when it matches at least one inclusion and no exclusion. The
+# suffix check below only catches a direct exclusion; it misses a broad exclusion
+# like ``!**/Service/*.cs`` that swallows the cleanup file even when the cleanup
+# file is also listed as an inclusion. ``PurePosixPath.match`` and ``fnmatch`` both
+# get ``**`` wrong, so translate the glob to a regex that lets ``**`` cross ``/``.
+def _glob_to_regex(glob: str) -> "re.Pattern[str]":
+    parts = []
+    i = 0
+    while i < len(glob):
+        c = glob[i]
+        if c == "*":
+            if i + 1 < len(glob) and glob[i + 1] == "*":
+                parts.append(".*")
+                i += 2
+                if i < len(glob) and glob[i] == "/":
+                    i += 1
+                continue
+            parts.append("[^/]*")
+        elif c == "?":
+            parts.append("[^/]")
+        else:
+            parts.append(re.escape(c))
+        i += 1
+    return re.compile("^" + "".join(parts) + "$")
+
+
+def _glob_matches(glob: str, path: str) -> bool:
+    return _glob_to_regex(glob).match(path) is not None
+
+
+def _stryker_mutates(patterns, path: str) -> bool:
+    inclusions = [p.lstrip("!") for p in patterns if not p.startswith("!")]
+    exclusions = [p[1:] for p in patterns if p.startswith("!")]
+    included = any(_glob_matches(pat, path) for pat in inclusions)
+    excluded = any(_glob_matches(pat, path) for pat in exclusions)
+    return included and not excluded
+
+
 def find_mutation_gaps(service_sources, stryker_config: str):
     """Problems that would let the sync's delete code escape mutation testing.
 
@@ -121,10 +160,9 @@ def find_mutation_gaps(service_sources, stryker_config: str):
     """
     problems = []
     mutate = json.loads(stryker_config)["stryker-config"]["mutate"]
-    stripped = [p.lstrip("!") for p in mutate]
-    if not any(p.endswith(MUTATED_FILE) for p in stripped):
+    if not _stryker_mutates(mutate, MUTATED_FILE):
         problems.append((MUTATED_FILE, 0, "not in the mutate list of stryker-config.json"))
-    if any(p.startswith("!") and p.lstrip("!").endswith(MUTATED_FILE) for p in mutate):
+    if any(p.startswith("!") and _glob_matches(p[1:], MUTATED_FILE) for p in mutate):
         problems.append((MUTATED_FILE, 0,
                          "excluded from the mutate list of stryker-config.json"))
 
