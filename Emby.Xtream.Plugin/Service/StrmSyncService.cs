@@ -477,6 +477,9 @@ namespace Emby.Xtream.Plugin.Service
                 var writtenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var semaphore = new SemaphoreSlim(ResolveSyncParallelism(config));
 
+                // Counted at the write: Completed minus Skipped counted failures as writes.
+                int moviesWrittenCount = 0;
+
                 // Shared Dispatcharr VOD client — only queried per-movie, after smart-skip
                 Emby.Xtream.Plugin.Client.DispatcharrClient dispatcharrVodClient = null;
                 if (config.EnableDispatcharr && !string.IsNullOrEmpty(config.DispatcharrUrl))
@@ -658,6 +661,7 @@ namespace Emby.Xtream.Plugin.Service
                             catch (Exception ex) { _logger.Debug("NFO write failed for '{0}': {1}", movie.Name, ex.Message); }
                         }
 
+                        Interlocked.Increment(ref moviesWrittenCount);
                         Interlocked.Increment(ref _movieProgress.Completed);
                         ReportTaskProgress(_movieProgress, taskProgress);
                     }
@@ -747,7 +751,7 @@ namespace Emby.Xtream.Plugin.Service
                 }
 
                 _logger.Info("Movie STRM sync completed: {0} written, {1} skipped, {2} failed",
-                    _movieProgress.Completed - _movieProgress.Skipped, _movieProgress.Skipped, _movieProgress.Failed);
+                    moviesWrittenCount, _movieProgress.Skipped, _movieProgress.Failed);
             }
             catch (Exception ex)
             {
@@ -995,6 +999,17 @@ namespace Emby.Xtream.Plugin.Service
                 var updatedHashes = new ConcurrentDictionary<string, string>();
                 int hashSkippedCount = 0;
 
+                // Counted where they happen rather than derived afterwards: "written" used to be
+                // Completed minus Skipped, and failures increment Completed too, so they were
+                // reported as writes. From andyj682/emby-xtream-dedupe (575cb64, 048d7f2).
+                int writtenCount = 0;
+                int preFetchSkippedCount = 0;
+                int unmappedSkippedCount = 0;
+                // Series already explained elsewhere in the log (failed, unmapped, empty), which
+                // the "not checked this run" warning below leaves out.
+                var reportedSeriesIds = new ConcurrentDictionary<int, byte>();
+                var emptySeries = new ConcurrentBag<string>();
+
                 // Pre-fetch directory index: subFolder → {strippedSeriesName → fullDirPath}
                 // Built once before the parallel loop (one readdir per unique subfolder, no per-task races).
                 var subFolderDirIndex = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
@@ -1037,6 +1052,7 @@ namespace Emby.Xtream.Plugin.Service
                         var seriesName = SanitizeFileName(cleanedName);
                         if (string.IsNullOrWhiteSpace(seriesName))
                         {
+                            reportedSeriesIds[series.SeriesId] = 0;
                             Interlocked.Increment(ref _seriesProgress.Failed);
                             return;
                         }
@@ -1048,6 +1064,8 @@ namespace Emby.Xtream.Plugin.Service
 
                         if (subFolder == null)
                         {
+                            reportedSeriesIds[series.SeriesId] = 0;
+                            Interlocked.Increment(ref unmappedSkippedCount);
                             Interlocked.Increment(ref _seriesProgress.Skipped);
                             Interlocked.Increment(ref _seriesProgress.Completed);
                             ReportTaskProgress(_seriesProgress, taskProgress);
@@ -1083,6 +1101,7 @@ namespace Emby.Xtream.Plugin.Service
                                     string carryHash;
                                     if (storedHashes.TryGetValue(seriesKey, out carryHash))
                                         updatedHashes[seriesKey] = carryHash;
+                                    Interlocked.Increment(ref preFetchSkippedCount);
                                     Interlocked.Increment(ref _seriesProgress.Skipped);
                                     Interlocked.Increment(ref _seriesProgress.Completed);
                                     ReportTaskProgress(_seriesProgress, taskProgress);
@@ -1106,6 +1125,7 @@ namespace Emby.Xtream.Plugin.Service
                             // Existing episodes still count as in use, so an exclusion that
                             // matches this show's folder leaves it alone (ADR-018).
                             RecordStrms(FindExistingSeriesStrms(config, subFolder, seriesName), writtenPaths);
+                            reportedSeriesIds[series.SeriesId] = 0;
                             lock (_failedItemsLock)
                             {
                                 _failedItems.Add(new FailedSyncItem
@@ -1159,7 +1179,15 @@ namespace Emby.Xtream.Plugin.Service
                                 }
                                 Interlocked.Increment(ref _seriesProgress.Failed);
                             }
+                            else
+                            {
+                                // Nothing to write and nothing to protect. This used to return
+                                // without a word; it is reported in one line after the loop.
+                                emptySeries.Add(string.Format(
+                                    CultureInfo.InvariantCulture, "'{0}' (id={1})", series.Name, series.SeriesId));
+                            }
 
+                            reportedSeriesIds[series.SeriesId] = 0;
                             Interlocked.Increment(ref _seriesProgress.Completed);
                             ReportTaskProgress(_seriesProgress, taskProgress);
                             return;
@@ -1334,11 +1362,13 @@ namespace Emby.Xtream.Plugin.Service
                                 if (addedSeriesTitles.Count < 20) addedSeriesTitles.Add(cleanedName);
                             }
                         }
+                        Interlocked.Increment(ref writtenCount);
                         Interlocked.Increment(ref _seriesProgress.Completed);
                         ReportTaskProgress(_seriesProgress, taskProgress);
                     }
                     catch (Exception ex)
                     {
+                        reportedSeriesIds[series.SeriesId] = 0;
                         _logger.Error("Failed to write STRM for series '{0}' (id={1}): [{2}] {3}", series.Name, series.SeriesId, ex.GetType().Name, ex.Message);
                         if (seriesSubFolderForFailure != null)
                         {
@@ -1414,8 +1444,40 @@ namespace Emby.Xtream.Plugin.Service
                 if (hashSkippedCount > 0)
                     _logger.Info("Episode hash skip: {0} series unchanged (episode IDs identical to previous sync)", hashSkippedCount);
 
-                _logger.Info("Series STRM sync completed: {0} written, {1} skipped, {2} failed",
-                    _seriesProgress.Completed - _seriesProgress.Skipped, _seriesProgress.Skipped, _seriesProgress.Failed);
+                if (!emptySeries.IsEmpty)
+                {
+                    var names = emptySeries.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+                    _logger.Warn(
+                        "{0} series returned no episodes and have no files on disk, so there was nothing to write: {1}{2}. They are checked again every sync; exclude them to stop that.",
+                        names.Count, string.Join(", ", names.Take(20)), names.Count > 20 ? ", ..." : string.Empty);
+                }
+
+                // Every other series leaves an episode hash behind: computed after a fetch, or
+                // carried over by the skip. One without either was skipped without a fetch and
+                // with no record of its episodes, while the run still reported success.
+                var uncheckedSeries = allSeries
+                    .Where(x => !reportedSeriesIds.ContainsKey(x.SeriesId)
+                        && !updatedHashes.ContainsKey(x.SeriesId.ToString(CultureInfo.InvariantCulture)))
+                    .Select(x => string.Format(CultureInfo.InvariantCulture, "'{0}' (id={1})", x.Name, x.SeriesId))
+                    .ToList();
+                if (uncheckedSeries.Count > 0)
+                {
+                    _logger.Warn(
+                        "{0} series were skipped as unchanged but have no stored episode list, so their episodes were not checked this run: {1}{2}",
+                        uncheckedSeries.Count, string.Join(", ", uncheckedSeries.Take(20)), uncheckedSeries.Count > 20 ? ", ..." : string.Empty);
+                }
+
+                _logger.Info(
+                    "Series STRM sync completed: {0} series, {1} written, {2} skipped ({3} unchanged, {4} same episodes{5}), {6} failed",
+                    _seriesProgress.Total,
+                    writtenCount,
+                    _seriesProgress.Skipped,
+                    preFetchSkippedCount,
+                    hashSkippedCount,
+                    unmappedSkippedCount > 0
+                        ? string.Format(CultureInfo.InvariantCulture, ", {0} in unmapped categories", unmappedSkippedCount)
+                        : string.Empty,
+                    _seriesProgress.Failed);
             }
             catch (Exception ex)
             {
