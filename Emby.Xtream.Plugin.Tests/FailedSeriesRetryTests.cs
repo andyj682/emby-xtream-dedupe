@@ -146,5 +146,68 @@ namespace Emby.Xtream.Plugin.Tests
             Assert.True(File.Exists(EpisodePath("Test Show", 1, 2, "New Episode")));
             Assert.DoesNotContain(svc.FailedItems, i => i.ItemType == "Series");
         }
-}
+
+        /// <summary>
+        /// A series sync that stops before it has loaded the catalogue has not processed the
+        /// failed series, so it must leave the failed list alone.
+        /// </summary>
+        [Fact]
+        public async Task SyncThatAbortsEarly_KeepsFailedSeries()
+        {
+            var config = DefaultConfig();
+            config.SmartSkipExisting = true;
+            var svc = await SyncWithFailedDetail(config);
+
+            // Custom folder mode with no mappings aborts before fetching anything.
+            config.SeriesFolderMode = "custom";
+            config.SeriesFolderMappings = string.Empty;
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.False(string.IsNullOrEmpty(svc.SeriesProgress.AbortReason));
+            Assert.Contains(svc.FailedItems, i => i.ItemType == "Series" && i.StreamId == 1);
+        }
+
+        /// <summary>
+        /// When every category loaded and a failed series is not in it, the provider no longer
+        /// lists it. It leaves the failed list, and orphan cleanup treats it like any other
+        /// series the provider dropped.
+        /// </summary>
+        [Fact]
+        public async Task FailedSeriesDroppedByProvider_LeavesFailedList()
+        {
+            var config = DefaultConfig();
+            config.SmartSkipExisting = true;
+            var svc = await SyncWithFailedDetail(config);
+
+            Handler.RespondWith("action=get_series", SeriesListJson(Series(seriesId: 5, name: "Other Show", lastModified: "1000")));
+            Handler.RespondWith("action=get_series_info&series_id=5", SeriesDetailJson(seriesId: 5));
+            await svc.SyncSeriesAsync(config, None, SaveConfig);
+
+            Assert.DoesNotContain(svc.FailedItems, i => i.ItemType == "Series" && i.StreamId == 1);
+        }
+
+        /// <summary>
+        /// A sync that is cancelled after it cleared the failed list, but before it reached the
+        /// failed series, must put them back.
+        /// </summary>
+        [Fact]
+        public async Task SyncCancelledPartWay_KeepsFailedSeries()
+        {
+            var config = DefaultConfig();
+            config.SmartSkipExisting = true;
+            var svc = await SyncWithFailedDetail(config);
+
+            Handler.RespondWith("action=get_series", SeriesListJson(Series(seriesId: 1, name: "Test Show", lastModified: "1000")));
+            using (var cts = new System.Threading.CancellationTokenSource())
+            {
+                // The first save comes after the catalogue loaded and the failed list was
+                // cleared, and before any series is processed. Cancelling there stops the run
+                // at exactly that point.
+                await Assert.ThrowsAnyAsync<System.OperationCanceledException>(
+                    () => svc.SyncSeriesAsync(config, cts.Token, () => cts.Cancel()));
+            }
+
+            Assert.Contains(svc.FailedItems, i => i.ItemType == "Series" && i.StreamId == 1);
+        }
+    }
 }

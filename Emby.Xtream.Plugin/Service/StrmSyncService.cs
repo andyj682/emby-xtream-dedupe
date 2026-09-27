@@ -818,11 +818,12 @@ namespace Emby.Xtream.Plugin.Service
             // The watermark moves past a series before its detail is fetched, so after a failed
             // fetch it looks unchanged, and with smart skip on and its folder on disk it would be
             // skipped without a fetch on every later run.
+            // The list itself is only cleared once the catalogue has loaded (below): a run that
+            // stops before then has not processed these series and must not forget them.
             List<FailedSyncItem> previouslyFailedSeries;
             lock (_failedItemsLock)
             {
                 previouslyFailedSeries = _failedItems.Where(i => i.ItemType == "Series").ToList();
-                _failedItems.RemoveAll(i => i.ItemType == "Series");
             }
             var forcedSeriesIds = new HashSet<int>(previouslyFailedSeries.Select(i => i.StreamId));
             var seriesSyncStart = DateTime.UtcNow;
@@ -903,21 +904,32 @@ namespace Emby.Xtream.Plugin.Service
                         excludedSeriesItems.Count, fetchedSeries.Count);
                 }
 
-                // A previously failed series this run cannot see (its category failed to load, or
-                // the provider dropped it) keeps its place in the failed list rather than vanishing
-                // as if it had been dealt with. Excluded series are not carried over.
+                // The catalogue has loaded, so this run accounts for every previously failed series:
+                // it is processed below (and re-added if it fails again), or it is not listed.
+                lock (_failedItemsLock) { _failedItems.RemoveAll(i => i.ItemType == "Series"); }
+
                 if (forcedSeriesIds.Count > 0)
                 {
                     var seenIds = new HashSet<int>(fetchedSeries.Select(x => x.SeriesId));
                     var unseen = previouslyFailedSeries
                         .Where(i => !seenIds.Contains(i.StreamId) && !ContentExclusionFilter.IsExcluded(excludedSeriesSet, i.StreamId))
                         .ToList();
-                    if (unseen.Count > 0)
+                    if (unseen.Count > 0 && seriesFetch.HadFailures)
                     {
+                        // Probably in a category that failed to load. It stays in the failed list;
+                        // orphan cleanup does not run on this sync, so its files are safe.
                         _logger.Warn(
-                            "{0} series that failed last time are not in this run's catalogue and stay in the failed list: {1}",
+                            "{0} series that failed last time were not seen because a category failed to load; they stay in the failed list: {1}",
                             unseen.Count, string.Join(", ", unseen.Select(i => i.Name)));
                         lock (_failedItemsLock) { _failedItems.AddRange(unseen); }
+                    }
+                    else if (unseen.Count > 0)
+                    {
+                        // Every category loaded, so the provider no longer lists them. They leave
+                        // the failed list and orphan cleanup treats them like any dropped series.
+                        _logger.Info(
+                            "{0} series that failed last time are no longer in the catalogue: {1}",
+                            unseen.Count, string.Join(", ", unseen.Select(i => i.Name)));
                     }
 
                     _logger.Info("Re-processing {0} series that failed last time", forcedSeriesIds.Count - unseen.Count);
@@ -1410,6 +1422,15 @@ namespace Emby.Xtream.Plugin.Service
                 _logger.Error("Series sync failed: {0}", ex.Message);
                 _seriesProgress.Phase = "Failed: " + ex.Message;
                 seriesSyncSuccess = false;
+
+                // A run that stopped part-way may have cleared the failed list before reaching
+                // these series. Put back any that are not in it, so they are retried next time.
+                lock (_failedItemsLock)
+                {
+                    var listed = new HashSet<int>(_failedItems.Where(i => i.ItemType == "Series").Select(i => i.StreamId));
+                    _failedItems.AddRange(previouslyFailedSeries.Where(i => !listed.Contains(i.StreamId)));
+                }
+
                 throw;
             }
             finally

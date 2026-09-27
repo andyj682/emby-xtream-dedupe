@@ -41,8 +41,14 @@ exclusion removal, orphan cleanup) that would each need a guard in that mode.
 ## Decision
 
 - The series sync forces every series in the failed list through again: both skip paths (the
-  pre-fetch skip and the episode-hash skip) are bypassed for them. A failed series that is not in
-  this run's catalogue, for example because its category failed to load, stays in the list.
+  pre-fetch skip and the episode-hash skip) are bypassed for them.
+- The failed list is only cleared once the catalogue has loaded, and a run that throws after that
+  puts back the series it started with. A run that aborts or fails early therefore forgets
+  nothing.
+- A failed series missing from the catalogue stays in the list only when a category failed to
+  load, since orphan cleanup does not run then. When every category loaded, the provider no
+  longer lists it: it leaves the list and orphan cleanup treats it like any dropped series.
+  Keeping it without protecting its files would have let cleanup delete them anyway.
 - An empty episode list for a show with files on disk now adds the series to the failed list.
 - "Retry failed items" retries movies as before, then runs a normal series sync if the list held
   any series. `RetrySeriesItemAsync` is removed. The retry already holds the series gate, so it
@@ -54,7 +60,7 @@ exclusion removal, orphan cleanup) that would each need a guard in that mode.
   next scheduled sync without anyone pressing retry.
 - A retry that includes series fetches the whole series catalogue and appears in history as a
   series sync, with everything a series sync does, including orphan cleanup where enabled.
-- The retry endpoint reports how many items are still in the failed list, since its movie
-  counters do not cover series.
+- The retry endpoint reports, for the items it started with, how many are still failing. Its
+  movie counters do not cover series, and the failed list can gain new series during the run.
 - A retried movie still gets the plain provider URL even with Dispatcharr multi-version on, until
   the next sync. Movies keep their own retry writer; it produces the same paths as the sync.

@@ -705,6 +705,7 @@ namespace Emby.Xtream.Plugin.Api
             // a generic ServiceStack error DTO instead of the SyncResult the UI expects.
             try
             {
+                var retried = syncService.FailedItems.ToList();
                 var ran = await syncService.RetryFailedAsync(CancellationToken.None).ConfigureAwait(false);
 
                 // The IsRunning check above is a fast path; the service holds the real gate.
@@ -712,19 +713,20 @@ namespace Emby.Xtream.Plugin.Api
                 if (!ran)
                     return new SyncResult { Success = false, Message = "A sync is already running." };
 
-                // MovieProgress only counts movies; series are retried by a series sync. The
-                // failed list covers both, so report what is still in it.
-                var p = syncService.MovieProgress;
-                var stillFailed = syncService.FailedItems.Count;
+                // Counted over the items this retry started with. MovieProgress only covers
+                // movies, since series are retried by a series sync, and the failed list can
+                // also gain series that failed for the first time during that sync.
+                var remaining = syncService.FailedItems;
+                var stillFailed = retried.Count(r => remaining.Any(f => f.ItemType == r.ItemType && f.StreamId == r.StreamId));
                 return new SyncResult
                 {
                     Success = true,
                     Message = stillFailed == 0
                         ? "Retry complete."
                         : string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                            "Retry complete. {0} item(s) still failed.", stillFailed),
-                    Total = p.Total,
-                    Completed = p.Completed,
+                            "Retry complete. {0} of {1} item(s) still failed.", stillFailed, retried.Count),
+                    Total = retried.Count,
+                    Completed = retried.Count,
                     Failed = stillFailed
                 };
             }
