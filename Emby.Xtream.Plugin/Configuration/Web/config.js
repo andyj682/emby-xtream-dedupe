@@ -613,7 +613,9 @@ function (BaseView, loading) {
             config.EnableSeriesMetadataLookup = fallbackOn;
             config.TvdbFolderIdOverrides = view.querySelector('.txtTvdbFolderIdOverrides').value;
 
-            ApiClient.updatePluginConfiguration(pluginId, config).then(function () {
+            // Returned so a failed save reaches the catch below. Without it the spinner stayed
+            // up and no error was shown.
+            return ApiClient.updatePluginConfiguration(pluginId, config).then(function () {
                 Dashboard.processPluginConfigurationUpdateResult();
                 applyScheduleToTasks(view, config, ApiClient);
                 if (typeof callback === 'function') callback();
