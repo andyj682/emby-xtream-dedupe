@@ -814,7 +814,18 @@ namespace Emby.Xtream.Plugin.Service
             CheckAndUpgradeNamingVersion(config, saveConfig);
             _seriesProgress = new SyncProgress { IsRunning = true, Phase = "Starting series sync" };
             _episodeProgress = new SyncProgress { IsRunning = true };
-            lock (_failedItemsLock) { _failedItems.RemoveAll(i => i.ItemType == "Series"); }
+            // Series that failed last time are processed again whatever their LastModified says.
+            // The watermark moves past a series before its detail is fetched, so after a failed
+            // fetch it looks unchanged, and with smart skip on and its folder on disk it would be
+            // skipped without a fetch on every later run.
+            // The list itself is only cleared once the catalogue has loaded (below): a run that
+            // stops before then has not processed these series and must not forget them.
+            List<FailedSyncItem> previouslyFailedSeries;
+            lock (_failedItemsLock)
+            {
+                previouslyFailedSeries = _failedItems.Where(i => i.ItemType == "Series").ToList();
+            }
+            var forcedSeriesIds = new HashSet<int>(previouslyFailedSeries.Select(i => i.StreamId));
             var seriesSyncStart = DateTime.UtcNow;
             var seriesSyncSuccess = true;
             var addedSeriesTitles = new List<string>();
@@ -891,6 +902,37 @@ namespace Emby.Xtream.Plugin.Service
 
                     _logger.Info("Per-item exclusions: skipping {0} of {1} series",
                         excludedSeriesItems.Count, fetchedSeries.Count);
+                }
+
+                // The catalogue has loaded, so this run accounts for every previously failed series:
+                // it is processed below (and re-added if it fails again), or it is not listed.
+                lock (_failedItemsLock) { _failedItems.RemoveAll(i => i.ItemType == "Series"); }
+
+                if (forcedSeriesIds.Count > 0)
+                {
+                    var seenIds = new HashSet<int>(fetchedSeries.Select(x => x.SeriesId));
+                    var unseen = previouslyFailedSeries
+                        .Where(i => !seenIds.Contains(i.StreamId) && !ContentExclusionFilter.IsExcluded(excludedSeriesSet, i.StreamId))
+                        .ToList();
+                    if (unseen.Count > 0 && seriesFetch.HadFailures)
+                    {
+                        // Probably in a category that failed to load. It stays in the failed list;
+                        // orphan cleanup does not run on this sync, so its files are safe.
+                        _logger.Warn(
+                            "{0} series that failed last time were not seen because a category failed to load; they stay in the failed list: {1}",
+                            unseen.Count, string.Join(", ", unseen.Select(i => i.Name)));
+                        lock (_failedItemsLock) { _failedItems.AddRange(unseen); }
+                    }
+                    else if (unseen.Count > 0)
+                    {
+                        // Every category loaded, so the provider no longer lists them. They leave
+                        // the failed list and orphan cleanup treats them like any dropped series.
+                        _logger.Info(
+                            "{0} series that failed last time are no longer in the catalogue: {1}",
+                            unseen.Count, string.Join(", ", unseen.Select(i => i.Name)));
+                    }
+
+                    _logger.Info("Re-processing {0} series that failed last time", forcedSeriesIds.Count - unseen.Count);
                 }
 
                 // Delta sync: split into changed and unchanged using LastModified timestamp
@@ -1020,7 +1062,8 @@ namespace Emby.Xtream.Plugin.Service
                             lock (_historyLock) { if (seriesLm > maxSeriesTs) maxSeriesTs = seriesLm; }
                         }
 
-                        var isChangedSeries = lastSeriesTs == 0 || seriesLm > lastSeriesTs;
+                        var isForcedSeries = forcedSeriesIds.Contains(series.SeriesId);
+                        var isChangedSeries = lastSeriesTs == 0 || seriesLm > lastSeriesTs || isForcedSeries;
 
                         // Pre-fetch smart skip: for delta-unchanged series, locate folder on disk by name
                         // (avoids one get_series_info HTTP call per unchanged series)
@@ -1099,6 +1142,21 @@ namespace Emby.Xtream.Plugin.Service
                                 _logger.Warn(
                                     "Series '{0}' (id={1}) returned no episodes but has {2} STRM file(s) on disk — keeping them and skipping orphan cleanup this run",
                                     series.Name, series.SeriesId, strandedStrms.Length);
+
+                                // In the failed list so the next sync fetches it again: the
+                                // watermark is already past it, so otherwise it is skipped as
+                                // unchanged until the provider touches it.
+                                lock (_failedItemsLock)
+                                {
+                                    _failedItems.Add(new FailedSyncItem
+                                    {
+                                        ItemType = "Series",
+                                        StreamId = series.SeriesId,
+                                        Name = series.Name,
+                                        CategoryId = series.CategoryId,
+                                        ErrorMessage = "Returned no episodes but has files on disk"
+                                    });
+                                }
                                 Interlocked.Increment(ref _seriesProgress.Failed);
                             }
 
@@ -1168,6 +1226,7 @@ namespace Emby.Xtream.Plugin.Service
 
                         string previousHash;
                         if (config.SmartSkipExisting
+                            && !isForcedSeries
                             && storedHashes.TryGetValue(epHashKey, out previousHash)
                             && previousHash == currentEpHash
                             && Directory.Exists(seriesDir))
@@ -1363,6 +1422,15 @@ namespace Emby.Xtream.Plugin.Service
                 _logger.Error("Series sync failed: {0}", ex.Message);
                 _seriesProgress.Phase = "Failed: " + ex.Message;
                 seriesSyncSuccess = false;
+
+                // A run that stopped part-way may have cleared the failed list before reaching
+                // these series. Put back any that are not in it, so they are retried next time.
+                lock (_failedItemsLock)
+                {
+                    var listed = new HashSet<int>(_failedItems.Where(i => i.ItemType == "Series").Select(i => i.StreamId));
+                    _failedItems.AddRange(previouslyFailedSeries.Where(i => !listed.Contains(i.StreamId)));
+                }
+
                 throw;
             }
             finally
@@ -1417,7 +1485,18 @@ namespace Emby.Xtream.Plugin.Service
         /// Re-attempts the items that failed in the last sync.
         /// </summary>
         /// <returns>False when a movie sync or another retry was already running.</returns>
-        public async Task<bool> RetryFailedAsync(CancellationToken cancellationToken)
+        public Task<bool> RetryFailedAsync(CancellationToken cancellationToken)
+            => RetryFailedAsync(null, null, cancellationToken);
+
+        /// <summary>
+        /// Retries failed items. Movies are rewritten one by one; series go through a normal
+        /// series sync, which re-processes every series in the failed list (see
+        /// SyncSeriesCoreAsync), so a retried series is written exactly as the sync writes it.
+        /// </summary>
+        /// <param name="configOverride">Configuration to use; the plugin's own when null. For tests.</param>
+        /// <param name="saveConfig">Persists the configuration; the plugin's own save when null.</param>
+        internal async Task<bool> RetryFailedAsync(
+            PluginConfiguration configOverride, Action saveConfig, CancellationToken cancellationToken)
         {
             List<FailedSyncItem> items;
             lock (_failedItemsLock) { items = _failedItems.ToList(); }
@@ -1453,8 +1532,15 @@ namespace Emby.Xtream.Plugin.Service
                     }
                 }
 
-                var config = Plugin.Instance.Configuration;
-                _movieProgress = new SyncProgress { IsRunning = true, Phase = "Retrying failed items", Total = items.Count };
+                var config = configOverride ?? Plugin.Instance.Configuration;
+                if (saveConfig == null)
+                {
+                    saveConfig = () => Plugin.Instance.SaveConfiguration();
+                }
+
+                var movieItems = items.Where(i => i.ItemType == "Movie").ToList();
+                var hasSeriesItems = items.Any(i => i.ItemType == "Series");
+                _movieProgress = new SyncProgress { IsRunning = true, Phase = "Retrying failed items", Total = movieItems.Count };
                 retryStarted = true;
 
                 var semaphore = new SemaphoreSlim(ResolveSyncParallelism(config));
@@ -1464,15 +1550,12 @@ namespace Emby.Xtream.Plugin.Service
                 var succeeded = new List<FailedSyncItem>();
                 var succeededLock = new object();
 
-                var tasks = items.Select(async item =>
+                var tasks = movieItems.Select(async item =>
                 {
                     await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
                     try
                     {
-                        if (item.ItemType == "Movie")
-                            await RetryMovieItemAsync(item, config, categoryNames, folderMappings, writtenPaths, cancellationToken).ConfigureAwait(false);
-                        else if (item.ItemType == "Series")
-                            await RetrySeriesItemAsync(item, config, cancellationToken).ConfigureAwait(false);
+                        await RetryMovieItemAsync(item, config, categoryNames, folderMappings, writtenPaths, cancellationToken).ConfigureAwait(false);
 
                         lock (succeededLock) { succeeded.Add(item); }
                         Interlocked.Increment(ref _movieProgress.Completed);
@@ -1495,6 +1578,16 @@ namespace Emby.Xtream.Plugin.Service
                 {
                     foreach (var s in succeeded)
                         _failedItems.Remove(s);
+                }
+
+                // After the movie bookkeeping above, so a series sync that throws cannot leave
+                // successfully retried movies marked as failed. The series gate is held, so call
+                // the core rather than SyncSeriesAsync. It removes the series it processes from
+                // the failed list and adds back any that fail again.
+                if (hasSeriesItems)
+                {
+                    _movieProgress.Phase = "Retrying failed series";
+                    await SyncSeriesCoreAsync(config, cancellationToken, saveConfig, null).ConfigureAwait(false);
                 }
 
                 return true;
@@ -1622,59 +1715,6 @@ namespace Emby.Xtream.Plugin.Service
             }
 
             await Task.CompletedTask.ConfigureAwait(false);
-        }
-
-        private async Task RetrySeriesItemAsync(
-            FailedSyncItem item,
-            PluginConfiguration config,
-            CancellationToken cancellationToken)
-        {
-            var detail = await FetchSeriesDetailAsync(item.StreamId, config, cancellationToken).ConfigureAwait(false);
-            if (detail == null || detail.Episodes == null || detail.Episodes.Count == 0) return;
-
-            var cleanedName = config.EnableContentNameCleaning
-                ? ContentNameCleaner.CleanContentName(item.Name, config.ContentRemoveTerms)
-                : item.Name;
-
-            var seriesDir = Path.Combine(config.StrmLibraryPath, "Shows", SanitizeFileName(cleanedName));
-            Directory.CreateDirectory(seriesDir);
-
-            foreach (var kvp in detail.Episodes)
-            {
-                var seasonNum = kvp.Key;
-                var episodes = kvp.Value;
-                if (episodes == null) continue;
-
-                var seasonDir = Path.Combine(seriesDir, string.Format(CultureInfo.InvariantCulture, "Season {0:D2}", seasonNum));
-                Directory.CreateDirectory(seasonDir);
-
-                foreach (var ep in episodes)
-                {
-                    if (ep == null) continue;
-                    var epFile = string.Format(CultureInfo.InvariantCulture,
-                        "S{0:D2}E{1:D2}.strm", seasonNum, ep.EpisodeNum);
-                    var epPath = Path.Combine(seasonDir, epFile);
-
-                    var ext = !string.IsNullOrEmpty(ep.ContainerExtension) ? ep.ContainerExtension : "mp4";
-                    var epUrl = string.Format(CultureInfo.InvariantCulture,
-                        "{0}/series/{1}/{2}/{3}.{4}",
-                        config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), ep.Id, ext);
-
-                    var fileExists = File.Exists(epPath);
-
-                    // Skip write if file content is already up to date (avoids Emby library re-scan)
-                    if (!fileExists || File.ReadAllText(epPath) != epUrl)
-                    {
-                        Directory.CreateDirectory(seasonDir);
-                        File.WriteAllText(epPath, epUrl);
-
-                        if (!fileExists)
-                        {
-                            Interlocked.Increment(ref _episodeProgress.Added);
-                        }
-                    }
-                }
-            }
         }
 
         private void AddHistoryEntry(SyncHistoryEntry entry)
