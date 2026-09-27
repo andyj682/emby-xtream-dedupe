@@ -712,14 +712,20 @@ namespace Emby.Xtream.Plugin.Api
                 if (!ran)
                     return new SyncResult { Success = false, Message = "A sync is already running." };
 
+                // MovieProgress only counts movies; series are retried by a series sync. The
+                // failed list covers both, so report what is still in it.
                 var p = syncService.MovieProgress;
+                var stillFailed = syncService.FailedItems.Count;
                 return new SyncResult
                 {
                     Success = true,
-                    Message = "Retry complete.",
+                    Message = stillFailed == 0
+                        ? "Retry complete."
+                        : string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                            "Retry complete. {0} item(s) still failed.", stillFailed),
                     Total = p.Total,
                     Completed = p.Completed,
-                    Failed = p.Failed
+                    Failed = stillFailed
                 };
             }
             catch (Exception ex)
