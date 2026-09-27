@@ -11,7 +11,6 @@ namespace Emby.Xtream.Plugin.Tests
 {
     public class XtreamLiveStreamTests
     {
-        #if EMBY_4_10
         [Fact]
         public void ExposesConsumerLifecycleMethodsForEmbyRuntimeCompatibility()
         {
@@ -87,6 +86,8 @@ namespace Emby.Xtream.Plugin.Tests
             }
         }
 
+        // ILiveStream only has these members in the 4.10 SDK, so this check needs that build.
+#if EMBY_4_10
         [Fact]
         public void AddConsumerAndRemoveConsumerAreNowOnILiveStreamInterface()
         {

@@ -94,9 +94,13 @@ A configuration UI embedded in Emby's plugin settings with five tabs.
 
 ### Step 1: Download the Plugin
 
-Download `Emby.Xtream.Plugin.dll` from the [latest release](../../releases/latest).
+Download `Emby.Xtream.Plugin.dll` from the [latest release](../../releases/latest). From
+v1.4.98 the same file works on Emby Server 4.9 and 4.10.
 
 > Only the single DLL file is needed — no other dependencies.
+
+> Releases also carry `Emby.Xtream.Plugin-4.10.dll`. It is the same file under the name older
+> 4.10 installs expect, so either one is fine.
 
 <details>
 <summary><strong>Build from source (alternative)</strong></summary>
@@ -189,6 +193,11 @@ If you use [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) for stream 
 ### Updating the Plugin
 
 Download the latest DLL from [Releases](../../releases/latest), replace the file in your plugins directory, and restart Emby. Your configuration is preserved across updates.
+
+If Emby Server moved to 4.10 while you were on plugin v1.4.97 or older, the plugin stops loading
+with `Method 'AddConsumer' ... does not have an implementation`, so its own update button is not
+available. Download `Emby.Xtream.Plugin.dll` from the latest release by hand once. After that,
+updates work on both versions.
 
 ---
 
