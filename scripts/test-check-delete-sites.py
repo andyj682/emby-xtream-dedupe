@@ -159,6 +159,13 @@ def main() -> int:
          '"**/Service/StrmSyncService.Cleanup.cs", '
          '"!**/Service/*.cs"]}}',
          False),
+        ("a bracket-class exclusion of the cleanup file is rejected",
+         {"Service/StrmSyncService.Cleanup.cs": delete_line,
+          "Service/StrmSyncService.cs": ""},
+         '{"stryker-config": {"mutate": ['
+         '"**/Service/StrmSyncService.Cleanup.cs", '
+         '"!**/Service/*.[cC]s"]}}',
+         False),
     ]
     for name, sources, config, expected in range_cases:
         actual = not guard.find_mutation_gaps(sources, config)

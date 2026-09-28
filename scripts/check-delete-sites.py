@@ -114,6 +114,29 @@ def find_unjustified(root: Path):
 # like ``!**/Service/*.cs`` that swallows the cleanup file even when the cleanup
 # file is also listed as an inclusion. ``PurePosixPath.match`` and ``fnmatch`` both
 # get ``**`` wrong, so translate the glob to a regex that lets ``**`` cross ``/``.
+# Stryker routes ``mutate`` through DotNet.Glob, which honors ``[...]`` character
+# classes (e.g. ``*.[cC]s`` matches ``.cs`` and ``.Cs``); escape them as literals
+# and the checker disagrees with Stryker on the exact files the exclusion catches.
+def _glob_class_to_regex(class_body: str) -> str:
+    """Translate one bracket character class body to a regex character class.
+
+    Supports negation via a leading ``!`` or ``^`` (DotNet.Glob accepts both),
+    otherwise the class lists literal characters and ``a-z`` ranges verbatim.
+    An unclosed bracket is treated as a literal so the glob still compiles.
+    """
+    if not class_body:
+        return r"\["
+    negated = class_body[0] in "!^"
+    body = class_body[1:] if negated else class_body
+    inner = []
+    for ch in body:
+        if ch in r"\][^":
+            inner.append("\\" + ch)
+        else:
+            inner.append(ch)
+    return "[^" + "".join(inner) + "]" if negated else "[" + "".join(inner) + "]"
+
+
 def _glob_to_regex(glob: str) -> "re.Pattern[str]":
     parts = []
     i = 0
@@ -129,6 +152,15 @@ def _glob_to_regex(glob: str) -> "re.Pattern[str]":
             parts.append("[^/]*")
         elif c == "?":
             parts.append("[^/]")
+        elif c == "[":
+            end = glob.find("]", i + 1)
+            if end == -1:
+                parts.append(re.escape(c))
+                i += 1
+                continue
+            parts.append(_glob_class_to_regex(glob[i + 1:end]))
+            i = end + 1
+            continue
         else:
             parts.append(re.escape(c))
         i += 1
