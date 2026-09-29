@@ -123,49 +123,65 @@ def main() -> int:
     covered = '{"stryker-config": {"mutate": ["**/Service/StrmSyncService.Cleanup.cs"]}}'
     not_covered = '{"stryker-config": {"mutate": ["**/Service/StrmOwnership.cs"]}}'
     delete_line = "  // delete-ok: test\n  File.Delete(x);"
+    # A cleanup file that defines every method the guard requires, so each case below is
+    # rejected only for the reason it is about.
+    cleanup_file = "\n".join(
+        f"        private static int {m}(string a)" for m in guard.CLEANUP_METHODS) + "\n" + delete_line
     range_cases = [
         ("delete code in the cleanup file is accepted",
-         {"Service/StrmSyncService.Cleanup.cs": delete_line, "Service/StrmSyncService.cs": "class S {}"},
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file, "Service/StrmSyncService.cs": "class S {}"},
          covered, True),
         ("a delete in the main service file is rejected",
-         {"Service/StrmSyncService.Cleanup.cs": "", "Service/StrmSyncService.cs": delete_line},
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file, "Service/StrmSyncService.cs": delete_line},
          covered, False),
         ("DeleteOwnedFiles in the main service file is rejected",
-         {"Service/StrmSyncService.Cleanup.cs": "", "Service/StrmSyncService.cs": "StrmOwnership.DeleteOwnedFiles(d);"},
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file, "Service/StrmSyncService.cs": "StrmOwnership.DeleteOwnedFiles(d);"},
          covered, False),
         ("DeleteOwnedFiles split across lines in the main service file is rejected",
-         {"Service/StrmSyncService.Cleanup.cs": "",
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file,
           "Service/StrmSyncService.cs": "StrmOwnership\n    .DeleteOwnedFiles(d);"},
          covered, False),
         ("the cleanup file missing from Stryker is rejected",
-         {"Service/StrmSyncService.Cleanup.cs": delete_line},
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file},
          not_covered, False),
         ("the cleanup file excluded from Stryker is rejected",
-         {"Service/StrmSyncService.Cleanup.cs": delete_line,
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file,
           "Service/StrmSyncService.cs": ""},
          '{"stryker-config": {"mutate": ["!**/Service/StrmSyncService.Cleanup.cs"]}}',
          False),
         ("the cleanup file listed alongside an exclusion for another file is accepted",
-         {"Service/StrmSyncService.Cleanup.cs": delete_line,
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file,
           "Service/StrmSyncService.cs": ""},
          '{"stryker-config": {"mutate": ['
          '"!**/Service/StrmSyncService.cs", '
          '"**/Service/StrmSyncService.Cleanup.cs"]}}',
          True),
         ("a broad exclusion of the cleanup file is rejected",
-         {"Service/StrmSyncService.Cleanup.cs": delete_line,
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file,
           "Service/StrmSyncService.cs": ""},
          '{"stryker-config": {"mutate": ['
          '"**/Service/StrmSyncService.Cleanup.cs", '
          '"!**/Service/*.cs"]}}',
          False),
         ("a bracket-class exclusion of the cleanup file is rejected",
-         {"Service/StrmSyncService.Cleanup.cs": delete_line,
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file,
           "Service/StrmSyncService.cs": ""},
          '{"stryker-config": {"mutate": ['
          '"**/Service/StrmSyncService.Cleanup.cs", '
          '"!**/Service/*.[cC]s"]}}',
          False),
+        ("a cleanup method moved back to the main service file is rejected",
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file,
+          "Service/StrmSyncService.cs": "        private int CleanupOrphans(\n            string rootPath)"},
+         covered, False),
+        ("a cleanup method missing from the cleanup file is rejected",
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file.replace("RemoveExcludedContent", "SomethingElse"),
+          "Service/StrmSyncService.cs": ""},
+         covered, False),
+        ("a call to a cleanup method from the main service file is accepted",
+         {"Service/StrmSyncService.Cleanup.cs": cleanup_file,
+          "Service/StrmSyncService.cs": "            removed += CleanupOrphans(root, paths);"},
+         covered, True),
     ]
     for name, sources, config, expected in range_cases:
         actual = not guard.find_mutation_gaps(sources, config)

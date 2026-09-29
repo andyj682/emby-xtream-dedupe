@@ -35,6 +35,27 @@ STRYKER_CONFIG = REPO_ROOT / "stryker-config.json"
 MUTATED_FILE = "Service/StrmSyncService.Cleanup.cs"
 SERVICE_FILES = re.compile(r"^Service/StrmSyncService(\..+)?\.cs$")
 
+# The methods that decide what the sync deletes. Checking only the delete calls is not enough:
+# CleanupOrphans could move back to StrmSyncService.cs and call a delete helper left in the
+# cleanup file, and Stryker would silently stop mutating the part that decides.
+CLEANUP_METHODS = (
+    "RemoveExcludedContent",
+    "CleanupOrphans",
+    "BuildWrittenDirectories",
+    "RecordExistingStrms",
+    "RecordStrms",
+    "NormalizeDirectory",
+    "FindExistingSeriesStrms",
+)
+
+
+def _defines(text: str, method: str) -> bool:
+    """True when ``text`` declares ``method`` (a modifier, a return type, the name, then '(')."""
+    return re.search(
+        r"^\s*(?:(?:private|internal|public|protected|static|async)\s+)+[\w<>\[\],\s]+?\b"
+        + re.escape(method) + r"\s*\(",
+        text, re.MULTILINE) is not None
+
 # Delete invocations. Matches ``File\Delete`` / ``Directory\Delete`` / ``StrmOwnership\DeleteOwnedFiles``
 # whether they sit on one line or split across lines: a method receiver on its own line followed by
 # a newline and ``.Delete`` / ``.DeleteOwnedFiles`` is a legal C# form and would otherwise slip past
@@ -198,11 +219,19 @@ def find_mutation_gaps(service_sources, stryker_config: str):
         problems.append((MUTATED_FILE, 0,
                          "excluded from the mutate list of stryker-config.json"))
 
+    cleanup_text = service_sources.get(MUTATED_FILE, "")
+    for method in CLEANUP_METHODS:
+        if not _defines(cleanup_text, method):
+            problems.append((MUTATED_FILE, 0, f"does not define {method}"))
+
     for rel, text in sorted(service_sources.items()):
         if rel == MUTATED_FILE:
             continue
         for line_no, matched in _iter_pattern(DELETE_CODE, text):
             problems.append((rel, line_no, matched))
+        for method in CLEANUP_METHODS:
+            if _defines(text, method):
+                problems.append((rel, 0, f"defines {method}, which belongs in {MUTATED_FILE}"))
 
     return problems
 
