@@ -11,10 +11,11 @@ or carry a ``delete-ok:`` comment saying why it is not touching library content.
 comment is the point. It makes "I am deleting something the user did not give me"
 a decision someone had to write down.
 
-It also checks that the Stryker mutation range in ``stryker-config.json`` still covers the
-delete methods of ``StrmSyncService``. Stryker only takes a line range, and code added above
-those methods moves them out of it; the mutation job then tests unrelated code and keeps
-passing, which is how the range went stale unnoticed once already.
+It also checks that the mutation tests (``stryker-config.json``) reach the sync's delete code.
+That code lives in ``StrmSyncService.Cleanup.cs`` so Stryker can mutate the whole file: every
+delete call in the sync service must be in that file, and the file must be in Stryker's list.
+A delete added elsewhere in the service would otherwise go untested while the job still passed
+(issue #75).
 
 Run: python3 scripts/check-delete-sites.py
 Exits non-zero and prints every unjustified site.
@@ -29,16 +30,45 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_ROOT = REPO_ROOT / "Emby.Xtream.Plugin"
 STRYKER_CONFIG = REPO_ROOT / "stryker-config.json"
 
-# The file whose delete methods Stryker mutates by line range, and the methods that must
-# stay inside that range together with every delete call in the file.
-MUTATED_FILE = "Service/StrmSyncService.cs"
-MUTATED_METHODS = ("private int RemoveExcludedContent(", "private int CleanupOrphans(")
-MUTATE_RANGE = re.compile(r"StrmSyncService\.cs\{(\d+)\.\.(\d+)\}")
+# The sync's delete code, which the mutation tests must cover, and the files it must not leak
+# into. See issue #75.
+MUTATED_FILE = "Service/StrmSyncService.Cleanup.cs"
+SERVICE_FILES = re.compile(r"^Service/StrmSyncService(\..+)?\.cs$")
+
+# The methods that decide what the sync deletes. Checking only the delete calls is not enough:
+# CleanupOrphans could move back to StrmSyncService.cs and call a delete helper left in the
+# cleanup file, and Stryker would silently stop mutating the part that decides.
+CLEANUP_METHODS = (
+    "RemoveExcludedContent",
+    "CleanupOrphans",
+    "BuildWrittenDirectories",
+    "RecordExistingStrms",
+    "RecordStrms",
+    "NormalizeDirectory",
+    "FindExistingSeriesStrms",
+)
+
+
+def _defines(text: str, method: str) -> bool:
+    """True when ``text`` declares ``method`` (a modifier, a return type, the name, then '(')."""
+    return re.search(
+        r"^\s*(?:(?:private|internal|public|protected|static|async)\s+)+[\w<>\[\],\s]+?\b"
+        + re.escape(method) + r"\s*\(",
+        text, re.MULTILINE) is not None
+
+# Delete invocations. Matches ``File\Delete`` / ``Directory\Delete`` / ``StrmOwnership\DeleteOwnedFiles``
+# whether they sit on one line or split across lines: a method receiver on its own line followed by
+# a newline and ``.Delete`` / ``.DeleteOwnedFiles`` is a legal C# form and would otherwise slip past
+# the guard. We strip whitespace and newlines inside a small window before matching.
+DELETE_CODE = re.compile(
+    r"\b(?:File|Directory)\s*\.\s*Delete\s*\(|StrmOwnership\s*\.\s*DeleteOwnedFiles\s*\(",
+    re.DOTALL,
+)
 
 # Ownership verification lives here; deletes in this file are the sanctioned ones.
 SANCTIONED_FILE = "Service/StrmOwnership.cs"
 
-DELETE_CALL = re.compile(r"\b(?:File|Directory)\.Delete\s*\(")
+DELETE_CALL = re.compile(r"\b(?:File|Directory)\s*\.\s*Delete\s*\(", re.DOTALL)
 
 # Must be a real line comment carrying a reason, not the text "delete-ok:" appearing
 # anywhere. A string literal or an unrelated neighbouring line must not approve a delete.
@@ -68,6 +98,16 @@ def is_justified(lines, index: int) -> bool:
     return False
 
 
+# Find every delete invocation across the file (handles single- and multi-line forms) and
+# report the line where the invocation begins. The ``\s*`` in the regex already matches
+# newlines via re.DOTALL, so ``File\\n    .Delete(...)`` matches in one pass on the whole text.
+def _iter_pattern(pattern, text: str):
+    """Yield ``(line_number_1based, match_text)`` for each ``pattern`` hit in ``text``."""
+    for m in pattern.finditer(text):
+        line_no = text.count("\n", 0, m.start()) + 1
+        yield line_no, m.group(0)
+
+
 def find_unjustified(root: Path):
     problems = []
 
@@ -79,35 +119,121 @@ def find_unjustified(root: Path):
         if rel.startswith(("obj/", "bin/")):
             continue
 
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        for i, line in enumerate(lines):
-            if not DELETE_CALL.search(line):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        for line_no, _ in _iter_pattern(DELETE_CALL, text):
+            if is_justified(lines, line_no - 1):
                 continue
-            if is_justified(lines, i):
-                continue
-            problems.append((rel, i + 1, line.strip()))
+            problems.append((rel, line_no, lines[line_no - 1].strip()))
 
     return problems
 
 
-def find_uncovered_mutation_targets(source: str, stryker_config: str):
-    """Lines of the delete methods and delete calls that the Stryker range misses."""
-    patterns = [p for p in json.loads(stryker_config)["stryker-config"]["mutate"]
-                if MUTATE_RANGE.search(p)]
-    if len(patterns) != 1:
-        return [(0, "stryker-config.json must have exactly one StrmSyncService.cs{start..end} entry")]
+# Stryker treats ``mutate`` entries as globs and follows the documented precedence:
+# a file is mutated when it matches at least one inclusion and no exclusion. The
+# suffix check below only catches a direct exclusion; it misses a broad exclusion
+# like ``!**/Service/*.cs`` that swallows the cleanup file even when the cleanup
+# file is also listed as an inclusion. ``PurePosixPath.match`` and ``fnmatch`` both
+# get ``**`` wrong, so translate the glob to a regex that lets ``**`` cross ``/``.
+# Stryker routes ``mutate`` through DotNet.Glob, which honors ``[...]`` character
+# classes (e.g. ``*.[cC]s`` matches ``.cs`` and ``.Cs``); escape them as literals
+# and the checker disagrees with Stryker on the exact files the exclusion catches.
+def _glob_class_to_regex(class_body: str) -> str:
+    """Translate one bracket character class body to a regex character class.
 
-    start, end = (int(g) for g in MUTATE_RANGE.search(patterns[0]).groups())
-    lines = source.splitlines()
-    targets = []
-    for signature in MUTATED_METHODS:
-        found = [i + 1 for i, line in enumerate(lines) if signature in line]
-        if not found:
-            targets.append((0, f"method not found: {signature}"))
-        targets.extend((n, lines[n - 1].strip()) for n in found)
-    targets.extend((i + 1, line.strip()) for i, line in enumerate(lines) if DELETE_CALL.search(line))
+    Supports negation via a leading ``!`` or ``^`` (DotNet.Glob accepts both),
+    otherwise the class lists literal characters and ``a-z`` ranges verbatim.
+    An unclosed bracket is treated as a literal so the glob still compiles.
+    """
+    if not class_body:
+        return r"\["
+    negated = class_body[0] in "!^"
+    body = class_body[1:] if negated else class_body
+    inner = []
+    for ch in body:
+        if ch in r"\][^":
+            inner.append("\\" + ch)
+        else:
+            inner.append(ch)
+    return "[^" + "".join(inner) + "]" if negated else "[" + "".join(inner) + "]"
 
-    return [(n, text) for n, text in targets if not start <= n <= end]
+
+def _glob_to_regex(glob: str) -> "re.Pattern[str]":
+    parts = []
+    i = 0
+    while i < len(glob):
+        c = glob[i]
+        if c == "*":
+            if i + 1 < len(glob) and glob[i + 1] == "*":
+                parts.append(".*")
+                i += 2
+                if i < len(glob) and glob[i] == "/":
+                    i += 1
+                continue
+            parts.append("[^/]*")
+        elif c == "?":
+            parts.append("[^/]")
+        elif c == "[":
+            end = glob.find("]", i + 1)
+            if end == -1:
+                parts.append(re.escape(c))
+                i += 1
+                continue
+            parts.append(_glob_class_to_regex(glob[i + 1:end]))
+            i = end + 1
+            continue
+        else:
+            parts.append(re.escape(c))
+        i += 1
+    return re.compile("^" + "".join(parts) + "$")
+
+
+def _glob_matches(glob: str, path: str) -> bool:
+    return _glob_to_regex(glob).match(path) is not None
+
+
+def _stryker_mutates(patterns, path: str) -> bool:
+    inclusions = [p.lstrip("!") for p in patterns if not p.startswith("!")]
+    exclusions = [p[1:] for p in patterns if p.startswith("!")]
+    included = any(_glob_matches(pat, path) for pat in inclusions)
+    excluded = any(_glob_matches(pat, path) for pat in exclusions)
+    return included and not excluded
+
+
+def find_mutation_gaps(service_sources, stryker_config: str):
+    """Problems that would let the sync's delete code escape mutation testing.
+
+    ``service_sources`` maps a path relative to the plugin root to that file's text, for every
+    StrmSyncService*.cs file.
+
+    The Stryker ``mutate`` list treats entries prefixed with ``!`` as exclusions. A config that
+    contains only ``!**/Service/StrmSyncService.Cleanup.cs`` would (a) pass the naive
+    ``endswith`` check below and (b) leave the cleanup file unmutated, defeating the whole point
+    of the guard. An exclusion that targets the cleanup file is treated as a gap too.
+    """
+    problems = []
+    mutate = json.loads(stryker_config)["stryker-config"]["mutate"]
+    if not _stryker_mutates(mutate, MUTATED_FILE):
+        problems.append((MUTATED_FILE, 0, "not in the mutate list of stryker-config.json"))
+    if any(p.startswith("!") and _glob_matches(p[1:], MUTATED_FILE) for p in mutate):
+        problems.append((MUTATED_FILE, 0,
+                         "excluded from the mutate list of stryker-config.json"))
+
+    cleanup_text = service_sources.get(MUTATED_FILE, "")
+    for method in CLEANUP_METHODS:
+        if not _defines(cleanup_text, method):
+            problems.append((MUTATED_FILE, 0, f"does not define {method}"))
+
+    for rel, text in sorted(service_sources.items()):
+        if rel == MUTATED_FILE:
+            continue
+        for line_no, matched in _iter_pattern(DELETE_CODE, text):
+            problems.append((rel, line_no, matched))
+        for method in CLEANUP_METHODS:
+            if _defines(text, method):
+                problems.append((rel, 0, f"defines {method}, which belongs in {MUTATED_FILE}"))
+
+    return problems
 
 
 def main() -> int:
@@ -115,22 +241,23 @@ def main() -> int:
         print(f"error: plugin root not found at {PLUGIN_ROOT}", file=sys.stderr)
         return 2
 
-    uncovered = find_uncovered_mutation_targets(
-        (PLUGIN_ROOT / MUTATED_FILE).read_text(encoding="utf-8"),
-        STRYKER_CONFIG.read_text(encoding="utf-8"))
-    if uncovered:
-        print("The Stryker mutation range no longer covers the delete code in "
-              f"{MUTATED_FILE}.\n")
-        for line_no, text in uncovered:
-            print(f"  line {line_no}: {text}")
-        print("\nUpdate the StrmSyncService.cs{start..end} range in stryker-config.json so it"
-              " spans from the first delete method to the last delete call.")
+    service_sources = {
+        path.relative_to(PLUGIN_ROOT).as_posix(): path.read_text(encoding="utf-8")
+        for path in (PLUGIN_ROOT / "Service").glob("StrmSyncService*.cs")
+    }
+    gaps = find_mutation_gaps(service_sources, STRYKER_CONFIG.read_text(encoding="utf-8"))
+    if gaps:
+        print("The sync's delete code is not where the mutation tests look for it.\n")
+        for rel, line_no, text in gaps:
+            print(f"  Emby.Xtream.Plugin/{rel}:{line_no}: {text}")
+        print(f"\nKeep every delete call of the sync service in {MUTATED_FILE}, and keep that"
+              " file in the mutate list of stryker-config.json (issue #75).")
         return 1
 
     problems = find_unjustified(PLUGIN_ROOT)
     if not problems:
         print("delete-site check: all delete calls are sanctioned or justified,"
-              " and the mutation range covers the delete methods")
+              " and the sync's delete code is covered by the mutation tests")
         return 0
 
     print("Unjustified filesystem delete(s) found.\n")
