@@ -51,6 +51,17 @@ jobs:
       - name: Build plugin
         run: cd Emby.Xtream.Plugin && bash build.sh
 
+      # One DLL ships for Emby 4.9 and 4.10 (ADR-017). It is compiled against the 4.9 SDK, so
+      # these two steps are what catch a 4.10 SDK change it does not satisfy.
+      - name: Compile against Emby 4.10 SDK
+        run: dotnet build Emby.Xtream.Plugin/Emby.Xtream.Plugin.csproj -c Release_4_10 -v minimal
+
+      - name: Load plugin against Emby 4.9 and 4.10 SDKs
+        run: |
+          for sdk in emby4_9 emby4_10; do
+            dotnet run --project scripts/sdk-load-check -- Emby.Xtream.Plugin/out/Emby.Xtream.Plugin.dll lib/$sdk
+          done
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4

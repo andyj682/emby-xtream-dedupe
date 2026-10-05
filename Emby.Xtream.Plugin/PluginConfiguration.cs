@@ -279,11 +279,9 @@ namespace Emby.Xtream.Plugin
         public bool CleanupOrphans { get; set; } = true;
 
         /// <summary>
-        /// After a sync that added or removed files, tell Emby the corresponding library
-        /// folder changed so new content appears without waiting for a scheduled scan.
-        /// Only fires when something actually changed, so an unchanged sync stays silent.
-        /// Mainly for libraries with real-time monitoring switched off — a common choice,
-        /// since watching the folder stops the disk ever spinning down.
+        /// After a sync that added or removed files, tell Emby the Movies or Shows folder changed
+        /// so new content appears without waiting for a scheduled library scan. A sync that
+        /// changed nothing triggers nothing. Mainly for libraries with real-time monitoring off.
         /// </summary>
         public bool RefreshEmbyLibraryAfterSync { get; set; } = true;
 

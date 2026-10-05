@@ -214,40 +214,21 @@ A configuration UI embedded in Emby's plugin settings with five tabs.
 
 ### Step 1: Download the Plugin
 
-Download the DLL matching your Emby Server version from the [latest release](../../releases/latest):
-
-| Your Emby Server | Download | Install as |
-| --- | --- | --- |
-| 4.9.x | `Emby.Xtream.Plugin.dll` | `Emby.Xtream.Plugin.dll` |
-| 4.10.0.17 and later | `Emby.Xtream.Plugin-4.10.dll` | **rename to `Emby.Xtream.Plugin.dll`** |
-
-Emby 4.10 left beta and reached general release in September 2026, so most installs now want the
-second one. The two builds target different Emby SDKs and are not interchangeable — check your
-version under **Dashboard → Help → About** if you are unsure. **Install one, not both.**
-
-> ### ⚠️ Rename the 4.10 download before installing it
->
-> The two builds cannot share a filename in the same release, so the 4.10 one is published with a
-> `-4.10` suffix. **Emby names each plugin's settings file after the DLL**, so a file left as
-> `Emby.Xtream.Plugin-4.10.dll` gets its own separate settings file — the plugin loads, the
-> settings page opens, and **everything you had configured appears blank**, because your real
-> settings are still sitting in the file belonging to the other name.
->
-> Nothing is lost when this happens and nothing warns you either. Rename the file to
-> `Emby.Xtream.Plugin.dll` before copying it in and your existing configuration is picked up
-> normally.
-
-The built-in update check reads your Emby version and downloads the build matching it, writing over
-the file already in place. So installing an update never moves you onto the wrong build. Changing
-Emby's own major version is still worth doing by hand, though: the plugin has to load before it can
-check for anything, and a build meant for the other Emby may not get that far.
+Download `Emby.Xtream.Plugin.dll` from the [latest release](../../releases/latest). From this
+fork's 1.9.0 the same file works on Emby Server 4.9 and 4.10.
 
 > Only the single DLL file is needed — no other dependencies.
+
+> Releases also carry `Emby.Xtream.Plugin-4.10.dll`. It is the same file under the name this
+> plugin's update check uses on Emby 4.10, so installs that update themselves keep doing so.
+> **Don't download it for a new install:** Emby names each plugin's settings file after the DLL,
+> so under that name the plugin starts with blank settings. Installed by hand, the file must be
+> named `Emby.Xtream.Plugin.dll`.
 
 <details>
 <summary><strong>Build from source (alternative)</strong></summary>
 
-Requires .NET SDK 6.0+:
+Requires the .NET 10 SDK (the test project targets .NET 10):
 
 ```bash
 git clone https://github.com/andyj682/emby-xtream-dedupe.git
@@ -255,21 +236,14 @@ cd emby-xtream-dedupe
 bash build-dedupe.sh
 ```
 
-That builds **both** Emby targets, runs both test configurations, and checks the delete-site
-guard — the same things CI does. The DLLs land at:
+That runs the tests against both the Emby 4.9 and 4.10 SDKs, checks that the DLL loads on both,
+and checks the delete-site guard. CI does the same and also mutation-tests the delete code. The
+DLL lands at `Emby.Xtream.Plugin/out/Emby.Xtream.Plugin.dll`, already named as Emby needs it.
 
-| Target | Path |
-| --- | --- |
-| Emby 4.9.x | `Emby.Xtream.Plugin/out/Emby.Xtream.Plugin.dll` |
-| Emby 4.10.0.17+ | `out_4_10/Emby.Xtream.Plugin.dll` |
+Expect the 4.10 test run to report **more** tests than the 4.9 one: a few cover behavior that
+only exists on that SDK.
 
-Both are already named `Emby.Xtream.Plugin.dll`, which is what Emby needs — only the published
-release asset carries the `-4.10` suffix, and that one has to be renamed on install.
-
-Expect the 4.10 test run to report **more** tests than the 4.9 one: a handful of them cover
-methods that only exist in that build.
-
-To build just the 4.9 target, `cd Emby.Xtream.Plugin && bash build.sh` still works.
+To build without the 4.10 checks, `cd Emby.Xtream.Plugin && bash build.sh` still works.
 
 </details>
 
@@ -349,6 +323,11 @@ If you use [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) for stream 
 ### Updating the Plugin
 
 Download the latest DLL from [Releases](../../releases/latest), replace the file in your plugins directory, and restart Emby. Your configuration is preserved across updates.
+
+If Emby Server moved to 4.10 while you were on plugin v1.4.97 or older, the plugin stops loading
+with `Method 'AddConsumer' ... does not have an implementation`, so its own update button is not
+available. Download `Emby.Xtream.Plugin.dll` from the latest release by hand once. After that,
+updates work on both versions.
 
 ---
 

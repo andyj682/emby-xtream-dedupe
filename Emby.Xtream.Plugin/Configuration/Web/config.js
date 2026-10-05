@@ -640,7 +640,7 @@ function (BaseView, loading) {
             view.querySelector('.txtStrmLibraryPath').value = config.StrmLibraryPath || '/config/xtream';
             validateStrmPath(view);
             view.querySelector('.chkSmartSkipExisting').checked = config.SmartSkipExisting !== false;
-            // Default on for configs saved before this setting existed.
+            // On unless turned off, including for settings saved before this option existed.
             view.querySelector('.chkRefreshEmbyLibraryAfterSync').checked = config.RefreshEmbyLibraryAfterSync !== false;
             // Opt-in, so default OFF — note the !== false idiom above is for on-by-default flags.
             view.querySelector('.chkRequireReviewBeforeSync').checked = !!config.RequireReviewBeforeSync;
@@ -810,7 +810,9 @@ function (BaseView, loading) {
             config.EnableSeriesMetadataLookup = fallbackOn;
             config.TvdbFolderIdOverrides = view.querySelector('.txtTvdbFolderIdOverrides').value;
 
-            ApiClient.updatePluginConfiguration(pluginId, config).then(function () {
+            // Returned so a failed save reaches the catch below. Without it the spinner stayed
+            // up and no error was shown.
+            return ApiClient.updatePluginConfiguration(pluginId, config).then(function () {
                 Dashboard.processPluginConfigurationUpdateResult();
                 applyScheduleToTasks(view, config, ApiClient);
                 setDedupedCatNudge(instance, 'vod', false);

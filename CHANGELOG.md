@@ -44,6 +44,39 @@ starting at 1.0.0 — independent of upstream
   working one, so the README says how to check, and the plugin logs the path and the counts every
   time it publishes.
 
+### Changed
+
+- **One download now works on both Emby 4.9 and 4.10.** Until now each Emby version needed its
+  own build, and installing the wrong one, or the right one under the wrong file name, could leave
+  the plugin with blank settings. There is now a single `Emby.Xtream.Plugin.dll` for both. Releases
+  still also carry it as `Emby.Xtream.Plugin-4.10.dll`, the name this plugin's update check uses on
+  Emby 4.10, so installs that update themselves carry on doing so. For a new install, pick
+  `Emby.Xtream.Plugin.dll`. From upstream.
+
+### Fixed
+
+These come from merging upstream, and several of them started in this fork and came back.
+
+- **Retrying a failed series could write a second copy of its episodes** beside the real ones,
+  which Emby showed as duplicate episodes. A retry now runs the normal series sync, so it writes
+  exactly what a sync would.
+- **The movie sync summary counted failed titles as written**, so a run with failures read as
+  more successful than it was. The series summary was already fixed here; movies now match.
+- **The Danger Zone section of the settings page did nothing when clicked.**
+- **Category lists sometimes failed to load**, or loaded as "no categories".
+- **When a category fails to load during a sync, removing excluded titles now waits for the next
+  sync.** It used to go ahead with a partial picture of what that sync had written, which is the
+  information that stops it removing a folder you kept.
+- **The library refresh now also runs after a movie retry and after a sync that failed partway**,
+  not only after a clean finish.
+
+### Notes
+
+- **Updating does not trigger a full re-sync.** Upstream's matching release re-fetches every
+  movie and series once after updating, to move specials out of Season 1. This fork has written
+  specials to Season 0 since 1.1.1, so it skips that, and your first sync after updating is an
+  ordinary one.
+
 ## [1.8.0] - 2026-09-16
 
 ### Added

@@ -341,14 +341,19 @@ namespace Emby.Xtream.Plugin.Api
                 return new List<Category>();
             }
 
-            var liveTvService = Plugin.Instance.LiveTvService;
-            var categories = await liveTvService.GetLiveCategoriesAsync(CancellationToken.None).ConfigureAwait(false);
+            List<Category> categories;
+            try
+            {
+                var liveTvService = Plugin.Instance.LiveTvService;
+                categories = await liveTvService.GetLiveCategoriesAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("Failed to load live TV categories: {0}", ex.Message);
+                throw;
+            }
 
-            // Cache for instant UI loading
-            config.CachedLiveCategories = System.Text.Json.JsonSerializer.Serialize(
-                    categories.Select(c => new { c.CategoryId, c.CategoryName }).ToList());
-            Plugin.Instance.SaveConfiguration();
-
+            SaveCategoryCache("live TV", () => config.CachedLiveCategories = SerializeCategoryCache(categories));
             return categories;
         }
 
@@ -379,17 +384,16 @@ namespace Emby.Xtream.Plugin.Api
                         }) ?? new List<Category>();
                     var sorted = categories.OrderBy(c => c.CategoryName).ToList();
 
-                    // Cache for instant UI loading
-                    config.CachedVodCategories = System.Text.Json.JsonSerializer.Serialize(
-                        sorted.Select(c => new { c.CategoryId, c.CategoryName }).ToList());
-                    Plugin.Instance.SaveConfiguration();
-
+                    SaveCategoryCache("VOD", () => config.CachedVodCategories = SerializeCategoryCache(sorted));
                     return sorted;
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                return new List<Category>();
+                // Reported as an error, not an empty list: the page shows "No categories found"
+                // for an empty list, which sent people checking a provider that was fine.
+                Logger.Warn("Failed to load VOD categories: {0}", ex.Message);
+                throw;
             }
         }
 
@@ -454,17 +458,36 @@ namespace Emby.Xtream.Plugin.Api
                             .ToList();
                     }
 
-                    // Cache for instant UI loading
-                    config.CachedSeriesCategories = System.Text.Json.JsonSerializer.Serialize(
-                        sorted.Select(c => new { c.CategoryId, c.CategoryName }).ToList());
-                    Plugin.Instance.SaveConfiguration();
-
+                    SaveCategoryCache("series", () => config.CachedSeriesCategories = SerializeCategoryCache(sorted));
                     return sorted;
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                return new List<Category>();
+                // Reported as an error rather than an empty list, as for VOD above.
+                Logger.Warn("Failed to load series categories: {0}", ex.Message);
+                throw;
+            }
+        }
+
+        private static string SerializeCategoryCache(IEnumerable<Category> categories)
+            => System.Text.Json.JsonSerializer.Serialize(
+                categories.Select(c => new { c.CategoryId, c.CategoryName }).ToList());
+
+        /// <summary>
+        /// Stores a category list so the settings page can show it instantly next time. Only a
+        /// convenience: a failed save is logged and must not fail a request whose list loaded.
+        /// </summary>
+        private void SaveCategoryCache(string kind, Action store)
+        {
+            try
+            {
+                store();
+                Plugin.Instance.SaveConfiguration();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("Could not save the {0} category cache; the list is still returned: {1}", kind, ex.Message);
             }
         }
 
@@ -929,6 +952,7 @@ namespace Emby.Xtream.Plugin.Api
             // a generic ServiceStack error DTO instead of the SyncResult the UI expects.
             try
             {
+                var retried = syncService.FailedItems.ToList();
                 var ran = await syncService.RetryFailedAsync(CancellationToken.None).ConfigureAwait(false);
 
                 // The IsRunning check above is a fast path; the service holds the real gate.
@@ -936,14 +960,21 @@ namespace Emby.Xtream.Plugin.Api
                 if (!ran)
                     return new SyncResult { Success = false, Message = "A sync is already running." };
 
-                var p = syncService.MovieProgress;
+                // Counted over the items this retry started with. MovieProgress only covers
+                // movies, since series are retried by a series sync, and the failed list can
+                // also gain series that failed for the first time during that sync.
+                var remaining = syncService.FailedItems;
+                var stillFailed = retried.Count(r => remaining.Any(f => f.ItemType == r.ItemType && f.StreamId == r.StreamId));
                 return new SyncResult
                 {
                     Success = true,
-                    Message = "Retry complete.",
-                    Total = p.Total,
-                    Completed = p.Completed,
-                    Failed = p.Failed
+                    Message = stillFailed == 0
+                        ? "Retry complete."
+                        : string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                            "Retry complete. {0} of {1} item(s) still failed.", stillFailed, retried.Count),
+                    Total = retried.Count,
+                    Completed = retried.Count,
+                    Failed = stillFailed
                 };
             }
             catch (Exception ex)

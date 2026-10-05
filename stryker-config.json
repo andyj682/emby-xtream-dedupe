@@ -3,7 +3,7 @@
     "project": "Emby.Xtream.Plugin.csproj",
     "mutate": [
       "**/Service/StrmOwnership.cs",
-      "**/Service/StrmSyncService.cs{1992..2243}"
+      "**/Service/StrmSyncService.Cleanup.cs"
     ],
     "reporters": [
       "progress",
@@ -15,6 +15,12 @@
       "low": 80,
       "break": 75
     },
-    "concurrency": 4
+    "concurrency": 4,
+    "ignore-methods": [
+      "*.Debug",
+      "*.Info",
+      "*.Warn",
+      "*.Error"
+    ]
   }
 }

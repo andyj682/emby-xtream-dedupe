@@ -79,7 +79,10 @@ namespace Emby.Xtream.Plugin.Service
             return Task.CompletedTask;
         }
 
-        #if EMBY_4_10
+        // Emby 4.10 added AddConsumer/RemoveConsumer to ILiveStream. They are compiled into every
+        // build, not only the 4.10 one: on 4.9 nothing calls them, and on 4.10 the runtime matches
+        // them to the interface by name and signature. Without them the 4.9 build fails to load on
+        // 4.10 ("Method 'AddConsumer' ... does not have an implementation"). See ADR-017.
         public virtual void AddConsumer(string id)
         {
             Interlocked.Increment(ref _consumerCount);
@@ -96,7 +99,6 @@ namespace Emby.Xtream.Plugin.Service
                     return;
             }
         }
-#endif
 
         // Reopen the HTTP connection to the upstream source. Called when a prior CopyToAsync
         // was cancelled mid-read, which aborts the underlying SSL connection and leaves _stream

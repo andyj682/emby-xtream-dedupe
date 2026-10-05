@@ -24,19 +24,27 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
-      - name: Build plugin (Emby 4.9.x)
+      # One DLL for Emby 4.9 and 4.10, compiled against the 4.9 SDK (ADR-017).
+      - name: Build plugin
         run: |
           VERSION=${GITHUB_REF_NAME#dedupe-v}
           dotnet publish Emby.Xtream.Plugin/Emby.Xtream.Plugin.csproj \
             -c Release -o out --no-self-contained -p:Version=$VERSION
 
-      - name: Build plugin (Emby 4.10+)
+      # Neither step produces a release file. They stop the release if the DLL would not
+      # load on one of the two Emby versions.
+      - name: Compile against Emby 4.10 SDK
+        run: dotnet build Emby.Xtream.Plugin/Emby.Xtream.Plugin.csproj -c Release_4_10 -v minimal
+
+      - name: Load plugin against Emby 4.9 and 4.10 SDKs
         run: |
-          VERSION=${GITHUB_REF_NAME#dedupe-v}
-          dotnet publish Emby.Xtream.Plugin/Emby.Xtream.Plugin.csproj \
-            -c Release_4_10 -o out_4_10 --no-self-contained -p:Version=$VERSION
+          for sdk in emby4_9 emby4_10; do
+            dotnet run --project scripts/sdk-load-check -- out/Emby.Xtream.Plugin.dll lib/$sdk
+          done
 
       - name: Generate release notes
         id: notes
@@ -133,14 +141,9 @@ jobs:
             echo ""
             echo "## Downloads"
             echo ""
-            echo "- **Emby 4.9.x** — \`Emby.Xtream.Plugin.dll\`"
-            echo "- **Emby 4.10.0.17 and later** — \`Emby.Xtream.Plugin-4.10.dll\` — **rename to \`Emby.Xtream.Plugin.dll\` before installing**"
+            echo "\`Emby.Xtream.Plugin.dll\` works on Emby 4.9 and 4.10. Install that one."
             echo ""
-            echo "Install one, not both. Emby 4.10 left beta and reached general release in September 2026, so most installs will want the second."
-            echo ""
-            echo "Only the first install is a manual choice: from 1.7.1 onward the plugin's own update check reads your Emby version and downloads the matching build for you."
-            echo ""
-            echo "> ⚠️ **The 4.10 download must be renamed.** The two builds cannot share a filename in one release, but **Emby names each plugin's settings file after the DLL** — so installing it as \`Emby.Xtream.Plugin-4.10.dll\` gives it a separate settings file. The plugin loads, the settings page opens, and everything you had configured appears blank, with no error. Your settings are not lost; rename the file to \`Emby.Xtream.Plugin.dll\` and they come back."
+            echo "\`Emby.Xtream.Plugin-4.10.dll\` is the same file under the name this fork's update check uses on Emby 4.10, so installs that update themselves keep doing so. Do not pick it for a new install: **Emby names each plugin's settings file after the DLL**, so under that name the plugin starts with blank settings."
             echo ""
             echo "Every release's changes are recorded in [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md)."
             echo ""
@@ -151,11 +154,14 @@ jobs:
 
       - name: Create release
         run: |
-          # Rename 4.10 DLL so both assets coexist in the release
-          cp out_4_10/Emby.Xtream.Plugin.dll out_4_10/Emby.Xtream.Plugin-4.10.dll
+          # The same DLL under both names (ADR-017). FORK: this fork's in-plugin updater (1.7.1
+          # onward) picks the asset by Emby version and on 4.10 downloads the -4.10 NAME, so
+          # that name must keep existing or 4.10 installs stop updating. Upstream's updater takes
+          # the plain name. Both must be present, and both must be the file that loads.
+          cp out/Emby.Xtream.Plugin.dll out/Emby.Xtream.Plugin-4.10.dll
           gh release create "$GITHUB_REF_NAME" \
             out/Emby.Xtream.Plugin.dll \
-            out_4_10/Emby.Xtream.Plugin-4.10.dll \
+            out/Emby.Xtream.Plugin-4.10.dll \
             --title "$GITHUB_REF_NAME" \
             --notes-file release_notes.md
         env:

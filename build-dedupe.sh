@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Fork-owned full build: both Emby targets, both test configurations, and the guards CI runs.
+# Fork-owned full build: one DLL for Emby 4.9 and 4.10, tested against both SDKs, plus the
+# guards CI runs.
 #
-# Emby.Xtream.Plugin/build.sh is shared with upstream and is 4.9-only on both counts — it runs
-# `dotnet test` with no -c (so Debug, i.e. the 4.9 path) and publishes `-c Release`. That leaves
-# the 4.10 DLL, which every release ships, built by nothing but the release workflow and tested
-# by nothing but CI. This wrapper closes that without editing the shared script.
+# Since the upstream merge through 91f27d3 (their ADR-017) a single DLL, compiled against the 4.9
+# SDK, ships for both Emby versions. Emby.Xtream.Plugin/build.sh is shared with upstream and only
+# ever tests against 4.9, so this wrapper adds the 4.10 test run and the same load check the
+# release runs, without editing the shared script. CI additionally mutation-tests the delete code
+# (Stryker), which this does not.
 #
 # Run from anywhere:  bash build-dedupe.sh
 set -euo pipefail
@@ -12,7 +14,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$REPO_ROOT/Emby.Xtream.Plugin"
 TESTS_DIR="$REPO_ROOT/Emby.Xtream.Plugin.Tests"
-OUT_4_10="$REPO_ROOT/out_4_10"
 
 # Mirrors the derivation in build.sh. Deliberately duplicated rather than factored out: build.sh
 # is upstream-shared, and extracting a helper would put fork-specific structure into a file
@@ -57,40 +58,47 @@ dotnet restore "$TESTS_DIR/"
 ( cd "$PLUGIN_DIR" && bash build.sh )
 
 # ---------------------------------------------------------------------------
-# 3. Emby 4.10: tests, then publish.
+# 3. Emby 4.10: tests only. Nothing is published from this configuration any more: the one DLL
+#    from step 2 is what ships for both versions, and a separately built 4.10 DLL would be an
+#    artifact no release contains, so testing it on a rig would test the wrong file.
 #    No --no-restore: Release_4_10 has its own PackageReferences (System.Text.Json 8.x rather
 #    than 6.x) that the restore above did not fetch.
-#    Expect MORE tests here than in the 4.9 run — XtreamLiveStreamTests has four [Fact]s behind
-#    `#if EMBY_4_10` covering AddConsumer/RemoveConsumer, which exist only in this build. A
-#    differing count is correct, not a fault.
+#    Expect exactly ONE more test here than in the 4.9 run: XtreamLiveStreamTests keeps a single
+#    [Fact] behind `#if EMBY_4_10`, checking the members ILiveStream has only in that SDK. It was
+#    four before upstream removed the conditional code from the plugin itself.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Emby 4.10 (tests) ==="
 dotnet test "$TESTS_DIR/" -c Release_4_10 -v minimal
 
+# ---------------------------------------------------------------------------
+# 4. Load the shipped DLL against both SDKs, the same gate the release workflow uses. The DLL is
+#    compiled against 4.9 only, so the compiler never sees a 4.10 interface; this is what catches
+#    a 4.10 member it fails to implement. Exits non-zero on any failure.
+# ---------------------------------------------------------------------------
 echo ""
-echo "=== Emby 4.10 (publish) ==="
-dotnet publish "$PLUGIN_DIR/Emby.Xtream.Plugin.csproj" \
-    -c Release_4_10 -o "$OUT_4_10" --no-self-contained -p:Version="$VERSION"
+echo "=== Load check against Emby 4.9 and 4.10 SDKs ==="
+for sdk in emby4_9 emby4_10; do
+    dotnet run --project "$REPO_ROOT/scripts/sdk-load-check" -- "$PLUGIN_DIR/out/Emby.Xtream.Plugin.dll" "$REPO_ROOT/lib/$sdk"
+done
 
 # ---------------------------------------------------------------------------
-# 4. Where everything went.
+# 5. Where everything went.
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Build output (v$VERSION) ==="
-ls -la "$PLUGIN_DIR/out/Emby.Xtream.Plugin.dll" "$OUT_4_10/Emby.Xtream.Plugin.dll"
+ls -la "$PLUGIN_DIR/out/Emby.Xtream.Plugin.dll"
 
 cat <<EOF
 
-Deploy ONE of these, never both:
+The same DLL for Emby 4.9 and 4.10:
 
-  Emby 4.9.x         docker cp $PLUGIN_DIR/out/Emby.Xtream.Plugin.dll <container>:/config/plugins/
-  Emby 4.10.0.17+    docker cp $OUT_4_10/Emby.Xtream.Plugin.dll <container>:/config/plugins/
+  docker cp $PLUGIN_DIR/out/Emby.Xtream.Plugin.dll <container>:/config/plugins/
 
 Then: docker restart <container>
 
-Note both files are already named Emby.Xtream.Plugin.dll, which is what Emby needs — it names
-each plugin's settings file after the DLL, so installing one under any other name gives it a
-separate, empty configuration. Only the published RELEASE asset carries a -4.10 suffix, and that
-one has to be renamed on install.
+The file is already named Emby.Xtream.Plugin.dll, which is what Emby needs: it names each
+plugin's settings file after the DLL, so installing it under any other name gives it a separate,
+empty configuration. Releases also publish a -4.10 copy for the update check on older installs;
+installed by hand, that copy must be renamed.
 EOF

@@ -496,6 +496,17 @@
                             Skip STRM files that already exist. Speeds up re-syncs significantly.
                         </div>
                     </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0;">
+                        <label>
+                            <input class="chkRefreshEmbyLibraryAfterSync" type="checkbox" is="emby-checkbox" />
+                            <span>Refresh the Emby library after a sync that changed files</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">
+                            New movies and episodes appear right away instead of at the next scheduled library scan.
+                            Only happens when a sync actually added or removed files. Useful when real-time monitoring
+                            is off for these libraries.
+                        </div>
+                    </div>
                     <div class="inputContainer">
                         <input class="txtSyncParallelism" type="number" is="emby-input"
                                label="Sync Parallelism" min="1" max="10" step="1" />
