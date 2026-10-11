@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +15,24 @@ namespace Emby.Xtream.Plugin.Service
     {
         private static readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
         private static DateTime _nextAllowedUtc = DateTime.MinValue;
+
+        /// <summary>
+        /// The handler chain every provider HttpClient is built on. Decompression is on because
+        /// some providers gzip their JSON whether or not the request asked for it, and an
+        /// undecoded body fails to parse with "'0x1F' is an invalid start of a value" (#83).
+        /// </summary>
+        public static XtreamRateLimitHandler CreateDefault()
+        {
+            return new XtreamRateLimitHandler { InnerHandler = CreateInnerHandler() };
+        }
+
+        internal static HttpClientHandler CreateInnerHandler()
+        {
+            return new HttpClientHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+            };
+        }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)

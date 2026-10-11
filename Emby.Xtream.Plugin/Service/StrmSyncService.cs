@@ -102,7 +102,7 @@ namespace Emby.Xtream.Plugin.Service
 
         private static readonly int MaxHistoryEntries = 10;
         private static readonly HttpClient SharedHttpClient = new HttpClient(
-            new XtreamRateLimitHandler { InnerHandler = new HttpClientHandler() })
+            XtreamRateLimitHandler.CreateDefault())
         { Timeout = TimeSpan.FromSeconds(30) };
 
         // Increment when naming logic changes so existing installs force a full re-sync on next run.
