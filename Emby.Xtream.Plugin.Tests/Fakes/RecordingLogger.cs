@@ -21,6 +21,8 @@ namespace Emby.Xtream.Plugin.Tests.Fakes
 
         public List<string> Infos { get; } = new List<string>();
 
+        public List<string> Errors { get; } = new List<string>();
+
         /// <summary>
         /// Debug output. Captured because some diagnostics are deliberately Debug-level —
         /// the collapse representative is one line per collapsed group, too noisy for Info,
@@ -61,7 +63,7 @@ namespace Emby.Xtream.Plugin.Tests.Fakes
 
         public void Warn(string message, params object[] paramList) => Record(Warnings, message, paramList);
 
-        public void Error(string message, params object[] paramList) { }
+        public void Error(string message, params object[] paramList) => Record(Errors, message, paramList);
 
         public void Debug(string message, params object[] paramList) => Record(Debugs, message, paramList);
 
