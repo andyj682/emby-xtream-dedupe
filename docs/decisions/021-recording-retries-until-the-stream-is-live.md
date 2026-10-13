@@ -64,8 +64,13 @@ The recording overload keeps trying until its token is cancelled:
   (10 s). A `Retry-After` header is honoured, kept between that interval and 60 s.
 - An attempt is live only once it has delivered `RecordingLiveThresholdBytes` (64 KB). Until then
   its bytes are held back, so an error packet never reaches the file.
-- When a live stream drops before the window ends, it reconnects after
-  `RecordingReconnectDelay` (1 s) and appends to the same file.
+- When a live stream drops before the window ends, it reconnects and appends to the same file.
+  The reconnect follows after `RecordingReconnectDelay` (1 s) only if the dropped connection
+  lasted at least `RecordingRetryInterval`. A source that sends a burst and closes straight away
+  (a slate, a provider dropping the session) is reconnected at the steady 10 s interval, never
+  every second.
+- A failure to write to the recording file (full disk, locked file) is not an upstream failure.
+  It propagates to Emby, which marks the recording Error, as before this change.
 - A cancellation that does not come from the recording token is turned into a retry, never let
   through to Emby.
 - When the window ends with no data at all, an Error is logged with the attempt count and the
@@ -81,7 +86,8 @@ The recording overload keeps trying until its token is cancelled:
 - **Dispatcharr risk, not tested.** A retry against a Dispatcharr proxy URL means a connection
   attempt every 10 s. The project notes record that a client timing out on
   `/proxy/ts/stream/<uuid>` can leave the channel stuck in CLOSE-WAIT. The interval is fixed
-  (there are no quick first attempts) and every failed attempt is disposed before the next, but
+  (there are no quick first attempts, and the 1 s reconnect only follows a connection that held
+  up), and every failed attempt is disposed before the next, but
   this has not been run against Dispatcharr with a channel that is not live. If it causes stuck
   channels, the first thing to try is a longer interval for proxy URLs.
 - The 10 s `HttpClient.Timeout` on the stream client still applies to each attempt's headers,

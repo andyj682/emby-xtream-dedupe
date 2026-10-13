@@ -104,6 +104,43 @@ namespace Emby.Xtream.Plugin.Tests
             }
         }
 
+        [Fact]
+        public async Task FailedWriteToTheRecordingFile_ReachesEmby_WithoutRetrying()
+        {
+            // A full disk must surface as an error, not be retried as if the provider failed.
+            var handler = new ScriptedHandler(_ => Body(Bytes(4096, 0x47)));
+            using (var stream = CreateStream(handler, new RecordingLogger()))
+            using (var safety = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                // The safety token turns a regression (retrying forever) into a failure, not a hang.
+                var output = new FailingStream();
+                await Assert.ThrowsAsync<IOException>(() => stream.CopyToAsync(output, null, null, safety.Token));
+                Assert.Equal(1, handler.RequestCount);
+            }
+        }
+
+        [Fact]
+        public async Task SourceThatSendsABurstAndCloses_IsNotReconnectedEverySecond()
+        {
+            // More than the threshold, then closed straight away: a slate, or a provider
+            // dropping the session. Reconnects must follow the steady interval.
+            var handler = new ScriptedHandler(_ => Body(Bytes(2048, 0x47)));
+            using (var stream = CreateStream(handler, new RecordingLogger()))
+            using (var cts = new CancellationTokenSource())
+            {
+                stream.RecordingReconnectDelay = TimeSpan.FromMilliseconds(1);
+                stream.RecordingRetryInterval = TimeSpan.FromMilliseconds(300);
+                var task = stream.CopyToAsync(new MemoryStream(), null, null, cts.Token);
+
+                await Task.Delay(TimeSpan.FromMilliseconds(1000));
+                cts.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+
+                // ~4 at a 300 ms interval; hundreds if the 1 ms reconnect delay were used.
+                Assert.InRange(handler.RequestCount, 2, 6);
+            }
+        }
+
         [Theory]
         [InlineData(null, 10)]
         [InlineData(2, 10)]
@@ -170,6 +207,17 @@ namespace Emby.Xtream.Plugin.Tests
 
         private static Task<HttpResponseMessage> Body(byte[] body) =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(body) });
+
+        private sealed class FailingStream : MemoryStream
+        {
+            public override void Write(byte[] buffer, int offset, int count) => throw new IOException("disk full");
+
+            public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+                throw new IOException("disk full");
+
+            public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+                throw new IOException("disk full");
+        }
 
         /// <summary>
         /// Answers requests from a script in order. A one-entry script answers every request;

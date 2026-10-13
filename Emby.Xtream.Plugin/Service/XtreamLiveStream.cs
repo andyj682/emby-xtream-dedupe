@@ -201,7 +201,9 @@ namespace Emby.Xtream.Plugin.Service
                     TimeSpan delay;
                     if (result.Written > 0)
                     {
-                        delay = RecordingReconnectDelay;
+                        // Quick reconnect only after a connection that held up. A source that
+                        // sends a burst and closes again must not be hit every second.
+                        delay = result.Duration >= RecordingRetryInterval ? RecordingReconnectDelay : RecordingRetryInterval;
                         _logger?.Info("[XtreamLiveStream] Recording stream ended after {0} bytes ({1}), reconnecting", result.Written, result.Reason);
                     }
                     else
@@ -250,6 +252,10 @@ namespace Emby.Xtream.Plugin.Service
         {
             DisposeConnection();
             long written = 0;
+            var started = Stopwatch.StartNew();
+            // Set while writing to the recording file, so a full disk or a locked file reaches
+            // Emby as an error instead of being mistaken for an upstream failure and retried.
+            bool writingOutput = false;
             using (var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
                 attemptCts.CancelAfter(RecordingAttemptTimeout);
@@ -279,7 +285,9 @@ namespace Emby.Xtream.Plugin.Service
 
                         if (held == null)
                         {
+                            writingOutput = true;
                             await output.WriteAsync(buffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
+                            writingOutput = false;
                             written += bytesRead;
                             continue;
                         }
@@ -288,7 +296,9 @@ namespace Emby.Xtream.Plugin.Service
                         if (held.Length < RecordingLiveThresholdBytes) continue;
 
                         held.Position = 0;
+                        writingOutput = true;
                         await held.CopyToAsync(output, 81920, cancellationToken).ConfigureAwait(false);
+                        writingOutput = false;
                         written = held.Length;
                         held = null;
                         // Live from here on: only the end of the recording window bounds reads.
@@ -297,7 +307,7 @@ namespace Emby.Xtream.Plugin.Service
                     }
 
                     return written > 0
-                        ? RecordAttemptResult.Ended(written, "end of stream")
+                        ? RecordAttemptResult.Ended(written, "end of stream", started.Elapsed)
                         : RecordAttemptResult.NotLive("stream ended after " + (held?.Length ?? 0) + " bytes", null);
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -305,13 +315,13 @@ namespace Emby.Xtream.Plugin.Service
                     // HttpClient.Timeout and the attempt timeout both surface as cancellation.
                     // Emby would read that as the recording being stopped, so it must not escape.
                     return written > 0
-                        ? RecordAttemptResult.Ended(written, "timed out")
+                        ? RecordAttemptResult.Ended(written, "timed out", started.Elapsed)
                         : RecordAttemptResult.NotLive("no data within " + (int)RecordingAttemptTimeout.TotalSeconds + "s", null);
                 }
-                catch (Exception ex) when (ex is HttpRequestException || ex is IOException)
+                catch (Exception ex) when (!writingOutput && (ex is HttpRequestException || ex is IOException))
                 {
                     return written > 0
-                        ? RecordAttemptResult.Ended(written, ex.Message)
+                        ? RecordAttemptResult.Ended(written, ex.Message, started.Elapsed)
                         : RecordAttemptResult.NotLive(ex.Message, null);
                 }
             }
@@ -339,12 +349,13 @@ namespace Emby.Xtream.Plugin.Service
             public long Written;
             public string Reason;
             public TimeSpan? RetryAfter;
+            public TimeSpan Duration;
 
             public static RecordAttemptResult NotLive(string reason, TimeSpan? retryAfter) =>
                 new RecordAttemptResult { Reason = reason, RetryAfter = retryAfter };
 
-            public static RecordAttemptResult Ended(long written, string reason) =>
-                new RecordAttemptResult { Written = written, Reason = reason };
+            public static RecordAttemptResult Ended(long written, string reason, TimeSpan duration) =>
+                new RecordAttemptResult { Written = written, Reason = reason, Duration = duration };
         }
 
         public void Dispose()
