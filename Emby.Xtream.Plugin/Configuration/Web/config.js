@@ -933,6 +933,8 @@ function updateEpgVisibility(view) {
 
         // Run the test server-side so it can reach hosts that the browser cannot
         // resolve (e.g. Docker container names on the Emby server's network).
+        // Only the latest test may report, so a slow earlier reply can't overwrite it.
+        var requestId = instance.xtreamTestRequestId = (instance.xtreamTestRequestId || 0) + 1;
         ApiClient.ajax({
             type: 'POST',
             url: ApiClient.getUrl('XtreamTuner/TestConnection'),
@@ -940,11 +942,14 @@ function updateEpgVisibility(view) {
             data: JSON.stringify({ BaseUrl: url, Username: user, Password: pass }),
             dataType: 'json'
         }).then(function (result) {
+            if (requestId !== instance.xtreamTestRequestId) return;
             setPillResult(resultEl, result.Success, result.Message);
+            setXtreamHealthFromTest(view, result.Success, user);
             if (result.Success) {
                 saveConfig(instance);
             }
         }).catch(function () {
+            if (requestId !== instance.xtreamTestRequestId) return;
             setPillResult(resultEl, false, 'Test request failed. Check server logs.');
         });
     }
@@ -2574,10 +2579,12 @@ function updateEpgVisibility(view) {
         if (!xtreamItem) return;
 
         // Xtream dot
+        // Only says what is configured: no request is made here, so it must not claim the
+        // connection works (#86). Test Connection replaces it with a real result.
         var xtreamOk = !!(config.BaseUrl && config.Username);
         setHealthDot(xtreamItem, xtreamOk ? 'ok' : 'grey');
         xtreamItem.querySelector('.healthLabel').textContent = xtreamOk
-            ? 'Xtream: Connected (' + config.Username + ')'
+            ? 'Xtream: Configured (' + config.Username + ')'
             : 'Xtream: Not configured';
 
         // Dispatcharr dot
@@ -2620,6 +2627,15 @@ function updateEpgVisibility(view) {
         }
         setHealthDot(syncItem, syncOk ? 'ok' : 'grey');
         syncItem.querySelector('.healthLabel').textContent = syncLabel;
+    }
+
+    function setXtreamHealthFromTest(view, success, user) {
+        var item = view.querySelector('.healthItemXtream');
+        if (!item) return;
+        setHealthDot(item, success ? 'ok' : 'error');
+        item.querySelector('.healthLabel').textContent = success
+            ? 'Xtream: Connected (' + user + ')'
+            : 'Xtream: Connection failed';
     }
 
     function setHealthDot(itemEl, status) {
