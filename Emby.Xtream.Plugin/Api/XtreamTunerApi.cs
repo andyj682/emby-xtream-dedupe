@@ -1446,41 +1446,14 @@ namespace Emby.Xtream.Plugin.Api
             var config = Plugin.Instance.Configuration;
             var logDir = Plugin.Instance.ApplicationPaths.LogDirectoryPath;
             var lines = new List<string>();
-
             try
             {
-                var logFiles = Directory.GetFiles(logDir, "*.txt")
-                    .Concat(Directory.GetFiles(logDir, "*.log"))
-                    .OrderByDescending(f => File.GetLastWriteTimeUtc(f))
-                    .Take(5)
-                    .ToArray();
-
-                var keywords = new[] { "XtreamTuner", "Xtream", "Dispatcharr", "LiveTv" };
-
-                foreach (var logFile in logFiles)
-                {
-                    try
-                    {
-                        using (var reader = new StreamReader(logFile, Encoding.UTF8))
-                        {
-                            string line;
-                            while ((line = reader.ReadLine()) != null)
-                            {
-                                foreach (var kw in keywords)
-                                {
-                                    if (line.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0)
-                                    {
-                                        lines.Add(line);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    catch { }
-                }
+                lines = PluginLogCollector.Collect(logDir);
             }
-            catch { }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                lines.Add("[log download] Could not list the log folder: " + ex.GetType().Name);
+            }
 
             // Sanitize PII
             var sanitized = new StringBuilder();

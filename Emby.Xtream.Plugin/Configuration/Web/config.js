@@ -941,6 +941,7 @@ function updateEpgVisibility(view) {
             dataType: 'json'
         }).then(function (result) {
             setPillResult(resultEl, result.Success, result.Message);
+            setXtreamHealthFromTest(view, result.Success, user);
             if (result.Success) {
                 saveConfig(instance);
             }
@@ -2574,10 +2575,12 @@ function updateEpgVisibility(view) {
         if (!xtreamItem) return;
 
         // Xtream dot
+        // Only says what is configured: no request is made here, so it must not claim the
+        // connection works (#86). Test Connection replaces it with a real result.
         var xtreamOk = !!(config.BaseUrl && config.Username);
         setHealthDot(xtreamItem, xtreamOk ? 'ok' : 'grey');
         xtreamItem.querySelector('.healthLabel').textContent = xtreamOk
-            ? 'Xtream: Connected (' + config.Username + ')'
+            ? 'Xtream: Configured (' + config.Username + ')'
             : 'Xtream: Not configured';
 
         // Dispatcharr dot
@@ -2620,6 +2623,15 @@ function updateEpgVisibility(view) {
         }
         setHealthDot(syncItem, syncOk ? 'ok' : 'grey');
         syncItem.querySelector('.healthLabel').textContent = syncLabel;
+    }
+
+    function setXtreamHealthFromTest(view, success, user) {
+        var item = view.querySelector('.healthItemXtream');
+        if (!item) return;
+        setHealthDot(item, success ? 'ok' : 'error');
+        item.querySelector('.healthLabel').textContent = success
+            ? 'Xtream: Connected (' + user + ')'
+            : 'Xtream: Connection failed';
     }
 
     function setHealthDot(itemEl, status) {
