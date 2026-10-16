@@ -1450,33 +1450,114 @@ namespace Emby.Xtream.Plugin.Service
 
         private (string Url, bool IsDispatcharr) BuildStreamUrl(PluginConfiguration config, int streamId)
         {
-            // When Dispatcharr is enabled and we have a UUID for this channel,
-            // use the proxy stream URL instead of the Xtream-style URL.
+            var result = ResolveStreamUrl(config, streamId, _channelUuidMap);
+            switch (result.Route)
+            {
+                case StreamRoute.DispatcharrProxy:
+                    Logger.Debug("Stream {0}: using Dispatcharr proxy URL", streamId);
+                    break;
+                case StreamRoute.DispatcharrXtream:
+                    // Never log the URL itself: the Xtream password is in its path.
+                    Logger.Debug("Stream {0}: using Dispatcharr Xtream URL", streamId);
+                    break;
+                case StreamRoute.Skipped:
+                    Logger.Warn("Stream {0}: no Dispatcharr UUID and fallback disabled, skipping", streamId);
+                    break;
+                case StreamRoute.DirectXtream:
+                    if (config.EnableDispatcharr && !string.IsNullOrEmpty(config.DispatcharrUrl))
+                        Logger.Debug("Stream {0}: no Dispatcharr UUID, falling back to direct Xtream URL", streamId);
+                    break;
+            }
+
+            if (result.XtreamEndpointIgnored && !_xtreamEndpointWarned)
+            {
+                _xtreamEndpointWarned = true;
+                Logger.Warn("Dispatcharr stream URL is set to Xtream, but the Xtream server URL is not the " +
+                    "Dispatcharr URL. Using the Dispatcharr proxy URL instead, so streams keep going through Dispatcharr.");
+            }
+
+            return (result.Url, result.Route == StreamRoute.DispatcharrProxy || result.Route == StreamRoute.DispatcharrXtream);
+        }
+
+        private volatile bool _xtreamEndpointWarned;
+
+        internal enum StreamRoute { DispatcharrProxy, DispatcharrXtream, DirectXtream, Skipped }
+
+        internal struct StreamUrlResult
+        {
+            public string Url;
+            public StreamRoute Route;
+
+            /// <summary>True when the Xtream endpoint was asked for but could not be used.</summary>
+            public bool XtreamEndpointIgnored;
+        }
+
+        /// <summary>
+        /// Decides which URL a channel plays from. A channel Dispatcharr knows (it has a UUID)
+        /// plays from Dispatcharr: the proxy URL by default, or the Xtream URL of the connection
+        /// above when <see cref="PluginConfiguration.DispatcharrStreamEndpoint"/> is <c>xtream</c>
+        /// and that connection is the Dispatcharr server. Either way it counts as a Dispatcharr
+        /// stream (no probing, profile codec wins), since both URLs run through Dispatcharr's proxy
+        /// code (ADR-001, ADR-022). The Xtream URL is always <c>.ts</c>, matching the proxy URL.
+        /// </summary>
+        internal static StreamUrlResult ResolveStreamUrl(
+            PluginConfiguration config, int streamId, IReadOnlyDictionary<int, string> uuidMap)
+        {
+            var result = new StreamUrlResult();
             if (config.EnableDispatcharr && !string.IsNullOrEmpty(config.DispatcharrUrl))
             {
-                if (_channelUuidMap.TryGetValue(streamId, out var uuid))
+                if (uuidMap.TryGetValue(streamId, out var uuid))
                 {
-                    var proxyUrl = string.Format(CultureInfo.InvariantCulture,
+                    if (string.Equals(config.DispatcharrStreamEndpoint, "xtream", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (IsSameServer(config.BaseUrl, config.DispatcharrUrl))
+                        {
+                            result.Url = BuildXtreamUrl(config, streamId, "ts");
+                            result.Route = StreamRoute.DispatcharrXtream;
+                            return result;
+                        }
+
+                        result.XtreamEndpointIgnored = true;
+                    }
+
+                    result.Url = string.Format(CultureInfo.InvariantCulture,
                         "{0}/proxy/ts/stream/{1}",
                         config.DispatcharrUrl.TrimEnd('/'), uuid);
-                    Logger.Debug("Stream {0}: using Dispatcharr proxy URL (uuid={1})", streamId, uuid);
-                    return (proxyUrl, true);
+                    result.Route = StreamRoute.DispatcharrProxy;
+                    return result;
                 }
 
                 if (!config.DispatcharrFallbackToXtream)
                 {
-                    Logger.Warn("Stream {0}: no Dispatcharr UUID and fallback disabled, skipping", streamId);
-                    return (null, false);
+                    result.Route = StreamRoute.Skipped;
+                    return result;
                 }
-
-                Logger.Debug("Stream {0}: no Dispatcharr UUID, falling back to direct Xtream URL", streamId);
             }
 
             var extension = string.Equals(config.LiveTvOutputFormat, "ts", StringComparison.OrdinalIgnoreCase)
                 ? "ts" : "m3u8";
-            return (string.Format(CultureInfo.InvariantCulture,
+            result.Url = BuildXtreamUrl(config, streamId, extension);
+            result.Route = StreamRoute.DirectXtream;
+            return result;
+        }
+
+        private static string BuildXtreamUrl(PluginConfiguration config, int streamId, string extension)
+        {
+            return string.Format(CultureInfo.InvariantCulture,
                 "{0}/live/{1}/{2}/{3}.{4}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), streamId, extension), false);
+                config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), streamId, extension);
+        }
+
+        /// <summary>Same scheme, host and port. Paths are ignored.</summary>
+        internal static bool IsSameServer(string a, string b)
+        {
+            if (!Uri.TryCreate(a?.Trim(), UriKind.Absolute, out var ua) ||
+                !Uri.TryCreate(b?.Trim(), UriKind.Absolute, out var ub))
+                return false;
+
+            return string.Equals(ua.Scheme, ub.Scheme, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(ua.Host, ub.Host, StringComparison.OrdinalIgnoreCase)
+                && ua.Port == ub.Port;
         }
 
         /// <summary>

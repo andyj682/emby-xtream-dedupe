@@ -67,6 +67,14 @@ lookups at playback time are what BUG-007 was about. `Profile`, `Level`, `BitDep
 ingested codec. `DispatcharrVideoCodecSource` (`auto` / `stats` / `h264` / `hevc`) overrides the
 whole thing. See [ADR-016](docs/decisions/016-dispatcharr-stats-codec-trust.md).
 
+### Dispatcharr channels can play from the Xtream URL, opt-in
+
+*Dispatcharr → Stream URL* = Xtream makes a channel with a UUID play from
+`{BaseUrl}/live/{user}/{pass}/{id}.ts` so Dispatcharr shows the right user. It is only used when
+`BaseUrl` is the Dispatcharr server (same scheme, host, port); otherwise the proxy URL is kept, so
+the setting never routes around Dispatcharr. It still counts as a Dispatcharr stream: probing off,
+profile codec wins. See [ADR-022](docs/decisions/022-dispatcharr-xtream-stream-url-opt-in.md).
+
 ### SupportsDirectStream controls whether native clients bypass server-side segmentation
 
 `SupportsDirectStream = true` in `MediaSourceInfo` tells Emby the stream can be forwarded directly to the client without transcoding. Native Emby clients (Apple TV, iOS, Android) prefer this path when available — they receive raw MPEG-TS or the proxy URL and play it directly. This skips Emby's HLS segmentation pipeline entirely.

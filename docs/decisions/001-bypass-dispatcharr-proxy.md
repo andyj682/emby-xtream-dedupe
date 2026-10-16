@@ -8,6 +8,10 @@
 
 ## ⚠️ THIS CHANGE WAS FULLY REVERTED
 
+> **2026-10-16:** the Xtream URL is now available as an opt-in, for Dispatcharr user
+> attribution rather than reliability. The proxy URL stays the default. See
+> [ADR-022](022-dispatcharr-xtream-stream-url-opt-in.md).
+
 **The code was reverted to use the original proxy URL (`/proxy/ts/stream/{uuid}`).**
 **The premise of this ADR was wrong. Do not re-implement this change.**
 
