@@ -67,7 +67,12 @@ An opt-in setting, *Plugin Config → Dispatcharr → Stream URL*, default **Dis
   server, not each Emby user.
 - The Xtream password is in the stream URL. The plugin never logs the URL on this path, but Emby
   and ffmpeg may log the media source path, as they already do for direct Xtream setups.
+- Native clients that direct-stream are handed `MediaSource.Path`, so on this route they receive
+  the Dispatcharr user's Xtream username and password, which also work on `player_api.php`.
+  Direct Xtream setups already hand clients the provider's credentials the same way, so this is
+  not new exposure, but it is a reason the setting is opt-in.
 - A user whose Xtream connection reaches Dispatcharr by a different hostname than the Dispatcharr
-  URL (an IP for one, a name for the other) gets the proxy URL and the warning. Using the same
+  URL (an IP for one, a name for the other) gets the proxy URL. The config page shows a warning
+  under the setting when the two addresses differ, and the server log warns once. Using the same
   address in both fields fixes it.
 - Not run against a real Dispatcharr yet.

@@ -1454,7 +1454,8 @@ namespace Emby.Xtream.Plugin.Service
             switch (result.Route)
             {
                 case StreamRoute.DispatcharrProxy:
-                    Logger.Debug("Stream {0}: using Dispatcharr proxy URL", streamId);
+                    Logger.Debug("Stream {0}: using Dispatcharr proxy URL (uuid={1})", streamId,
+                        _channelUuidMap.TryGetValue(streamId, out var uuid) ? uuid : "?");
                     break;
                 case StreamRoute.DispatcharrXtream:
                     // Never log the URL itself: the Xtream password is in its path.
