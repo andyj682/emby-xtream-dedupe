@@ -79,7 +79,10 @@ namespace Emby.Xtream.Plugin.Tests
         [InlineData("https://dispatcharr.local:9191", "http://dispatcharr.local:9191", false)]
         [InlineData("http://provider.example", "http://dispatcharr.local:9191", false)]
         [InlineData("", "http://dispatcharr.local:9191", false)]
-        public void IsSameServer_ComparesSchemeHostAndPort(string a, string b, bool expected)
+        [InlineData("http://proxy.local/dispatcharr", "http://proxy.local/dispatcharr/", true)]
+        [InlineData("http://proxy.local/provider", "http://proxy.local/dispatcharr", false)]
+        [InlineData("http://proxy.local", "http://proxy.local/dispatcharr", false)]
+        public void IsSameServer_ComparesSchemeHostPortAndPath(string a, string b, bool expected)
         {
             Assert.Equal(expected, XtreamTunerHost.IsSameServer(a, b));
         }

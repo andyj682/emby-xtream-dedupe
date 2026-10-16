@@ -50,7 +50,7 @@ An opt-in setting, *Plugin Config → Dispatcharr → Stream URL*, default **Dis
 
 - With **Xtream connection above**, a channel with a UUID plays from
   `{BaseUrl}/live/{Username}/{Password}/{streamId}.ts`, the Xtream connection's own URL.
-- That URL is only used when `BaseUrl` and `DispatcharrUrl` have the same scheme, host and port.
+- That URL is only used when `BaseUrl` and `DispatcharrUrl` have the same scheme, host, port and path (a reverse proxy can serve two services on one host).
   In that setup the plugin's stream ID is Dispatcharr's channel ID. Otherwise the URL would skip
   Dispatcharr (and any VPN or stream limits it applies), so the proxy URL is kept and a warning is
   logged once.

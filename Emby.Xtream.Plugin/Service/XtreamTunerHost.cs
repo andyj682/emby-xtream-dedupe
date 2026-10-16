@@ -1549,7 +1549,11 @@ namespace Emby.Xtream.Plugin.Service
                 config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), streamId, extension);
         }
 
-        /// <summary>Same scheme, host and port. Paths are ignored.</summary>
+        /// <summary>
+        /// Same scheme, host, port and path (ignoring a trailing slash). The path matters behind a
+        /// reverse proxy, where <c>/provider</c> and <c>/dispatcharr</c> on one host are different
+        /// services.
+        /// </summary>
         internal static bool IsSameServer(string a, string b)
         {
             if (!Uri.TryCreate(a?.Trim(), UriKind.Absolute, out var ua) ||
@@ -1558,7 +1562,8 @@ namespace Emby.Xtream.Plugin.Service
 
             return string.Equals(ua.Scheme, ub.Scheme, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(ua.Host, ub.Host, StringComparison.OrdinalIgnoreCase)
-                && ua.Port == ub.Port;
+                && ua.Port == ub.Port
+                && string.Equals(ua.AbsolutePath.TrimEnd('/'), ub.AbsolutePath.TrimEnd('/'), StringComparison.Ordinal);
         }
 
         /// <summary>

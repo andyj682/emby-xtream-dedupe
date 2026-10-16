@@ -407,15 +407,17 @@ function (BaseView, loading) {
     View.prototype.onPause = function () {};
 
     // The Xtream stream URL is only used when the Xtream server is the Dispatcharr server
-    // (same scheme, host and port, as XtreamTunerHost.IsSameServer checks). Otherwise the
+    // (same scheme, host, port and path, as XtreamTunerHost.IsSameServer checks). Otherwise the
     // plugin keeps the proxy URL, so say so here rather than only in the server log (ADR-022).
     function updateStreamEndpointWarning(view) {
         var warning = view.querySelector('.dispatcharrStreamEndpointWarning');
         var wantsXtream = view.querySelector('.selDispatcharrStreamEndpoint').value === 'xtream';
         var same = false;
         try {
-            same = new URL(view.querySelector('.txtBaseUrl').value.trim()).origin ===
-                new URL(view.querySelector('.txtDispatcharrUrl').value.trim()).origin;
+            var a = new URL(view.querySelector('.txtBaseUrl').value.trim());
+            var b = new URL(view.querySelector('.txtDispatcharrUrl').value.trim());
+            same = a.origin === b.origin &&
+                a.pathname.replace(/\/+$/, '') === b.pathname.replace(/\/+$/, '');
         } catch (e) {
             same = false;
         }

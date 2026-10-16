@@ -71,7 +71,7 @@ whole thing. See [ADR-016](docs/decisions/016-dispatcharr-stats-codec-trust.md).
 
 *Dispatcharr → Stream URL* = Xtream makes a channel with a UUID play from
 `{BaseUrl}/live/{user}/{pass}/{id}.ts` so Dispatcharr shows the right user. It is only used when
-`BaseUrl` is the Dispatcharr server (same scheme, host, port); otherwise the proxy URL is kept, so
+`BaseUrl` is the Dispatcharr server (same scheme, host, port and path); otherwise the proxy URL is kept, so
 the setting never routes around Dispatcharr. It still counts as a Dispatcharr stream: probing off,
 profile codec wins. See [ADR-022](docs/decisions/022-dispatcharr-xtream-stream-url-opt-in.md).
 
