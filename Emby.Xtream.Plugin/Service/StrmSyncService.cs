@@ -511,12 +511,7 @@ namespace Emby.Xtream.Plugin.Service
                 int moviesWrittenCount = 0;
 
                 // Shared Dispatcharr VOD client — only queried per-movie, after smart-skip
-                Emby.Xtream.Plugin.Client.DispatcharrClient dispatcharrVodClient = null;
-                if (config.EnableDispatcharr && !string.IsNullOrEmpty(config.DispatcharrUrl))
-                {
-                    dispatcharrVodClient = new Emby.Xtream.Plugin.Client.DispatcharrClient(_logger);
-                    dispatcharrVodClient.Configure(config.DispatcharrUser, config.DispatcharrPass);
-                }
+                var dispatcharrVodClient = CreateDispatcharrVodClient(config);
 
                 var writeContext = new MovieWriteContext
                 {
@@ -1445,6 +1440,19 @@ namespace Emby.Xtream.Plugin.Service
             }
         }
 
+        /// <summary>Handler for the Dispatcharr VOD client; null uses the real network. For tests.</summary>
+        internal System.Net.Http.HttpMessageHandler DispatcharrHandler { get; set; }
+
+        /// <summary>The Dispatcharr client the movie writer asks for extra versions, or null without Dispatcharr.</summary>
+        private Emby.Xtream.Plugin.Client.DispatcharrClient CreateDispatcharrVodClient(PluginConfiguration config)
+        {
+            if (!config.EnableDispatcharr || string.IsNullOrEmpty(config.DispatcharrUrl))
+                return null;
+            var client = new Emby.Xtream.Plugin.Client.DispatcharrClient(_logger, DispatcharrHandler);
+            client.Configure(config.DispatcharrUser, config.DispatcharrPass);
+            return client;
+        }
+
         private enum MovieWriteOutcome { InvalidName, NoFolder, Skipped, Written }
 
         /// <summary>What one movie write produced, filled in as it goes so a caller's catch can read it.</summary>
@@ -1721,12 +1729,7 @@ namespace Emby.Xtream.Plugin.Service
                     }
                 }
 
-                Emby.Xtream.Plugin.Client.DispatcharrClient dispatcharrVodClient = null;
-                if (config.EnableDispatcharr && !string.IsNullOrEmpty(config.DispatcharrUrl))
-                {
-                    dispatcharrVodClient = new Emby.Xtream.Plugin.Client.DispatcharrClient(_logger);
-                    dispatcharrVodClient.Configure(config.DispatcharrUser, config.DispatcharrPass);
-                }
+                var dispatcharrVodClient = CreateDispatcharrVodClient(config);
 
                 var writeContext = new MovieWriteContext
                 {
@@ -1756,7 +1759,11 @@ namespace Emby.Xtream.Plugin.Service
                             TmdbId = item.TmdbId,
                             ContainerExtension = item.ContainerExtension,
                         };
-                        await WriteMovieAsync(movie, writeContext, new MovieWriteResult(), cancellationToken).ConfigureAwait(false);
+                        var outcome = await WriteMovieAsync(movie, writeContext, new MovieWriteResult(), cancellationToken).ConfigureAwait(false);
+                        // Only a written movie is done. A retry that wrote nothing (no folder for its
+                        // category, or no usable name) stays in the failed list for the next sync.
+                        if (outcome != MovieWriteOutcome.Written)
+                            throw new InvalidOperationException("Nothing written (" + outcome + ")");
 
                         lock (succeededLock) { succeeded.Add(item); }
                         Interlocked.Increment(ref _movieProgress.Completed);
