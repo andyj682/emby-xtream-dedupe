@@ -65,6 +65,16 @@ function (BaseView, loading) {
             updateDispatcharrVisibility(view);
         });
 
+        // Replaces the schedule in Emby's Scheduled Tasks with the one shown on the page. Saving
+        // only writes it when these settings change, so this is the way back from a mismatch.
+        view.querySelector('.btnApplyAutoSyncSchedule').addEventListener('click', function () {
+            ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                return applyScheduleToTasks(view, config, ApiClient).then(function () {
+                    showScheduleMismatch(view, config, ApiClient);
+                });
+            });
+        });
+
         ['.selDispatcharrStreamEndpoint', '.txtBaseUrl', '.txtDispatcharrUrl'].forEach(function (sel) {
             view.querySelector(sel).addEventListener('input', function () {
                 updateStreamEndpointWarning(view);
@@ -657,8 +667,8 @@ function (BaseView, loading) {
                 Dashboard.processPluginConfigurationUpdateResult();
                 // Only when the auto-sync settings changed: writing them on every save replaced
                 // (or, with auto-sync off, wiped) a schedule set in Emby's Scheduled Tasks.
-                if (scheduleChanged) applyScheduleToTasks(view, config, ApiClient);
-                showScheduleMismatch(view, config, ApiClient);
+                (scheduleChanged ? applyScheduleToTasks(view, config, ApiClient) : Promise.resolve())
+                    .then(function () { showScheduleMismatch(view, config, ApiClient); });
                 if (typeof callback === 'function') callback();
             });
         }).catch(function () {
@@ -809,22 +819,23 @@ function updateEpgVisibility(view) {
         });
     }
 
+    // Resolves once Emby has stored the triggers, so a check that follows sees them.
     function applyScheduleToTasks(view, config, apiClient) {
-        apiClient.getJSON(apiClient.getUrl('ScheduledTasks'))
+        return apiClient.getJSON(apiClient.getUrl('ScheduledTasks'))
             .then(function (tasks) {
                 if (!Array.isArray(tasks)) return;
                 var xtreamTasks = tasks.filter(function (t) {
                     return t.Category === 'Xtream Tuner';
                 });
                 var triggers = buildTriggers(config);
-                xtreamTasks.forEach(function (task) {
-                    apiClient.ajax({
+                return Promise.all(xtreamTasks.map(function (task) {
+                    return apiClient.ajax({
                         url: apiClient.getUrl('ScheduledTasks/' + task.Id + '/Triggers'),
                         type: 'POST',
                         contentType: 'application/json',
                         data: JSON.stringify(triggers)
                     });
-                });
+                }));
             });
     }
 
