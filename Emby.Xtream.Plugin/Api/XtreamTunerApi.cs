@@ -354,10 +354,7 @@ namespace Emby.Xtream.Plugin.Api
                 return new List<Category>();
             }
 
-            var url = string.Format(
-                System.Globalization.CultureInfo.InvariantCulture,
-                "{0}/player_api.php?username={1}&password={2}&action=get_vod_categories",
-                config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password));
+            var url = XtreamUrls.PlayerApi(config, "get_vod_categories");
 
             try
             {
@@ -411,10 +408,7 @@ namespace Emby.Xtream.Plugin.Api
             {
                 using (var httpClient = Plugin.CreateHttpClient())
                 {
-                    var url = string.Format(
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        "{0}/player_api.php?username={1}&password={2}&action=get_series_categories",
-                        config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password));
+                    var url = XtreamUrls.PlayerApi(config, "get_series_categories");
 
                     var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
                     var categories = System.Text.Json.JsonSerializer.Deserialize<List<Category>>(json, jsonOptions)
@@ -424,10 +418,7 @@ namespace Emby.Xtream.Plugin.Api
                     // Fallback: derive categories from series list when server returns empty
                     if (sorted.Count == 0)
                     {
-                        var seriesUrl = string.Format(
-                            System.Globalization.CultureInfo.InvariantCulture,
-                            "{0}/player_api.php?username={1}&password={2}&action=get_series",
-                            config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password));
+                        var seriesUrl = XtreamUrls.PlayerApi(config, "get_series");
 
                         var seriesJson = await httpClient.GetStringAsync(seriesUrl).ConfigureAwait(false);
                         var seriesList = System.Text.Json.JsonSerializer.Deserialize<List<SeriesInfo>>(seriesJson, jsonOptions)
@@ -488,11 +479,7 @@ namespace Emby.Xtream.Plugin.Api
                 return new List<ContentItemSummary>();
             }
 
-            var url = string.Format(
-                System.Globalization.CultureInfo.InvariantCulture,
-                "{0}/player_api.php?username={1}&password={2}&action=get_vod_streams&category_id={3}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password),
-                request.CategoryId);
+            var url = XtreamUrls.PlayerApi(config, "get_vod_streams", "category_id", request.CategoryId);
 
             try
             {
@@ -523,11 +510,7 @@ namespace Emby.Xtream.Plugin.Api
                 return new List<ContentItemSummary>();
             }
 
-            var url = string.Format(
-                System.Globalization.CultureInfo.InvariantCulture,
-                "{0}/player_api.php?username={1}&password={2}&action=get_series&category_id={3}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password),
-                request.CategoryId);
+            var url = XtreamUrls.PlayerApi(config, "get_series", "category_id", request.CategoryId);
 
             try
             {

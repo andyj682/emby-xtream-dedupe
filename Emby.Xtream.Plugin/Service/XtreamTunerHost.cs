@@ -807,10 +807,7 @@ namespace Emby.Xtream.Plugin.Service
         {
             using (var httpClient = Plugin.CreateHttpClient(30))
             {
-                var url = string.Format(
-                    CultureInfo.InvariantCulture,
-                    "{0}/player_api.php?username={1}&password={2}&action=get_live_streams",
-                    config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty));
+                var url = XtreamUrls.PlayerApi(config, "get_live_streams");
 
                 var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
                 return STJ.JsonSerializer.Deserialize<List<Client.Models.LiveStreamInfo>>(json, JsonOptions)
@@ -1466,9 +1463,7 @@ namespace Emby.Xtream.Plugin.Service
 
         private static string BuildXtreamUrl(PluginConfiguration config, int streamId, string extension)
         {
-            return string.Format(CultureInfo.InvariantCulture,
-                "{0}/live/{1}/{2}/{3}.{4}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), streamId, extension);
+            return XtreamUrls.Stream(config, "live", streamId, extension);
         }
 
         /// <summary>
