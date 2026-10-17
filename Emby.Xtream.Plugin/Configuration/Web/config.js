@@ -270,13 +270,15 @@ function (BaseView, loading) {
             loadSeriesCategoriesMulti(self);
         });
 
-        // Sync buttons
+        // Sync buttons. The server syncs from the saved configuration, so save what is on
+        // screen first: otherwise ticking a category and pressing Sync ran the old selection.
+        // A failed save shows its own alert and the sync does not start.
         view.querySelector('.btnSyncMovies').addEventListener('click', function () {
-            syncMovies(view);
+            saveConfig(self, function () { syncMovies(view); });
         });
 
         view.querySelector('.btnSyncSeries').addEventListener('click', function () {
-            syncSeries(view);
+            saveConfig(self, function () { syncSeries(view); });
         });
 
         // Delete content buttons
@@ -294,7 +296,7 @@ function (BaseView, loading) {
 
         // Dashboard sync all button
         view.querySelector('.btnDashboardSyncAll').addEventListener('click', function () {
-            dashboardSyncAll(self);
+            saveConfig(self, function () { dashboardSyncAll(self); });
         });
 
         // Retry failed items button
@@ -2485,7 +2487,7 @@ function updateEpgVisibility(view) {
 
             if (!doMovies && !doSeries) {
                 btn.disabled = false;
-                setPillResult(resultEl, false, 'Nothing to sync. Enable Movies or Series sync in Settings first.');
+                setPillResult(resultEl, false, 'Nothing to sync. Enable Movies or Series sync on the Movies or Series tab first.');
                 return;
             }
 
