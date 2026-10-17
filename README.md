@@ -80,13 +80,15 @@ Optional integration with [Dispatcharr](https://github.com/Dispatcharr/Dispatcha
 
 ### Built-in Dashboard
 
-A configuration UI embedded in Emby's plugin settings with five tabs.
+A configuration UI embedded in Emby's plugin settings with six tabs. Settings most people never
+need to change sit in a collapsed **Advanced** block at the bottom of each tab.
 
-- **Dashboard** — last sync status, sync history (last 10), library stats, live progress bar
-- **Settings** — server connection, sync tuning, name cleaning, metadata matching
+- **Dashboard** — last sync status, sync history (last 10), library stats, live progress bar, the auto-sync schedule
+- **Connection** — Xtream server, Dispatcharr, beta updates
+- **Library** — library folder, auto-sync schedule, folder names, what happens after a sync
 - **Movies** — enable/disable, folder mode, category selection with search, sync button
 - **Series** — same layout as movies with series-specific options
-- **Live TV** — stream format, EPG settings, catch-up, Dispatcharr, category filtering
+- **Live TV** — channels, guide, playback, Dispatcharr playback options
 
 ---
 
@@ -145,6 +147,7 @@ Copy `Emby.Xtream.Plugin.dll` to your Emby data directory under `plugins/`, then
    - **Username** and **Password**
 4. Click **Test Connection** to verify
 5. Click **Save**
+6. On the **Library** tab, check the **Library Folder** (default `/config/xtream`) and set an **Auto-Sync Schedule** if you want one
 
 ### Step 4: Set Up Live TV
 
@@ -152,7 +155,7 @@ Copy `Emby.Xtream.Plugin.dll` to your Emby data directory under `plugins/`, then
 2. Choose your **Stream Format** (MPEG-TS recommended)
 3. Click **Refresh Categories** to load channel groups
 4. Select the categories you want
-5. Configure **EPG** settings (days to fetch, cache duration)
+5. Pick a **Guide Source** (guide days and cache times are under **Advanced**)
 6. Click **Save**
 7. Go to **Emby Settings > Live TV** and add a new tuner:
    - Type: **Xtream Tuner**
@@ -161,8 +164,8 @@ Copy `Emby.Xtream.Plugin.dll` to your Emby data directory under `plugins/`, then
 ### Step 5: Set Up Movies (Optional)
 
 1. Switch to the **Movies** tab
-2. Check **Enable VOD Movies**
-3. Click **Refresh Categories** to load VOD categories
+2. Check **Enable Movies**
+3. Click **Refresh Categories** to load movie categories
 4. Choose a **Folder Organization** mode:
    - **Single Folder** — select categories, all movies go to `Movies/`
    - **Multiple Folders** — one folder per category, auto-named
@@ -182,13 +185,14 @@ Copy `Emby.Xtream.Plugin.dll` to your Emby data directory under `plugins/`, then
 
 If you use [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) for stream management:
 
-1. Go to **Live TV** tab > **Dispatcharr** section
+1. Go to the **Connection** tab > **Dispatcharr** section
 2. Check **Enable Dispatcharr**
 3. Enter Dispatcharr URL, username, and password
-4. Click **Test Dispatcharr** to verify
+4. Click **Test Dispatcharr Connection** to verify
 5. Save — Live TV streams will now route through Dispatcharr's proxy
+6. Playback options for Dispatcharr channels (stream URL, video codec) are on the **Live TV** tab under **Dispatcharr Playback**
 
-> **Note:** For the plugin to receive codec/resolution metadata and skip FFprobe, [Streamflow](https://github.com/krinkuto11/streamflow) must be enabled and configured in Dispatcharr. Without Streamflow generating per-channel stream stats, the plugin falls back to standard stream handling.
+> **Note:** The plugin uses Dispatcharr's per-channel stream stats (codec, resolution) when they exist, for example when [Streamflow](https://github.com/krinkuto11/streamflow) fills them in. Channels without stats play with standard stream handling.
 
 ### Updating the Plugin
 

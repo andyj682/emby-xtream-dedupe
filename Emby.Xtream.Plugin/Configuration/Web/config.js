@@ -65,6 +65,10 @@ function (BaseView, loading) {
             updateDispatcharrVisibility(view);
         });
 
+        view.querySelector('.chkEnableLiveTv').addEventListener('change', function () {
+            updateLiveTvVisibility(view);
+        });
+
         // Replaces the schedule in Emby's Scheduled Tasks with the one shown on the page. Saving
         // only writes it when these settings change, so this is the way back from a mismatch.
         // Saves first, so the schedule applied is the one on screen and not an older saved one.
@@ -551,6 +555,7 @@ function (BaseView, loading) {
             updateNameCleaningVisibility(view);
             updateDispatcharrVisibility(view);
             updateEpgVisibility(view);
+            updateLiveTvVisibility(view);
             updateVodMovieVisibility(view);
             updateSeriesVisibility(view);
             updateFoldersVisibility(view, 'movie');
@@ -691,8 +696,8 @@ function (BaseView, loading) {
             btns[i].style.borderBottomColor = 'transparent';
         }
 
-        var panelMap = { dashboard: '.tabDashboard', generic: '.tabGeneric', movies: '.tabMovies', series: '.tabSeries', liveTv: '.tabLiveTv' };
-        var btnMap = { dashboard: '.tabBtnDashboard', generic: '.tabBtnGeneric', movies: '.tabBtnMovies', series: '.tabBtnSeries', liveTv: '.tabBtnLiveTv' };
+        var panelMap = { dashboard: '.tabDashboard', generic: '.tabGeneric', library: '.tabLibrary', movies: '.tabMovies', series: '.tabSeries', liveTv: '.tabLiveTv' };
+        var btnMap = { dashboard: '.tabBtnDashboard', generic: '.tabBtnGeneric', library: '.tabBtnLibrary', movies: '.tabBtnMovies', series: '.tabBtnSeries', liveTv: '.tabBtnLiveTv' };
 
         var panel = view.querySelector(panelMap[tabName]);
         if (panel) panel.style.display = 'block';
@@ -713,9 +718,18 @@ function (BaseView, loading) {
         view.querySelector('.tmdbSettings').style.display = enabled ? '' : 'none';
     }
 
+    // Dispatcharr's own settings, plus the Live TV options that only apply with Dispatcharr.
     function updateDispatcharrVisibility(view) {
         var enabled = view.querySelector('.chkEnableDispatcharr').checked;
-        view.querySelector('.dispatcharrSettings').style.display = enabled ? '' : 'none';
+        ['.dispatcharrSettings', '.dispatcharrPlaybackSettings', '.dispatcharrGuideSettings'].forEach(function (sel) {
+            var el = view.querySelector(sel);
+            if (el) el.style.display = enabled ? '' : 'none';
+        });
+    }
+
+    function updateLiveTvVisibility(view) {
+        var enabled = view.querySelector('.chkEnableLiveTv').checked;
+        view.querySelector('.liveTvSettings').style.display = enabled ? '' : 'none';
     }
 
 function updateEpgVisibility(view) {
@@ -1592,7 +1606,7 @@ function updateEpgVisibility(view) {
             instance.loadedVodCategories = categories;
 
             if (!categories || categories.length === 0) {
-                listEl.innerHTML = '<div style="opacity:0.5;">No VOD categories found. Your provider may not include VOD access on this account.</div>';
+                listEl.innerHTML = '<div style="opacity:0.5;">No movie categories found. Your provider may not include VOD access on this account.</div>';
                 return;
             }
 
@@ -1606,7 +1620,7 @@ function updateEpgVisibility(view) {
             updateCategoryCountBadge(view, 'vod');
         }).catch(function () {
             loadingEl.style.display = 'none';
-            listEl.innerHTML = '<div style="color:#cc0000;">Failed to load VOD categories. Save your connection settings first, then try again.</div>';
+            listEl.innerHTML = '<div style="color:#cc0000;">Failed to load movie categories. Save your connection settings first, then try again.</div>';
         });
     }
 
@@ -1638,7 +1652,7 @@ function updateEpgVisibility(view) {
             instance.loadedVodCategories = categories || [];
 
             if (!categories || categories.length === 0) {
-                statusEl.textContent = 'No VOD categories found. Your provider may not include VOD access on this account.';
+                statusEl.textContent = 'No movie categories found. Your provider may not include VOD access on this account.';
                 statusEl.style.color = '#cc0000'; statusEl.style.opacity = '1';
                 clearFolderCardCategories(view, 'movie');
                 return;
@@ -2771,7 +2785,7 @@ function updateEpgVisibility(view) {
             // The server could not read Emby's scheduled tasks; don't claim it is off.
             el.textContent = 'Auto-sync: Unknown (see Emby\'s Scheduled Tasks)';
         } else if (!data.AutoSyncOn) {
-            el.innerHTML = 'Auto-sync: Off \u00a0\u2014\u00a0<a class="lnkGoToAutoSync" href="#" style="color:inherit; text-decoration:underline;">Enable in Settings</a>';
+            el.innerHTML = 'Auto-sync: Off \u00a0\u2014\u00a0<a class="lnkGoToAutoSync" href="#" style="color:inherit; text-decoration:underline;">Enable on the Library tab</a>';
         } else {
             var nextText = '';
             if (data.NextSyncTime) {
@@ -2788,7 +2802,7 @@ function updateEpgVisibility(view) {
         if (link) {
             link.addEventListener('click', function (e) {
                 e.preventDefault();
-                switchTab(view, 'generic');
+                switchTab(view, 'library');
             });
         }
     }
