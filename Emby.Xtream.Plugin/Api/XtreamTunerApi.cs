@@ -15,95 +15,116 @@ using MediaBrowser.Model.Services;
 
 namespace Emby.Xtream.Plugin.Api
 {
+    // Every route is admin-only. Emby already requires a login on a route with no attribute,
+    // but checks no role, so any signed-in user could delete content, install an update or
+    // restart the server. AuthenticatedRoutesTests fails on a route without this attribute.
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Epg", "GET", Summary = "Gets XMLTV EPG data for Live TV channels")]
     public class GetEpgXml : IReturnVoid
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/LiveTv", "GET", Summary = "Gets M3U playlist for Live TV channels")]
     public class GetM3UPlaylist : IReturnVoid
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Categories/Live", "GET", Summary = "Gets Live TV categories from Xtream API")]
     public class GetLiveCategories : IReturn<List<Category>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/RefreshCache", "POST", Summary = "Invalidates M3U and EPG caches")]
     public class RefreshCache : IReturnVoid
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Categories/Vod", "GET", Summary = "Gets VOD movie categories from Xtream API")]
     public class GetVodCategories : IReturn<List<Category>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Categories/Series", "GET", Summary = "Gets Series categories from Xtream API")]
     public class GetSeriesCategories : IReturn<List<Category>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Items/Vod", "GET", Summary = "Gets VOD movie titles for one category")]
     public class GetVodItems : IReturn<List<ContentItemSummary>>
     {
         public int CategoryId { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Items/Series", "GET", Summary = "Gets series titles for one category")]
     public class GetSeriesItems : IReturn<List<ContentItemSummary>>
     {
         public int CategoryId { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Sync/Movies", "POST", Summary = "Triggers VOD movie STRM sync")]
     public class SyncMovies : IReturn<SyncResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Sync/Series", "POST", Summary = "Triggers series STRM sync")]
     public class SyncSeries : IReturn<SyncResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Sync/Status", "GET", Summary = "Gets current sync progress")]
     public class GetSyncStatus : IReturn<SyncStatusResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Dashboard", "GET", Summary = "Gets dashboard data including sync history and library stats")]
     public class GetDashboard : IReturn<DashboardResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Content/Movies", "DELETE", Summary = "Deletes all movie STRM content")]
     public class DeleteMovieContent : IReturn<DeleteContentResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Content/Series", "DELETE", Summary = "Deletes all series STRM content")]
     public class DeleteSeriesContent : IReturn<DeleteContentResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/WritablePaths", "GET", Summary = "Returns writable mount points available to Emby")]
     public class GetWritablePaths : IReturn<List<string>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/BrowsePath", "GET", Summary = "Lists subdirectories at the given path, or writable mounts if no path given")]
     public class BrowsePath : IReturn<BrowsePathResult>
     {
         public string Path { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/ValidateStrmPath", "POST", Summary = "Validates that the STRM library path is writable")]
     public class ValidateStrmPath : IReturn<TestConnectionResult>
     {
         public string Path { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/TestConnection", "POST", Summary = "Tests connection to Xtream server")]
     public class TestXtreamConnection : IReturn<TestConnectionResult>
     {
@@ -112,6 +133,7 @@ namespace Emby.Xtream.Plugin.Api
         public string Password { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/TestDispatcharr", "POST", Summary = "Tests connection to Dispatcharr")]
     public class TestDispatcharrConnection : IReturn<TestConnectionResult>
     {
@@ -120,42 +142,50 @@ namespace Emby.Xtream.Plugin.Api
         public string Password { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/DispatcharrProfiles", "GET", Summary = "Gets Channel Profiles from Dispatcharr")]
     public class GetDispatcharrProfiles : IReturn<List<Client.Models.DispatcharrProfile>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/CheckUpdate", "GET", Summary = "Checks GitHub for a newer plugin release")]
     public class CheckForUpdate : IReturn<UpdateCheckResult>
     {
         public bool? Beta { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Sync/FailedItems", "GET", Summary = "Returns items that failed during the last sync")]
     public class GetFailedItems : IReturn<List<FailedSyncItem>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Sync/RetryFailed", "POST", Summary = "Retries all items that failed during the last sync")]
     public class RetryFailed : IReturn<SyncResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Logs", "GET", Summary = "Downloads sanitized plugin logs")]
     public class GetSanitizedLogs : IReturnVoid
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/InstallUpdate", "POST", Summary = "Downloads and installs the latest plugin update")]
     public class InstallUpdate : IReturn<InstallUpdateResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/RestartEmby", "POST", Summary = "Restarts the Emby server")]
     public class RestartEmby : IReturnVoid
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/TestTmdbLookup", "GET", Summary = "Tests TMDB fallback lookup")]
     public class TestTmdbLookup : IReturn<TestConnectionResult>
     {
@@ -163,11 +193,13 @@ namespace Emby.Xtream.Plugin.Api
         public int? Year { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/SyncGuideMappings", "POST", Summary = "Detaches listing providers from the Xtream tuner so Gracenote EPG is fetched by the tuner directly")]
     public class SyncGuideMappings : IReturn<SyncGuideMappingsResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/StreamStats", "GET", Summary = "Returns cached stream stats received from Dispatcharr for all known streams")]
     public class GetStreamStats : IReturn<object>
     {
