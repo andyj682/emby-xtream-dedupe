@@ -1703,11 +1703,12 @@ namespace Emby.Xtream.Plugin.Service
                 var succeeded = new List<FailedSyncItem>();
                 var succeededLock = new object();
 
-                // The same inputs the movie sync gives its writer. Without the category names a
-                // retry in category-folder mode wrote nothing and still counted as done.
+                // The same inputs the movie sync gives its writer. Only the old category-name mode
+                // ("multiple", converted to "custom" when the config page saves) reads the names;
+                // without them that retry wrote nothing and still counted as done.
                 var categoryNames = new Dictionary<int, string>();
                 Exception categoryError = null;
-                if (movieItems.Count > 0 && !string.Equals(config.MovieFolderMode, "single", StringComparison.OrdinalIgnoreCase))
+                if (movieItems.Count > 0 && string.Equals(config.MovieFolderMode, "multiple", StringComparison.OrdinalIgnoreCase))
                 {
                     try
                     {

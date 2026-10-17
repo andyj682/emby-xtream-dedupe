@@ -67,11 +67,11 @@ exclusion removal, orphan cleanup) that would each need a guard in that mode.
 
 ## Addendum (2026-10-17): movies
 
-The movie retry had the same kind of drift: `RetryMovieItemAsync` built an empty category map, so
-in category-folder mode it wrote nothing and still removed the movie from the failed list, and it
-never wrote Dispatcharr's extra versions. Movies are not retried through a full sync, because
+The movie retry had the same kind of drift: it never wrote Dispatcharr's extra versions, and it
+built an empty category map, so in the old category-name folder mode (`multiple`, which the config
+page converts to `custom` on save) it wrote nothing and still removed the movie from the failed list. Movies are not retried through a full sync, because
 `SyncMoviesCoreAsync` clears the whole failed list (series included) and also runs exclusion,
 orphan cleanup and the watermark. Instead the per-movie body of the sync became
-`WriteMovieAsync`, and the retry calls it with the same inputs: category names fetched the same
-way, the same folder mappings and Dispatcharr client. A retry that cannot load the categories
-keeps the movie failed rather than writing it into a guessed folder.
+`WriteMovieAsync`, and the retry calls it with the same inputs: the same folder mappings and
+Dispatcharr client, and in `multiple` mode the category names. A retry in that mode that cannot
+load the categories keeps the movie failed rather than writing it into a guessed folder.
