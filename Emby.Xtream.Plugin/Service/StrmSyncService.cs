@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Emby.Xtream.Plugin.Client;
 using Emby.Xtream.Plugin.Client.Models;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Logging;
@@ -603,10 +604,7 @@ namespace Emby.Xtream.Plugin.Service
                             ? movie.ContainerExtension
                             : "mp4";
 
-                        var streamUrl = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0}/movie/{1}/{2}/{3}.{4}",
-                            config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), movie.StreamId, ext);
+                        var streamUrl = XtreamUrls.Stream(config, "movie", movie.StreamId, ext);
 
                         // Build list of STRM entries (multi-version via Dispatcharr, or single)
                         var strmEntries = new List<Tuple<string, string>>();
@@ -1356,10 +1354,7 @@ namespace Emby.Xtream.Plugin.Service
                                     ? episode.ContainerExtension
                                     : "mp4";
 
-                                var streamUrl = string.Format(
-                                    CultureInfo.InvariantCulture,
-                                    "{0}/series/{1}/{2}/{3}.{4}",
-                                    config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), episode.Id, ext);
+                                var streamUrl = XtreamUrls.Stream(config, "series", episode.Id, ext);
 
                                 // Skip write if file content is already up to date (avoids Emby library re-scan)
                                 var fileExists = File.Exists(strmPath);
@@ -1781,10 +1776,7 @@ namespace Emby.Xtream.Plugin.Service
             var movieDir = Path.Combine(config.StrmLibraryPath, subFolder, folderName);
             var strmPath = Path.Combine(movieDir, folderName + ".strm");
             var ext = !string.IsNullOrEmpty(item.ContainerExtension) ? item.ContainerExtension : "mp4";
-            var streamUrl = string.Format(
-                CultureInfo.InvariantCulture,
-                "{0}/movie/{1}/{2}/{3}.{4}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), item.StreamId, ext);
+            var streamUrl = XtreamUrls.Stream(config, "movie", item.StreamId, ext);
 
             var fileExists = File.Exists(strmPath);
 
@@ -2179,10 +2171,7 @@ namespace Emby.Xtream.Plugin.Service
 
         private async Task<List<Category>> FetchCategoriesAsync(string action, PluginConfiguration config, CancellationToken cancellationToken)
         {
-            var url = string.Format(
-                CultureInfo.InvariantCulture,
-                "{0}/player_api.php?username={1}&password={2}&action={3}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), action);
+            var url = XtreamUrls.PlayerApi(config, action);
 
             var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
             return STJ.JsonSerializer.Deserialize<List<Category>>(json, JsonOptions)
@@ -2225,10 +2214,7 @@ namespace Emby.Xtream.Plugin.Service
                 // Fetch all VOD streams. A throw here propagates: the caller's outer catch
                 // aborts the sync before cleanup, which is the correct outcome for the
                 // whole-catalogue request failing.
-                var url = string.Format(
-                    CultureInfo.InvariantCulture,
-                    "{0}/player_api.php?username={1}&password={2}&action=get_vod_streams",
-                    config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty));
+                var url = XtreamUrls.PlayerApi(config, "get_vod_streams");
 
                 var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
                 allStreams = STJ.JsonSerializer.Deserialize<List<VodStreamInfo>>(json, JsonOptions)
@@ -2243,10 +2229,7 @@ namespace Emby.Xtream.Plugin.Service
                     await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
                     try
                     {
-                        var url = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0}/player_api.php?username={1}&password={2}&action=get_vod_streams&category_id={3}",
-                            config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), catId);
+                        var url = XtreamUrls.PlayerApi(config, "get_vod_streams", "category_id", catId);
 
                         var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
                         var streams = STJ.JsonSerializer.Deserialize<List<VodStreamInfo>>(json, JsonOptions)
@@ -2306,10 +2289,7 @@ namespace Emby.Xtream.Plugin.Service
 
             if (categoryIds == null || categoryIds.Length == 0)
             {
-                var url = string.Format(
-                    CultureInfo.InvariantCulture,
-                    "{0}/player_api.php?username={1}&password={2}&action=get_series",
-                    config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty));
+                var url = XtreamUrls.PlayerApi(config, "get_series");
 
                 var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
                 allSeries = STJ.JsonSerializer.Deserialize<List<SeriesInfo>>(json, JsonOptions)
@@ -2324,10 +2304,7 @@ namespace Emby.Xtream.Plugin.Service
                     await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
                     try
                     {
-                        var url = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0}/player_api.php?username={1}&password={2}&action=get_series&category_id={3}",
-                            config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), catId);
+                        var url = XtreamUrls.PlayerApi(config, "get_series", "category_id", catId);
 
                         var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
                         var series = STJ.JsonSerializer.Deserialize<List<SeriesInfo>>(json, JsonOptions)
@@ -2377,10 +2354,7 @@ namespace Emby.Xtream.Plugin.Service
         private async Task<SeriesDetailInfo> FetchSeriesDetailAsync(
             int seriesId, PluginConfiguration config, CancellationToken cancellationToken)
         {
-            var url = string.Format(
-                CultureInfo.InvariantCulture,
-                "{0}/player_api.php?username={1}&password={2}&action=get_series_info&series_id={3}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), seriesId);
+            var url = XtreamUrls.PlayerApi(config, "get_series_info", "series_id", seriesId);
 
             var detail = await GetSeriesDetailAsync(url).ConfigureAwait(false);
             if (HasEpisodes(detail))

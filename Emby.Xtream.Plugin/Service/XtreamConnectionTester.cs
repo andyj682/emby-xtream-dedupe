@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Emby.Xtream.Plugin.Client;
 
 namespace Emby.Xtream.Plugin.Service
 {
@@ -42,10 +43,7 @@ namespace Emby.Xtream.Plugin.Service
 
             try
             {
-                var url = string.Format(
-                    CultureInfo.InvariantCulture,
-                    "{0}/player_api.php?username={1}&password={2}",
-                    baseUrl.TrimEnd('/'), Uri.EscapeDataString(username), Uri.EscapeDataString(password));
+                var url = XtreamUrls.PlayerApi(baseUrl.TrimEnd('/'), username, password);
 
                 var response = await httpClient.GetStringAsync(url).ConfigureAwait(false);
 
