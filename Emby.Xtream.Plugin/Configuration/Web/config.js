@@ -2767,7 +2767,10 @@ function updateEpgVisibility(view) {
     function renderAutoSyncDashboardLine(view, data) {
         var el = view.querySelector('.dashboardAutoSyncLine');
         if (!el) return;
-        if (!data.AutoSyncOn) {
+        if (!data.AutoSyncOn && data.AutoSyncSchedule === 'Unknown') {
+            // The server could not read Emby's scheduled tasks; don't claim it is off.
+            el.textContent = 'Auto-sync: Unknown (see Emby\'s Scheduled Tasks)';
+        } else if (!data.AutoSyncOn) {
             el.innerHTML = 'Auto-sync: Off \u00a0\u2014\u00a0<a class="lnkGoToAutoSync" href="#" style="color:inherit; text-decoration:underline;">Enable in Settings</a>';
         } else {
             var nextText = '';
