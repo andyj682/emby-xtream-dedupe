@@ -12,6 +12,7 @@ using MediaBrowser.Controller.Api;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Logging;
 using MediaBrowser.Model.Services;
+using MediaBrowser.Model.Tasks;
 
 namespace Emby.Xtream.Plugin.Api
 {
@@ -268,6 +269,7 @@ namespace Emby.Xtream.Plugin.Api
         public bool IsRunning { get; set; }
         public LibraryStats LibraryStats { get; set; }
         public bool AutoSyncOn { get; set; }
+        public string AutoSyncSchedule { get; set; }
         public DateTime? NextSyncTime { get; set; }
     }
 
@@ -754,6 +756,27 @@ namespace Emby.Xtream.Plugin.Api
             }
         }
 
+        private static SyncSchedule.Summary ReadSyncSchedule()
+        {
+            try
+            {
+                var taskManager = Plugin.Instance.ApplicationHost.Resolve<ITaskManager>();
+                var tasks = taskManager.ScheduledTasks
+                    .Where(t => string.Equals(t.Category, "Xtream Tuner", StringComparison.Ordinal))
+                    .Select(t => new SyncSchedule.TaskSchedule
+                    {
+                        Triggers = t.Triggers,
+                        LastRunEndUtc = t.LastExecutionResult?.EndTimeUtc,
+                    })
+                    .ToList();
+                return SyncSchedule.Describe(tasks, DateTime.Now);
+            }
+            catch (Exception)
+            {
+                return new SyncSchedule.Summary { On = false, Description = "Unknown" };
+            }
+        }
+
         public object Get(GetDashboard request)
         {
             var syncService = Plugin.Instance.StrmSyncService;
@@ -803,27 +826,9 @@ namespace Emby.Xtream.Plugin.Api
             }
             catch { }
 
-            // Compute next sync time
-            DateTime? nextSyncTime = null;
-            if (config.AutoSyncEnabled)
-            {
-                if (string.Equals(config.AutoSyncMode, "daily", StringComparison.OrdinalIgnoreCase))
-                {
-                    var parts = (config.AutoSyncDailyTime ?? "03:00").Split(':');
-                    int hour = 0, minute = 0;
-                    if (parts.Length >= 1) int.TryParse(parts[0], out hour);
-                    if (parts.Length >= 2) int.TryParse(parts[1], out minute);
-                    var nextLocal = DateTime.Today.AddHours(hour).AddMinutes(minute);
-                    if (nextLocal <= DateTime.Now) nextLocal = nextLocal.AddDays(1);
-                    nextSyncTime = nextLocal.ToUniversalTime();
-                }
-                else
-                {
-                    var intervalHours = Math.Max(1, config.AutoSyncIntervalHours);
-                    var lastEnd = history.Count > 0 ? history[0].EndTime : DateTime.UtcNow;
-                    nextSyncTime = lastEnd.AddHours(intervalHours);
-                }
-            }
+            // The schedule Emby actually holds for the sync tasks, which may have been set in
+            // Emby's Scheduled Tasks rather than through the plugin's Auto-Sync settings.
+            var schedule = ReadSyncSchedule();
 
             return new DashboardResult
             {
@@ -831,8 +836,9 @@ namespace Emby.Xtream.Plugin.Api
                 LastSync = history.Count > 0 ? history[0] : null,
                 History = history,
                 IsRunning = syncService.MovieProgress.IsRunning || syncService.SeriesProgress.IsRunning,
-                AutoSyncOn = config.AutoSyncEnabled,
-                NextSyncTime = nextSyncTime,
+                AutoSyncOn = schedule.On,
+                AutoSyncSchedule = schedule.Description,
+                NextSyncTime = schedule.NextRunUtc,
                 LibraryStats = new LibraryStats
                 {
                     MovieFolders   = movieFolders,
