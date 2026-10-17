@@ -67,10 +67,13 @@ function (BaseView, loading) {
 
         // Replaces the schedule in Emby's Scheduled Tasks with the one shown on the page. Saving
         // only writes it when these settings change, so this is the way back from a mismatch.
+        // Saves first, so the schedule applied is the one on screen and not an older saved one.
         view.querySelector('.btnApplyAutoSyncSchedule').addEventListener('click', function () {
-            ApiClient.getPluginConfiguration(pluginId).then(function (config) {
-                return applyScheduleToTasks(view, config, ApiClient).then(function () {
-                    showScheduleMismatch(view, config, ApiClient);
+            saveConfig(self, function () {
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    return applyScheduleToTasks(view, config, ApiClient).then(function () {
+                        showScheduleMismatch(view, config, ApiClient);
+                    });
                 });
             });
         });
