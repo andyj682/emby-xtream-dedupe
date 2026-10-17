@@ -373,42 +373,14 @@ namespace Emby.Xtream.Plugin.Service
                     return;
                 try
                 {
-                    _dispatcharrClient.Configure(config.DispatcharrUser, config.DispatcharrPass);
-
-                    // Profile filtering: build the set of allowed Dispatcharr channel IDs.
-                    HashSet<int> enabledChannelIds = null;
-                    if (config.SelectedDispatcharrProfileIds != null && config.SelectedDispatcharrProfileIds.Length > 0)
-                    {
-                        var profiles = await _dispatcharrClient.GetProfilesAsync(
-                            config.DispatcharrUrl, cancellationToken).ConfigureAwait(false);
-                        enabledChannelIds = new HashSet<int>();
-                        foreach (var profile in profiles)
-                        {
-                            if (Array.IndexOf(config.SelectedDispatcharrProfileIds, profile.Id) >= 0)
-                            {
-                                foreach (var chId in profile.Channels)
-                                    enabledChannelIds.Add(chId);
-                            }
-                        }
-                        Logger.Info("Profile filter active: {0} profile(s), {1} enabled Dispatcharr channel IDs",
-                            config.SelectedDispatcharrProfileIds.Length, enabledChannelIds.Count);
-                    }
-
-                    // Started first so the two small profile requests ride along with the big
-                    // channel-data request instead of queueing behind it.
-                    var profileFetch = StartStreamProfileFetch(config.DispatcharrUrl, cancellationToken);
-
-                    var (uuidMap, statsMap, tvgIdMap, stationIdMap, allowedStreamIds, channelNumberMap, streamProfileIdMap) =
-                        await _dispatcharrClient.GetChannelDataAsync(
-                            config.DispatcharrUrl, cancellationToken, enabledChannelIds).ConfigureAwait(false);
-                    newStats = statsMap;
-                    newProfileCodecs = await BuildProfileCodecMapAsync(profileFetch, streamProfileIdMap)
-                        .ConfigureAwait(false);
-                    _channelUuidMap = uuidMap;
-                    _tvgIdMap = tvgIdMap;
-                    _stationIdMap = stationIdMap;
-                    _channelNumberMap = channelNumberMap;
-                    _allowedStreamIds = allowedStreamIds;
+                    var data = await FetchDispatcharrDataAsync(config, cancellationToken).ConfigureAwait(false);
+                    newStats = data.Stats;
+                    newProfileCodecs = data.ProfileCodecs;
+                    _channelUuidMap = data.UuidMap;
+                    _tvgIdMap = data.TvgIdMap;
+                    _stationIdMap = data.StationIdMap;
+                    _channelNumberMap = data.ChannelNumberMap;
+                    _allowedStreamIds = data.AllowedStreamIds;
                     _dispatcharrDataLoaded = true;
                 }
                 catch (Exception ex)
@@ -1307,47 +1279,21 @@ namespace Emby.Xtream.Plugin.Service
             }
 
             Logger.Info("Dispatcharr data missing at playback time, fetching on-demand");
-            _dispatcharrClient.Configure(config.DispatcharrUser, config.DispatcharrPass);
 
             try
             {
-                // Profile filtering on-demand: re-compute the enabled channel set if profiles are selected.
-                HashSet<int> enabledChannelIds = null;
-                if (config.SelectedDispatcharrProfileIds != null && config.SelectedDispatcharrProfileIds.Length > 0)
-                {
-                    var profiles = await _dispatcharrClient.GetProfilesAsync(
-                        config.DispatcharrUrl, cancellationToken).ConfigureAwait(false);
-                    enabledChannelIds = new HashSet<int>();
-                    foreach (var profile in profiles)
-                    {
-                        if (Array.IndexOf(config.SelectedDispatcharrProfileIds, profile.Id) >= 0)
-                        {
-                            foreach (var chId in profile.Channels)
-                                enabledChannelIds.Add(chId);
-                        }
-                    }
-                }
-
-                // This runs inside a tune, so the profile requests are started up front and
-                // awaited alongside the channel data rather than after it: two extra serial
-                // round trips in front of playback is the BUG-007 shape.
-                var profileFetch = StartStreamProfileFetch(config.DispatcharrUrl, cancellationToken);
-
-                var (uuidMap, statsMap, tvgIdMap, stationIdMap, allowedStreamIds, channelNumberMap, streamProfileIdMap) =
-                    await _dispatcharrClient.GetChannelDataAsync(
-                        config.DispatcharrUrl, cancellationToken, enabledChannelIds).ConfigureAwait(false);
-                if (statsMap.Count > 0) _streamStats = statsMap;
-                var profileCodecs = await BuildProfileCodecMapAsync(profileFetch, streamProfileIdMap)
-                    .ConfigureAwait(false);
-                if (profileCodecs.Count > 0) _streamProfileCodecs = profileCodecs;
-                if (uuidMap.Count > 0) _channelUuidMap = uuidMap;
-                if (tvgIdMap.Count > 0) _tvgIdMap = tvgIdMap;
-                if (stationIdMap.Count > 0) _stationIdMap = stationIdMap;
-                if (channelNumberMap.Count > 0) _channelNumberMap = channelNumberMap;
-                _allowedStreamIds = allowedStreamIds;
+                var data = await FetchDispatcharrDataAsync(config, cancellationToken).ConfigureAwait(false);
+                // Unlike a full refresh, keep what is already loaded when a map comes back empty.
+                if (data.Stats.Count > 0) _streamStats = data.Stats;
+                if (data.ProfileCodecs.Count > 0) _streamProfileCodecs = data.ProfileCodecs;
+                if (data.UuidMap.Count > 0) _channelUuidMap = data.UuidMap;
+                if (data.TvgIdMap.Count > 0) _tvgIdMap = data.TvgIdMap;
+                if (data.StationIdMap.Count > 0) _stationIdMap = data.StationIdMap;
+                if (data.ChannelNumberMap.Count > 0) _channelNumberMap = data.ChannelNumberMap;
+                _allowedStreamIds = data.AllowedStreamIds;
                 _dispatcharrDataLoaded = true;
                 Logger.Info("Loaded {0} UUIDs and {1} stream stats from Dispatcharr on-demand",
-                    uuidMap.Count, statsMap.Count);
+                    data.UuidMap.Count, data.Stats.Count);
             }
             catch (Exception ex)
             {
@@ -1486,6 +1432,67 @@ namespace Emby.Xtream.Plugin.Service
                 && string.Equals(ua.Host, ub.Host, StringComparison.OrdinalIgnoreCase)
                 && ua.Port == ub.Port
                 && string.Equals(ua.AbsolutePath.TrimEnd('/'), ub.AbsolutePath.TrimEnd('/'), StringComparison.Ordinal);
+        }
+
+        private sealed class DispatcharrData
+        {
+            public Dictionary<int, string> UuidMap;
+            public Dictionary<int, StreamStatsInfo> Stats;
+            public Dictionary<int, string> TvgIdMap;
+            public Dictionary<int, string> StationIdMap;
+            public HashSet<int> AllowedStreamIds;
+            public Dictionary<int, double> ChannelNumberMap;
+            public Dictionary<int, string> ProfileCodecs;
+        }
+
+        /// <summary>
+        /// Fetches everything the tuner uses from Dispatcharr: channel data filtered by the selected
+        /// channel profiles, plus the codec each stream profile emits. Stores nothing; the channel
+        /// refresh and the on-demand load at playback time apply the result differently.
+        /// </summary>
+        private async Task<DispatcharrData> FetchDispatcharrDataAsync(PluginConfiguration config, CancellationToken cancellationToken)
+        {
+            _dispatcharrClient.Configure(config.DispatcharrUser, config.DispatcharrPass);
+
+            HashSet<int> enabledChannelIds = null;
+            if (config.SelectedDispatcharrProfileIds != null && config.SelectedDispatcharrProfileIds.Length > 0)
+            {
+                var profiles = await _dispatcharrClient.GetProfilesAsync(
+                    config.DispatcharrUrl, cancellationToken).ConfigureAwait(false);
+                enabledChannelIds = new HashSet<int>();
+                foreach (var profile in profiles)
+                {
+                    if (Array.IndexOf(config.SelectedDispatcharrProfileIds, profile.Id) >= 0)
+                    {
+                        foreach (var chId in profile.Channels)
+                            enabledChannelIds.Add(chId);
+                    }
+                }
+                Logger.Info("Profile filter active: {0} profile(s), {1} enabled Dispatcharr channel IDs",
+                    config.SelectedDispatcharrProfileIds.Length, enabledChannelIds.Count);
+            }
+
+            // Started before the channel-data request so the two small profile requests ride along
+            // with it. On the on-demand path this runs inside a tune, and extra serial round trips
+            // in front of playback is the BUG-007 shape.
+            var profileFetch = StartStreamProfileFetch(config.DispatcharrUrl, cancellationToken);
+
+            var (uuidMap, statsMap, tvgIdMap, stationIdMap, allowedStreamIds, channelNumberMap, streamProfileIdMap) =
+                await _dispatcharrClient.GetChannelDataAsync(
+                    config.DispatcharrUrl, cancellationToken, enabledChannelIds).ConfigureAwait(false);
+            var profileCodecs = await BuildProfileCodecMapAsync(profileFetch, streamProfileIdMap)
+                .ConfigureAwait(false);
+
+            return new DispatcharrData
+            {
+                UuidMap = uuidMap,
+                Stats = statsMap,
+                TvgIdMap = tvgIdMap,
+                StationIdMap = stationIdMap,
+                AllowedStreamIds = allowedStreamIds,
+                ChannelNumberMap = channelNumberMap,
+                ProfileCodecs = profileCodecs,
+            };
         }
 
         /// <summary>
