@@ -121,6 +121,14 @@ Both sync methods compute their delta watermark from the **unfiltered** catalogu
 
 Matching walks the rules in registration order and takes the first whose substring is contained in the URL *and* still has a queued response. That makes registration order load-bearing whenever one pattern is a prefix of another: `"action=get_series"` is a prefix of `"action=get_series_info"`, so the **detail rule must be registered first**. Single-shot registrations happen to survive this by draining, which is why the existing tests get away with the opposite order — sequences do not.
 
+### Every plugin route is admin-only
+
+Emby (4.10.1, `ServiceController.RegisterService`) gives a route with no attribute a plain
+`[Authenticated]`: a login is required, but no role is checked, so any signed-in user could
+delete content or restart the server. Every request DTO in `Api/XtreamTunerApi.cs` carries
+`[Authenticated(Roles = "Admin")]` and `AuthenticatedRoutesTests` fails on one that doesn't.
+Never use `AllowLocal`: it skips authentication entirely for requests from the local network.
+
 ## Architecture Decision Records (ADRs)
 
 Significant decisions are recorded in `docs/decisions/NNN-title.md`. Create a new ADR when:
