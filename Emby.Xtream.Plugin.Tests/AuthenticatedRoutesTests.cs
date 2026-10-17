@@ -33,5 +33,20 @@ namespace Emby.Xtream.Plugin.Tests
 
             Assert.True(open.Count == 0, "Routes without [Authenticated(Roles = \"Admin\")]: " + string.Join(", ", open));
         }
+
+        [Fact]
+        public void NoRoute_SkipsAuthenticationForLocalRequests()
+        {
+            // AllowLocal and AllowLocalOnly skip the token check for any device on the local
+            // network, which would undo the admin requirement for everyone at home.
+            var local = typeof(XtreamTunerApi).Assembly.GetTypes()
+                .Where(t => t.GetCustomAttributes(typeof(AuthenticatedAttribute), false)
+                    .Cast<AuthenticatedAttribute>()
+                    .Any(a => a.AllowLocal || a.AllowLocalOnly))
+                .Select(t => t.Name)
+                .ToList();
+
+            Assert.True(local.Count == 0, "Routes that allow local requests without a token: " + string.Join(", ", local));
+        }
     }
 }
