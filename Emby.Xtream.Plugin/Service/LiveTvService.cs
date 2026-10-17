@@ -216,11 +216,8 @@ namespace Emby.Xtream.Plugin.Service
                 allChannels = await FetchAllChannelsAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            // Filter adult channels
-            if (!config.IncludeAdultChannels)
-            {
-                allChannels = allChannels.Where(c => !c.IsAdultChannel).ToList();
-            }
+            // Categories were already applied by requesting them one by one.
+            allChannels = ApplyChannelFilters(allChannels, config, filterCategories: false);
 
             // Channel hash: detect changes and log accordingly
             var newHash = StrmSyncService.ComputeChannelListHash(allChannels);
@@ -239,6 +236,33 @@ namespace Emby.Xtream.Plugin.Service
 
             _logger.Info("Fetched {0} Live TV channels", allChannels.Count);
             return allChannels;
+        }
+
+        /// <summary>
+        /// The user's channel filters: the selected categories (none selected means all) and the
+        /// adult-channel setting. Shared with the tuner's fallback fetch, which must never show a
+        /// channel the normal fetch would have left out. The normal fetch passes
+        /// <paramref name="filterCategories"/> false, because it requests each selected category
+        /// separately and a provider's <c>category_id</c> on the result is not reliable enough to
+        /// filter on twice.
+        /// </summary>
+        internal static List<LiveStreamInfo> ApplyChannelFilters(
+            List<LiveStreamInfo> channels, PluginConfiguration config, bool filterCategories = true)
+        {
+            IEnumerable<LiveStreamInfo> result = channels;
+
+            if (filterCategories && config.SelectedLiveCategoryIds != null && config.SelectedLiveCategoryIds.Length > 0)
+            {
+                var selected = new HashSet<int>(config.SelectedLiveCategoryIds);
+                result = result.Where(c => c.CategoryId.HasValue && selected.Contains(c.CategoryId.Value));
+            }
+
+            if (!config.IncludeAdultChannels)
+            {
+                result = result.Where(c => !c.IsAdultChannel);
+            }
+
+            return result.ToList();
         }
 
         private async Task<List<LiveStreamInfo>> FetchAllChannelsAsync(CancellationToken cancellationToken)

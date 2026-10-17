@@ -345,7 +345,10 @@ namespace Emby.Xtream.Plugin.Service
                 catch (Exception ex) when (!(ex is TaskCanceledException) && !(ex is OperationCanceledException))
                 {
                     Logger.Warn("LiveTvService channel fetch failed, falling back to direct API: {0}", ex.Message);
-                    return await FetchAllChannelsDirectAsync(config).ConfigureAwait(false);
+                    // The same category and adult filters as the normal fetch, or a single failed
+                    // request would show channels the user switched off.
+                    var all = await FetchAllChannelsDirectAsync(config).ConfigureAwait(false);
+                    return LiveTvService.ApplyChannelFilters(all, config);
                 }
             }
 
