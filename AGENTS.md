@@ -1,10 +1,5 @@
 # Emby Xtream Plugin — Development Notes
 
-## See also
-
-- `Jellyfin-Xtream-Library/` — shared Xtream plugin architecture / code patterns; primary Jellyfin variant
-- `Dispatcharr/` — IPTV proxy this plugin consumes
-
 ## Emby Plugin Architecture
 
 ### Emby scans and directly instantiates public service classes via SimpleInjector
@@ -37,6 +32,16 @@ If the Emby guide grid shows no channels despite having channel data, check brow
 The only other write path is `StampGracenoteLogosOntoChannels` (ADR-007), which fills `ImageUrl` from listings providers when (a) the channel has a Gracenote station ID, (b) `DeferEpgToGuideData` is on, and (c) `ImageUrl` is currently empty. It never overwrites a populated value — upstream-supplied logos always win.
 
 **Implication for upstream integrations**: any Xtream-compatible source (Dispatcharr, M3U Editor, raw provider) is responsible for putting the desired logo in `stream_icon`. If a user sees an unexpected logo, the diagnostic is to curl `player_api.php?action=get_live_streams` directly and inspect the field — what's there is what Emby will show.
+
+### One DLL for Emby 4.9 and 4.10
+
+The shipped DLL is compiled against the 4.9 SDK and loads on 4.10 because `XtreamLiveStream`
+always carries `AddConsumer(string)` / `RemoveConsumer(string)`; the runtime matches them to
+4.10's `ILiveStream` by name and signature. **Never put them back behind `#if EMBY_4_10`**: that
+is exactly what made the 4.9 DLL fail on 4.10 with `Method 'AddConsumer' ... does not have an
+implementation`. The `Release_4_10` configuration is kept only as a compile check, and
+`scripts/sdk-load-check` loads the built DLL against both `lib/` SDKs in CI and before every
+release. See [ADR-017](docs/decisions/017-single-dll-for-emby-4-9-and-4-10.md).
 
 ### SupportsGuideData controls whether Emby polls the tuner for EPG
 
@@ -93,25 +98,78 @@ Setting `SupportsDirectStream = false` globally would force transcoding everywhe
 
 This behaviour applies to all tuner types (M3U, Xtream, HDHomeRun) — it is not plugin-specific. Emby has acknowledged native client timeshift as a known limitation (as of early 2025).
 
+### Recordings retry until the stream is live; live viewing does not
+
+Emby records through `CopyToAsync(Stream, …)` (its `DirectRecorder`, chosen because
+`SupportsCopyTo = true`) and plays live TV through `CopyToAsync(PipeWriter, …)`. Only the
+recording overload retries: it keeps trying every 10 s until Emby cancels the token at the end of
+the recording window, holds back the first 64 KB of each attempt so error packets never reach the
+file, and reconnects and appends when a live stream drops.
+
+**Never let a timeout escape that overload as `OperationCanceledException`.** Emby reads any OCE
+from the recorder as "Recording stopped" and marks it Completed without retrying, which is
+how event recordings that started before the event ended up empty. Only the recording token's own
+cancellation may escape. See [ADR-021](docs/decisions/021-recording-retries-until-the-stream-is-live.md).
+
 ### DVB subtitles are declared statically, not probed
 
 Because the plugin disables stream probing (`SupportsProbing = false`, `AnalyzeDurationMs = 0`) to keep channel switching fast and to avoid the Dispatcharr teardown storm, Emby never discovers DVB subtitle tracks embedded in MPEG-TS by itself. The optional `DeclareDvbSubtitles` config flag tells `CreateMediaSourceInfo` to append two `dvb_subtitle` `MediaStream` entries (regular + hearing impaired) to every live channel. ffmpeg silently drops them on sources that don't carry subtitle PIDs, so the cost is two unused entries in the player menu on non-DVB channels. See [ADR-009](docs/decisions/009-dvb-subtitle-static-declaration.md).
 
 A diagnostic endpoint `GET /XtreamTuner/StreamStats` exposes the cached Dispatcharr stream stats for all known streams (codecs, resolution, bitrate, audio language) and is useful when reasoning about what metadata is or isn't reaching the plugin.
 
-### Provider string fields go through a tolerant converter
+### Provider fields go through tolerant converters
 
-Xtream providers type the same field differently across (and within) servers: a nominally-string field like `info.releasedate`, `rating`, or `tmdb` can arrive as a bare number, a boolean, `null`, or an empty array. The default `System.Text.Json` string reader throws `"The JSON value could not be converted to System.String"` on any of these, and because a whole `get_series_info` payload is parsed in one call, one off-type field aborts the entire series/VOD sync.
+Xtream providers type the same field differently across (and within) servers. A nominally-string field like `info.releasedate`, `rating`, or `tmdb` can arrive as a bare number, a boolean, `null`, or an empty array; a nominally-integer field like `info.category_id` can arrive as an empty string, a non-numeric string, or an array. The default `System.Text.Json` readers throw (`"could not be converted to System.String"` / `"...System.Nullable\`1[System.Int32]"`) on any of these, and because a whole `get_series_info` payload is parsed in one call, one off-type field aborts the entire series/VOD sync.
 
-`Client/Models/TolerantStringConverter` coerces any JSON token into a string (or `null` for structured values) and is registered on `StrmSyncService.JsonOptions` and the `XtreamTunerApi` series-list options. **Don't replace string properties on the provider models with the default converter** — the tolerant one is load-bearing for provider interop. `NumberHandling = AllowReadingFromString` only covers the string → number direction, not number → string. See [ADR-010](docs/decisions/010-tolerant-provider-deserialization.md).
+Two converters handle this, both registered on `StrmSyncService.JsonOptions` and the `XtreamTunerApi` series-list options:
+- `Client/Models/TolerantStringConverter` coerces any JSON token into a string (or `null` for structured values).
+- `Client/Models/TolerantNullableIntConverter` coerces numbers and numeric strings into `int`, and everything else (empty/non-numeric strings, arrays, objects, `null`) into `null`. Only nullable ints are tolerant — non-nullable provider IDs (`series_id`, `stream_id`) stay strict so a missing primary ID fails loudly instead of defaulting to `0`.
+
+**Don't replace these provider-model properties with the default converters** — the tolerant ones are load-bearing for provider interop. `NumberHandling = AllowReadingFromString` only covers the string → number direction (and only for strictly-numeric strings), not number → string or empty/garbage → int. See [ADR-010](docs/decisions/010-tolerant-provider-deserialization.md).
 
 ### Per-item exclusions delete folders directly, not via orphan cleanup
 
 `ExcludedVodStreamIds` / `ExcludedSeriesIds` remove an item's files in a targeted pass (`StrmSyncService.RemoveExcludedContent`) that ignores both `CleanupOrphans` and `OrphanSafetyThreshold`. That threshold guards against a provider returning a truncated catalogue; an exclusion is a deliberate user action, so suppressing the delete would just read as the filter doing nothing. Folder matching strips `[tmdbid=…]`/`[tvdbid=…]` suffixes, so a title is found regardless of the metadata-ID naming settings in force when it was written.
 
-**Never recursively delete a matched folder.** Matching is by title only, so a match is not proof of ownership. The pass skips any matched folder containing no `.strm` (it wasn't written by us — a user's own `Ben-Hur` must survive excluding the provider's `Ben-Hur`), deletes only `.strm`/`.nfo`, then prunes what that emptied. Same contract as `CleanupOrphans`. The first implementation used `Directory.Delete(dir, recursive: true)` and could destroy user data.
+**Never recursively delete a matched folder.** Matching is by title only, so a match is not proof of ownership. The first implementation used `Directory.Delete(dir, recursive: true)` and could destroy user data (BUG-028).
+
+Ownership is decided by file content, not by extension or a manifest — see `StrmOwnership` and [ADR-014](docs/decisions/014-content-based-strm-ownership.md). Every `.strm` the plugin writes holds the provider URL it was built from, so a `.strm` starting with `BaseUrl` (or `DispatcharrUrl`, for multi-version entries) is ours and nothing else is. NFOs match structurally against the only two shapes the plugin writes: `{folderName}.nfo` beside its `.strm`, and `tvshow.nfo` at a series root.
+
+All three delete paths go through this — orphan cleanup, per-item exclusion, and the "delete all content" button. A user's own `Ben-Hur` survives excluding the provider's `Ben-Hur`, and so does a `trailer.strm` or hand-written `.nfo` sitting in a folder alongside plugin output. Everything fails safe: unreadable, empty or non-matching means foreign means kept.
+
+**Never delete a folder the current run wrote into.** Exclusion is by stream ID but the folder match is by cleaned name, ignoring case, so a kept twin ("Twin Title" vs "twin title") shares the excluded one's folder. `RemoveExcludedContent` takes `writtenPaths` and skips those folders. The pass is postponed when a category fails to load; a failed item instead records its existing files in `writtenPaths` from its catch block, because gating on item failures would block exclusions for as long as the item stays failed. See [ADR-018](docs/decisions/018-exclusion-never-deletes-what-the-sync-wrote.md).
 
 Both sync methods compute their delta watermark from the **unfiltered** catalogue — if the newest title happens to be excluded, the watermark must still advance past it or every later sync re-processes everything after it. Re-ticking a title needs no watermark reset: both smart-skip paths already guard on the folder existing. See [ADR-012](docs/decisions/012-per-item-content-exclusion.md).
+
+### Absence of provider data is never evidence of deletion
+
+Orphan cleanup works by difference, so it is only correct when the run saw the whole catalogue. A per-category request that fails must not flatten into an empty list: that is indistinguishable from an empty category, and one failing category among many stays well under `OrphanSafetyThreshold`, so the ratio guard never fires. `CatalogueFetchResult<T>` carries `FailedCategoryCount` and gates cleanup on it.
+
+**Gate cleanup on completeness, never the watermark.** Freezing the watermark on a partial failure makes every later sync re-process the categories that succeeded. Completeness is required to delete, not to record progress on what was actually seen.
+
+An empty `get_series_info` payload for a series that already has files on disk is treated as a transient failure: the existing paths are preserved and `Failed` is incremented, which trips the cleanup guard that already exists. This matters because ADR-010's tolerant converters deliberately turn malformed values into empty rather than throwing, so garbage arrives here looking like "no episodes".
+
+The `existingStrms.Length > 10` gate on the ratio check stays. Removing it means a one-file library has ratio 1.0 and never gets cleaned. The separate `validPaths.Count == 0` guard is what actually closes the data-loss path at small N. See [ADR-013](docs/decisions/013-partial-catalogue-cleanup-guard.md).
+
+### The sync's delete code lives in its own file for mutation testing
+
+`RemoveExcludedContent`, `CleanupOrphans` and their helpers are in `Service/StrmSyncService.Cleanup.cs` (a partial of `StrmSyncService`). Stryker mutates that whole file; it cannot compile its changes to the rest of `StrmSyncService.cs`, and a line range into that file went stale whenever code was added above it (issue #75). `scripts/check-delete-sites.py` fails CI if a delete call of the sync service appears anywhere else. Run Stryker locally with `DOTNET_ROOT=<dotnet libexec> DOTNET_ROLL_FORWARD=Major ~/.dotnet/tools/dotnet-stryker --config-file ../stryker-config.json` from `Emby.Xtream.Plugin.Tests` (it ships as net8.0).
+
+### One sync of each kind at a time, enforced in the service
+
+`MovieProgress.IsRunning` is a fast path for callers, not a lock. The API endpoints and the scheduled tasks both check it and then call, so two runs can pass the check, share `writtenPaths` and the progress object, and have the first to finish clear `IsRunning` while the second is still writing. `StrmSyncService` holds a `SemaphoreSlim` for the whole operation and returns `false` when it declined to run; callers report "already running" from that, not from their own check. `RetryFailedAsync` takes the movie gate because it writes movie files and reuses `_movieProgress`.
+
+Series in the failed list are forced through the next series sync (both skip paths bypassed), because the watermark has already moved past them. `RetryFailedAsync` retries series by calling `SyncSeriesCoreAsync`, never by writing episodes itself: a separate writer drifted into its own layout (`Season 1`, `S1E01.strm`) and duplicated shows.
+
+Note for tests: `FakeHttpHandler` responds synchronously, so a caller runs to completion before returning its `Task` and two syncs can never overlap. Set `Handler.Gate` to hold requests in flight, or a concurrency test passes while testing nothing.
+
+### Every plugin route is admin-only
+
+Emby (4.10.1, `ServiceController.RegisterService`) gives a route with no attribute a plain
+`[Authenticated]`: a login is required, but no role is checked, so any signed-in user could
+delete content or restart the server. Every request DTO in `Api/XtreamTunerApi.cs` carries
+`[Authenticated(Roles = "Admin")]` and `AuthenticatedRoutesTests` fails on one that doesn't.
+Never use `AllowLocal`: it skips authentication entirely for requests from the local network.
 
 ## Tests
 
