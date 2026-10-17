@@ -72,6 +72,16 @@ namespace Emby.Xtream.Plugin
         /// </para>
         /// </summary>
         public string DispatcharrVideoCodecSource { get; set; } = "auto";
+        /// <summary>
+        /// Which Dispatcharr URL a channel plays from. <c>proxy</c> (default) uses
+        /// <c>/proxy/ts/stream/{uuid}</c>, which Dispatcharr's stats list as an anonymous client.
+        /// <c>xtream</c> uses the Xtream URL of the connection above
+        /// (<c>/live/{user}/{pass}/{id}.ts</c>), so Dispatcharr shows that account and applies its
+        /// stream limits. Both run through the same proxy code inside Dispatcharr. The Xtream URL
+        /// is only used when <see cref="BaseUrl"/> is the Dispatcharr server; otherwise it would
+        /// skip Dispatcharr. See ADR-022.
+        /// </summary>
+        public string DispatcharrStreamEndpoint { get; set; } = "proxy";
         public int[] SelectedDispatcharrProfileIds { get; set; } = new int[0];
         public string CachedDispatcharrProfiles { get; set; } = string.Empty;
 

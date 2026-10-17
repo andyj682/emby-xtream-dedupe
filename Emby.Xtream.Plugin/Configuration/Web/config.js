@@ -65,6 +65,15 @@ function (BaseView, loading) {
             updateDispatcharrVisibility(view);
         });
 
+        ['.selDispatcharrStreamEndpoint', '.txtBaseUrl', '.txtDispatcharrUrl'].forEach(function (sel) {
+            view.querySelector(sel).addEventListener('input', function () {
+                updateStreamEndpointWarning(view);
+            });
+            view.querySelector(sel).addEventListener('change', function () {
+                updateStreamEndpointWarning(view);
+            });
+        });
+
 
         view.querySelector('.selectEpgSource').addEventListener('change', function () {
             updateEpgVisibility(view);
@@ -397,6 +406,24 @@ function (BaseView, loading) {
 
     View.prototype.onPause = function () {};
 
+    // The Xtream stream URL is only used when the Xtream server is the Dispatcharr server
+    // (same scheme, host, port and path, as XtreamTunerHost.IsSameServer checks). Otherwise the
+    // plugin keeps the proxy URL, so say so here rather than only in the server log (ADR-022).
+    function updateStreamEndpointWarning(view) {
+        var warning = view.querySelector('.dispatcharrStreamEndpointWarning');
+        var wantsXtream = view.querySelector('.selDispatcharrStreamEndpoint').value === 'xtream';
+        var same = false;
+        try {
+            var a = new URL(view.querySelector('.txtBaseUrl').value.trim());
+            var b = new URL(view.querySelector('.txtDispatcharrUrl').value.trim());
+            same = a.origin === b.origin &&
+                a.pathname.replace(/\/+$/, '') === b.pathname.replace(/\/+$/, '');
+        } catch (e) {
+            same = false;
+        }
+        warning.style.display = wantsXtream && !same ? '' : 'none';
+    }
+
     function loadConfig(instance) {
         loading.show();
         ApiClient.getPluginConfiguration(pluginId).then(function (config) {
@@ -439,6 +466,8 @@ function (BaseView, loading) {
             view.querySelector('.chkDispatcharrFallback').checked = config.DispatcharrFallbackToXtream !== false;
             view.querySelector('.chkForceAudioTranscode').checked = !!config.ForceAudioTranscode;
             view.querySelector('.selDispatcharrCodecSource').value = config.DispatcharrVideoCodecSource || 'auto';
+            view.querySelector('.selDispatcharrStreamEndpoint').value = config.DispatcharrStreamEndpoint || 'proxy';
+            updateStreamEndpointWarning(view);
             view.querySelector('.chkDeclareDvbSubtitles').checked = !!config.DeclareDvbSubtitles;
 
             instance.selectedDispatcharrProfileIds = config.SelectedDispatcharrProfileIds || [];
@@ -571,6 +600,7 @@ function (BaseView, loading) {
             config.DispatcharrFallbackToXtream = view.querySelector('.chkDispatcharrFallback').checked;
             config.ForceAudioTranscode = view.querySelector('.chkForceAudioTranscode').checked;
             config.DispatcharrVideoCodecSource = view.querySelector('.selDispatcharrCodecSource').value;
+            config.DispatcharrStreamEndpoint = view.querySelector('.selDispatcharrStreamEndpoint').value;
             config.DeclareDvbSubtitles = view.querySelector('.chkDeclareDvbSubtitles').checked;
             config.SelectedDispatcharrProfileIds = getSelectedDispatcharrProfileIds(instance);
 

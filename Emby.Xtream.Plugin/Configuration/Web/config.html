@@ -710,6 +710,23 @@
                                 If Dispatcharr is unavailable, use direct Xtream URLs instead. Disable to ensure all streams go through Dispatcharr.
                             </div>
                         </div>
+                        <div class="selectContainer" style="margin-top:0.5em;">
+                            <select class="selDispatcharrStreamEndpoint" is="emby-select" label="Stream URL">
+                                <option value="proxy">Dispatcharr proxy (default)</option>
+                                <option value="xtream">Xtream connection above</option>
+                            </select>
+                            <div class="fieldDescription">
+                                Which Dispatcharr address channels play from. With the <b>proxy</b>, Dispatcharr's
+                                stats show Emby as an anonymous client. <b>Xtream connection above</b> plays from
+                                Dispatcharr's Xtream address with the username and password at the top of this page,
+                                so Dispatcharr shows that user and applies its stream limits. Only takes effect when
+                                the Xtream server URL is your Dispatcharr server; otherwise the proxy is used.
+                            </div>
+                            <div class="fieldDescription dispatcharrStreamEndpointWarning" style="display:none; color:#e0a030;">
+                                The Xtream server URL and the Dispatcharr URL are not the same address, so the
+                                proxy will still be used. Enter the same address (including the port) in both.
+                            </div>
+                        </div>
                         <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:0.5em;">
                             <label>
                                 <input class="chkForceAudioTranscode" type="checkbox" is="emby-checkbox" />
