@@ -533,6 +533,14 @@
                             Automatically sync movies and/or series. Movies must be enabled above; series likewise.
                         </div>
                     </div>
+                    <div class="fieldDescription autoSyncScheduleMismatch" style="display:none; color:#e0a030;">
+                        The sync tasks in Emby's Scheduled Tasks have a different schedule than the
+                        settings here. Saving keeps Emby's schedule.
+                        <button class="btnApplyAutoSyncSchedule raised button-secondary" is="emby-button" type="button"
+                                style="margin-top:0.5em; display:block;">
+                            <span>Use the schedule shown here</span>
+                        </button>
+                    </div>
                     <div class="autoSyncSettings">
                         <div class="selectContainer">
                             <select class="selAutoSyncMode" is="emby-select" label="Schedule Type">
