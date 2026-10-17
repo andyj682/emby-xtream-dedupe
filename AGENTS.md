@@ -24,7 +24,7 @@ This means:
 
 ### Delta sync timestamps survive restarts via PluginConfiguration
 
-`PluginConfiguration` is serialized to XML by Emby automatically. Fields added to it persist across restarts without any extra work. Use this for: sync watermarks (`LastMovieSyncTimestamp`, `LastSeriesSyncTimestamp`), channel hashes (`LastChannelListHash`), and similar state.
+`PluginConfiguration` is serialized to XML by Emby automatically. Fields added to it persist across restarts without any extra work. Use this for: sync watermarks (`LastMovieSyncTimestamp`, `LastSeriesSyncTimestamp`), and similar state.
 
 ### Guide grid empty — check browser localStorage
 

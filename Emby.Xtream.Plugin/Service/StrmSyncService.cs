@@ -228,32 +228,6 @@ namespace Emby.Xtream.Plugin.Service
             }
         }
 
-        /// <summary>
-        /// Computes a stable hash of the channel list for change detection.
-        /// </summary>
-        internal static string ComputeChannelListHash(List<LiveStreamInfo> channels)
-        {
-            var sorted = channels.OrderBy(c => c.StreamId);
-            var sb = new StringBuilder();
-            foreach (var c in sorted)
-            {
-                sb.Append(c.StreamId);
-                sb.Append(':');
-                sb.Append(c.Name ?? string.Empty);
-                sb.Append(':');
-                sb.Append(c.EpgChannelId ?? string.Empty);
-                sb.Append(':');
-                sb.Append(c.CategoryId?.ToString(CultureInfo.InvariantCulture) ?? string.Empty);
-                sb.Append('|');
-            }
-
-            using (var sha = SHA256.Create())
-            {
-                var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString()));
-                return BitConverter.ToString(bytes).Replace("-", string.Empty).ToLowerInvariant();
-            }
-        }
-
         internal static Dictionary<string, string> DeserializeEpisodeHashes(string json)
         {
             if (string.IsNullOrWhiteSpace(json))
