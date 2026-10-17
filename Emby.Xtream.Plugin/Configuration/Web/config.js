@@ -562,7 +562,6 @@ function (BaseView, loading) {
 
             // Health bar, auto-sync line, empty-state
             renderHealthBar(view, config);
-            renderAutoSyncDashboardLine(view, config);
             updateDashboardEmptyState(view, config);
 
             loading.hide();
@@ -1160,11 +1159,13 @@ function updateEpgVisibility(view) {
             dataType: 'json'
         }).then(function (result) {
             setPillResult(resultEl, result.Success, result.Message);
+            setDispatcharrHealthFromTest(instance.view, result.Success);
             if (result.Success) {
                 saveConfig(instance);
             }
         }).catch(function () {
             setPillResult(resultEl, false, 'Test request failed. Check server logs.');
+            setDispatcharrHealthFromTest(instance.view, false);
         });
     }
 
@@ -1980,6 +1981,7 @@ function updateEpgVisibility(view) {
         ApiClient.getJSON(apiUrl).then(function (data) {
             loadDashboard._retries = 0;
             renderDashboardStatus(view, data);
+            renderAutoSyncDashboardLine(view, data);
 
             // Auto-bust browser cache when plugin was updated.
             // localStorage remembers the last-seen version; if the server
@@ -2669,11 +2671,11 @@ function updateEpgVisibility(view) {
             ? 'Xtream: Configured (' + config.Username + ')'
             : 'Xtream: Not configured';
 
-        // Dispatcharr dot
+        // Dispatcharr dot: like Xtream above, only what is configured until a test runs.
         var dispatcharrOn = !!config.EnableDispatcharr;
-        setHealthDot(dispatcharrItem, dispatcharrOn ? 'ok' : 'grey');
+        setHealthDot(dispatcharrItem, 'grey');
         dispatcharrItem.querySelector('.healthLabel').textContent = dispatcharrOn
-            ? 'Dispatcharr: Active'
+            ? 'Dispatcharr: Enabled (not tested)'
             : 'Dispatcharr: Disabled';
 
         // Last sync dot — prefer SyncHistoryJson[0].EndTime (updated on every sync),
@@ -2720,6 +2722,15 @@ function updateEpgVisibility(view) {
             : 'Xtream: Connection failed';
     }
 
+    function setDispatcharrHealthFromTest(view, success) {
+        var item = view.querySelector('.healthItemDispatcharr');
+        if (!item) return;
+        setHealthDot(item, success ? 'ok' : 'error');
+        item.querySelector('.healthLabel').textContent = success
+            ? 'Dispatcharr: Connected'
+            : 'Dispatcharr: Connection failed';
+    }
+
     function setHealthDot(itemEl, status) {
         var dot = itemEl.querySelector('.healthDot');
         if (!dot) return;
@@ -2751,29 +2762,27 @@ function updateEpgVisibility(view) {
         }
     }
 
-    function renderAutoSyncDashboardLine(view, config) {
+    // From the Dashboard endpoint, which reads the triggers Emby holds for the sync tasks,
+    // so a schedule set in Emby's Scheduled Tasks is shown as it is.
+    function renderAutoSyncDashboardLine(view, data) {
         var el = view.querySelector('.dashboardAutoSyncLine');
         if (!el) return;
-        if (!config.AutoSyncEnabled) {
+        if (!data.AutoSyncOn && data.AutoSyncSchedule === 'Unknown') {
+            // The server could not read Emby's scheduled tasks; don't claim it is off.
+            el.textContent = 'Auto-sync: Unknown (see Emby\'s Scheduled Tasks)';
+        } else if (!data.AutoSyncOn) {
             el.innerHTML = 'Auto-sync: Off \u00a0\u2014\u00a0<a class="lnkGoToAutoSync" href="#" style="color:inherit; text-decoration:underline;">Enable in Settings</a>';
         } else {
-            var interval = config.AutoSyncIntervalHours || 24;
             var nextText = '';
-            var lastTs = config.LastMovieSyncTimestamp;
-            if (lastTs) {
-                var lastDate = typeof lastTs === 'number' ? new Date(lastTs * 1000) : new Date(lastTs);
-                if (!isNaN(lastDate.getTime())) {
-                    var diff = new Date(lastDate.getTime() + interval * 3600000) - new Date();
-                    if (diff > 0) {
-                        var h = Math.floor(diff / 3600000);
-                        var m = Math.floor((diff % 3600000) / 60000);
-                        nextText = ' \u2014 next run in ' + (h > 0 ? h + 'h ' : '') + m + 'm';
-                    } else {
-                        nextText = ' \u2014 overdue';
-                    }
+            if (data.NextSyncTime) {
+                var diff = new Date(data.NextSyncTime) - new Date();
+                if (diff > 0) {
+                    var h = Math.floor(diff / 3600000);
+                    var m = Math.floor((diff % 3600000) / 60000);
+                    nextText = ' \u2014 next run in ' + (h > 0 ? h + 'h ' : '') + m + 'm';
                 }
             }
-            el.textContent = 'Auto-sync: Every ' + interval + 'h' + nextText;
+            el.textContent = 'Auto-sync: ' + (data.AutoSyncSchedule || 'On') + nextText;
         }
         var link = el.querySelector('.lnkGoToAutoSync');
         if (link) {
