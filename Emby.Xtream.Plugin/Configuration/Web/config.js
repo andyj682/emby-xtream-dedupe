@@ -525,6 +525,7 @@ function (BaseView, loading) {
             view.querySelector('.txtAutoSyncIntervalHours').value = config.AutoSyncIntervalHours || 24;
             view.querySelector('.txtAutoSyncDailyTime').value = config.AutoSyncDailyTime || '03:00';
             updateAutoSyncVisibility(view);
+            showScheduleMismatch(view, config, ApiClient);
 
             // Metadata ID naming (unified)
             var metadataIdEnabled = !!config.EnableTmdbFolderNaming || !!config.EnableSeriesIdFolderNaming;
@@ -634,10 +635,12 @@ function (BaseView, loading) {
             config.EnableNfoFiles = view.querySelector('.chkEnableNfoFiles').checked;
 
             // Auto-sync schedule
+            var scheduleBefore = scheduleKey(config);
             config.AutoSyncEnabled = view.querySelector('.chkAutoSyncEnabled').checked;
             config.AutoSyncMode = view.querySelector('.selAutoSyncMode').value;
             config.AutoSyncIntervalHours = parseInt(view.querySelector('.txtAutoSyncIntervalHours').value, 10) || 24;
             config.AutoSyncDailyTime = view.querySelector('.txtAutoSyncDailyTime').value || '03:00';
+            var scheduleChanged = scheduleKey(config) !== scheduleBefore;
 
             // Metadata ID naming (unified → both backend properties)
             var metadataIdOn = view.querySelector('.chkEnableTmdbFolderNaming').checked;
@@ -652,7 +655,10 @@ function (BaseView, loading) {
             // up and no error was shown.
             return ApiClient.updatePluginConfiguration(pluginId, config).then(function () {
                 Dashboard.processPluginConfigurationUpdateResult();
-                applyScheduleToTasks(view, config, ApiClient);
+                // Only when the auto-sync settings changed: writing them on every save replaced
+                // (or, with auto-sync off, wiped) a schedule set in Emby's Scheduled Tasks.
+                if (scheduleChanged) applyScheduleToTasks(view, config, ApiClient);
+                showScheduleMismatch(view, config, ApiClient);
                 if (typeof callback === 'function') callback();
             });
         }).catch(function () {
@@ -771,6 +777,36 @@ function updateEpgVisibility(view) {
         // interval
         var hours = Math.max(1, config.AutoSyncIntervalHours || 24);
         return [{ Type: 'IntervalTrigger', IntervalTicks: hours * 36000000000 }];
+    }
+
+    // The auto-sync settings that decide the triggers, as one comparable string.
+    function scheduleKey(config) {
+        return JSON.stringify(buildTriggers(config));
+    }
+
+    function triggersKey(triggers) {
+        return JSON.stringify((triggers || []).map(function (t) {
+            return t.Type === 'DailyTrigger'
+                ? { Type: t.Type, TimeOfDayTicks: t.TimeOfDayTicks }
+                : { Type: t.Type, IntervalTicks: t.IntervalTicks };
+        }));
+    }
+
+    // Says so when a sync task's schedule in Emby's Scheduled Tasks is not what these
+    // settings describe. Saving leaves that schedule alone unless the settings here change.
+    function showScheduleMismatch(view, config, apiClient) {
+        var note = view.querySelector('.autoSyncScheduleMismatch');
+        if (!note) return;
+        apiClient.getJSON(apiClient.getUrl('ScheduledTasks')).then(function (tasks) {
+            if (!Array.isArray(tasks)) return;
+            var expected = scheduleKey(config);
+            var differs = tasks.some(function (t) {
+                return t.Category === 'Xtream Tuner' && triggersKey(t.Triggers) !== expected;
+            });
+            note.style.display = differs ? '' : 'none';
+        }).catch(function () {
+            note.style.display = 'none';
+        });
     }
 
     function applyScheduleToTasks(view, config, apiClient) {
