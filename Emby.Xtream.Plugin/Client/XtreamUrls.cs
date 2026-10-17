@@ -36,6 +36,15 @@ namespace Emby.Xtream.Plugin.Client
             return PlayerApi(config.BaseUrl, config.Username, config.Password, action, paramName, paramValue);
         }
 
+        /// <summary><c>{base}/xmltv.php?username=…&amp;password=…</c>, the provider's full guide.</summary>
+        internal static string Xmltv(PluginConfiguration config)
+        {
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}/xmltv.php?username={1}&password={2}",
+                config.BaseUrl, Escape(config.Username), Escape(config.Password));
+        }
+
         /// <summary><c>{base}/{kind}/{user}/{pass}/{id}.{extension}</c>, kind being live, movie or series.</summary>
         internal static string Stream(PluginConfiguration config, string kind, object id, string extension)
         {

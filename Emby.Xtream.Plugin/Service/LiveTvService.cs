@@ -595,10 +595,7 @@ namespace Emby.Xtream.Plugin.Service
                 }
                 else
                 {
-                    url = string.Format(
-                        CultureInfo.InvariantCulture,
-                        "{0}/xmltv.php?username={1}&password={2}",
-                        config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty));
+                    url = XtreamUrls.Xmltv(config);
                     _logger.Info("Fetching bulk XMLTV EPG from {0}/xmltv.php", config.BaseUrl);
                 }
 
