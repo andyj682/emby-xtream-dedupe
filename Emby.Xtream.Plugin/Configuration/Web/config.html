@@ -458,10 +458,12 @@
                             <span>Enable Dispatcharr</span>
                         </label>
                         <div class="fieldDescription checkboxFieldDescription">
-                            Play Live TV, movies and series through
+                            Play the Live TV channels that
                             <a href="https://github.com/Dispatcharr/Dispatcharr" target="_blank" rel="noopener" style="color:#52B54B;">Dispatcharr</a>,
-                            an open-source IPTV proxy. Channels switch faster and movies with several provider
-                            streams get one version per stream.
+                            an open-source IPTV proxy, knows through Dispatcharr, for faster channel switching. Channels
+                            it doesn't know follow the fallback setting under Live TV → Dispatcharr Playback. Movies
+                            that Dispatcharr has several provider streams for also get one version per stream; other
+                            movies and all series keep playing straight from the Xtream server.
                         </div>
                     </div>
                     <div class="dispatcharrSettings">
@@ -615,7 +617,7 @@
                     <h2 class="sectionTitle">Folder Names</h2>
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label>
-                            <input class="chkEnableTmdbFolderNaming" type="checkbox" is="emby-checkbox" onchange="var s=this.closest('.verticalSection').querySelector('.tmdbSettings');if(s){var inp=s.querySelectorAll('input,textarea');for(var i=0;i<inp.length;i++)inp[i].disabled=!this.checked;s.style.opacity=this.checked?'1':'0.5';}" />
+                            <input class="chkEnableTmdbFolderNaming" type="checkbox" is="emby-checkbox" />
                             <span>Add Metadata IDs to Folder Names</span>
                         </label>
                         <div class="fieldDescription checkboxFieldDescription">
@@ -633,7 +635,8 @@
                                 <span>Look Up Missing IDs</span>
                             </label>
                             <div class="fieldDescription checkboxFieldDescription">
-                                For titles the provider has no ID for, search Emby's metadata providers.
+                                For titles the provider has no ID for, search Emby's metadata providers. Used for
+                                folder names and for metadata files (.nfo).
                             </div>
                         </div>
                     </div>
@@ -1079,6 +1082,10 @@
                             Dolby Digital passthrough on Apple TV and other devices that support it.
                         </div>
                     </div>
+                </div>
+
+                <div class="fieldDescription dispatcharrOffHint" style="margin:0 0 1em 0.2em;">
+                    Using Dispatcharr? Turn it on under <strong>Connection</strong> to see its playback options here.
                 </div>
 
                 <div class="verticalSection dispatcharrPlaybackSettings">

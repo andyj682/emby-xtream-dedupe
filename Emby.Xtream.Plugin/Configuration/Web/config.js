@@ -61,6 +61,10 @@ function (BaseView, loading) {
             updateTmdbVisibility(view);
         });
 
+        view.querySelector('.chkEnableNfoFiles').addEventListener('change', function () {
+            updateTmdbVisibility(view);
+        });
+
         view.querySelector('.chkEnableDispatcharr').addEventListener('change', function () {
             updateDispatcharrVisibility(view);
         });
@@ -713,8 +717,10 @@ function (BaseView, loading) {
         if (footer) footer.style.display = tabName === 'dashboard' ? 'none' : '';
     }
 
+    // The ID lookup feeds folder names and .nfo files, so it is shown when either is on.
     function updateTmdbVisibility(view) {
-        var enabled = view.querySelector('.chkEnableTmdbFolderNaming').checked;
+        var enabled = view.querySelector('.chkEnableTmdbFolderNaming').checked
+            || view.querySelector('.chkEnableNfoFiles').checked;
         view.querySelector('.tmdbSettings').style.display = enabled ? '' : 'none';
     }
 
@@ -725,6 +731,8 @@ function (BaseView, loading) {
             var el = view.querySelector(sel);
             if (el) el.style.display = enabled ? '' : 'none';
         });
+        var hint = view.querySelector('.dispatcharrOffHint');
+        if (hint) hint.style.display = enabled ? 'none' : '';
     }
 
     function updateLiveTvVisibility(view) {

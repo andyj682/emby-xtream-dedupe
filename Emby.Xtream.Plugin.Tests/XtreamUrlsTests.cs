@@ -42,6 +42,17 @@ namespace Emby.Xtream.Plugin.Tests
                 XtreamUrls.PlayerApi("http://x", null, null, "get_live_categories"));
         }
 
+        [Fact]
+        public void Xmltv_MatchesTheOldFormat()
+        {
+            var c = Config();
+            var before = string.Format(CultureInfo.InvariantCulture, "{0}/xmltv.php?username={1}&password={2}",
+                c.BaseUrl, System.Uri.EscapeDataString(c.Username ?? string.Empty),
+                System.Uri.EscapeDataString(c.Password ?? string.Empty));
+
+            Assert.Equal(before, XtreamUrls.Xmltv(c));
+        }
+
         [Theory]
         [InlineData("movie", 101, "mkv")]
         [InlineData("series", 202, "mp4")]
