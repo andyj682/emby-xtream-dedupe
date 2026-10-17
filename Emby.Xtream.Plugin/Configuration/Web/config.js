@@ -1254,8 +1254,10 @@ function updateEpgVisibility(view) {
         var badge = view.querySelector('.dispatcharrProfileCountBadge');
         if (badge) {
             badge.style.display = checkboxes.length > 0 ? '' : 'none';
-            badge.querySelector('.profileCountSelected').textContent = selected;
-            badge.querySelector('.profileCountTotal').textContent = checkboxes.length;
+            // No profile ticked means no filtering: every channel is shown.
+            badge.textContent = selected === 0
+                ? 'No profile ticked: all channels shown'
+                : selected + ' / ' + checkboxes.length + ' selected';
         }
     }
 
@@ -2650,10 +2652,11 @@ function updateEpgVisibility(view) {
         var total    = view.querySelectorAll(entry.checkbox).length;
         var selected = view.querySelectorAll(entry.checkbox + ':checked').length;
         if (total === 0) { badge.style.display = 'none'; return; }
-        badge.querySelector('.countSelected').textContent = selected;
-        badge.querySelector('.countTotal').textContent    = total;
+        // Nothing ticked means every category is synced, so say that instead of a warning-coloured 0.
+        badge.textContent = selected === 0
+            ? 'All ' + total + ' categories included (none ticked)'
+            : selected + ' / ' + total + ' categories selected';
         badge.style.display = '';
-        badge.classList.toggle('zero-selected', selected === 0);
     }
 
     function renderHealthBar(view, config) {
