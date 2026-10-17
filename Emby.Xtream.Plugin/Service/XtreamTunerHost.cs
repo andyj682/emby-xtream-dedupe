@@ -597,8 +597,8 @@ namespace Emby.Xtream.Plugin.Service
             var firstRunDiagnostic = !_gracenoteFieldDiagnosticLogged;
             _gracenoteFieldDiagnosticLogged = true;
 
-            // For diagnostic only: build a set of ALL plugin station IDs so we can report
-            // the full intersection with each provider's channel list.
+            // On the first run each provider's lineup is also checked for shadowing (ADR-008),
+            // which needs every plugin station ID.
             var allPluginStationIds = firstRunDiagnostic
                 ? new HashSet<string>(
                     _stationIdMap.Values.Where(s => !string.IsNullOrEmpty(s)),
@@ -618,19 +618,6 @@ namespace Emby.Xtream.Plugin.Service
             if (channelsByStationId.Count == 0 && !firstRunDiagnostic)
             {
                 return;
-            }
-
-            var stationIdsToProbe = firstRunDiagnostic
-                ? _stationIdMap.Values
-                    .Where(s => !string.IsNullOrEmpty(s))
-                    .Distinct()
-                    .Take(5)
-                    .ToList()
-                : null;
-            if (firstRunDiagnostic)
-            {
-                Logger.Info("[gracenote-diag] probing {0} listings provider(s) for station IDs: [{1}]",
-                    providers.Length, string.Join(", ", stationIdsToProbe));
             }
 
             var matchedFieldCounts = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -656,49 +643,17 @@ namespace Emby.Xtream.Plugin.Service
                     }
                     catch (Exception ex)
                     {
-                        if (firstRunDiagnostic)
-                            Logger.Warn("[gracenote-diag] {0}: GetChannels threw: {1}", providerLabel, ex.Message);
+                        Logger.Debug("Listings provider {0}: GetChannels threw: {1}", providerLabel, ex.Message);
                         continue;
                     }
 
                     if (providerChannels == null || providerChannels.Count == 0)
                     {
-                        if (firstRunDiagnostic)
-                            Logger.Info("[gracenote-diag] {0}: 0 channels", providerLabel);
                         continue;
                     }
 
                     if (firstRunDiagnostic)
                     {
-                        Logger.Info("[gracenote-diag] {0}: {1} channels", providerLabel, providerChannels.Count);
-
-                        // Full-coverage intersection — count how many plugin station IDs
-                        // match ANY field on ANY channel in this provider. This is the
-                        // upper bound on what stamping could ever achieve for this user.
-                        int idHits = 0, listingsChannelIdHits = 0, tunerChannelIdHits = 0, altNameHits = 0;
-                        foreach (var ch in providerChannels)
-                        {
-                            if (allPluginStationIds.Contains(ch.Id ?? string.Empty))
-                                idHits++;
-                            if (!string.IsNullOrEmpty(ch.ListingsChannelId) && allPluginStationIds.Contains(ch.ListingsChannelId))
-                                listingsChannelIdHits++;
-                            if (!string.IsNullOrEmpty(ch.TunerChannelId) && allPluginStationIds.Contains(ch.TunerChannelId))
-                                tunerChannelIdHits++;
-                            if (ch.AlternateNames != null)
-                            {
-                                foreach (var alt in ch.AlternateNames)
-                                {
-                                    if (!string.IsNullOrEmpty(alt) && allPluginStationIds.Contains(alt))
-                                    {
-                                        altNameHits++;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        Logger.Info("[gracenote-diag] {0}: intersection with {1} plugin station IDs — Id:{2} ListingsChannelId:{3} TunerChannelId:{4} AlternateNames:{5}",
-                            providerLabel, allPluginStationIds.Count, idHits, listingsChannelIdHits, tunerChannelIdHits, altNameHits);
-
                         // ADR-008 / BUG-023: a non-Gracenote listings provider that covers
                         // most of the plugin's station IDs is likely to shadow Gracenote
                         // programs in Emby's guide rendering. Warn so users can spot the
@@ -709,44 +664,11 @@ namespace Emby.Xtream.Plugin.Service
                                 out coveredStationIdCount))
                         {
                             Logger.Warn(
-                                "[gracenote-diag] WARNING: {0} (type='{1}') covers {2}/{3} of your Gracenote station IDs. " +
+                                "WARNING: listings provider {0} (type='{1}') covers {2}/{3} of your Gracenote station IDs. " +
                                 "Its programs may shadow Gracenote data in the Emby guide. " +
                                 "If channels are showing placeholder EPG (channel name as program title, fixed-duration blocks), " +
                                 "remove this listings provider from Emby's Live TV settings.",
                                 providerLabel, listingsProvider.Type, coveredStationIdCount, allPluginStationIds.Count);
-                        }
-
-                        foreach (var ch in providerChannels.Take(5))
-                        {
-                            Logger.Info(
-                                "[gracenote-diag]   sample: Id='{0}' Number='{1}' Name='{2}' CallSign='{3}' " +
-                                "ListingsChannelId='{4}' ListingsId='{5}' TunerChannelId='{6}' " +
-                                "AlternateNames=[{7}] HasImageUrl={8}",
-                                ch.Id, ch.Number, ch.Name, ch.CallSign,
-                                ch.ListingsChannelId, ch.ListingsId, ch.TunerChannelId,
-                                ch.AlternateNames == null ? string.Empty : string.Join(",", ch.AlternateNames),
-                                !string.IsNullOrEmpty(ch.ImageUrl));
-                        }
-                        foreach (var stationId in stationIdsToProbe)
-                        {
-                            var matchedFields = new List<string>();
-                            foreach (var ch in providerChannels)
-                            {
-                                if (string.Equals(ch.Id, stationId, StringComparison.OrdinalIgnoreCase))
-                                    matchedFields.Add("Id");
-                                if (string.Equals(ch.ListingsChannelId, stationId, StringComparison.OrdinalIgnoreCase))
-                                    matchedFields.Add("ListingsChannelId");
-                                if (string.Equals(ch.TunerChannelId, stationId, StringComparison.OrdinalIgnoreCase))
-                                    matchedFields.Add("TunerChannelId");
-                                if (ch.AlternateNames != null
-                                    && ch.AlternateNames.Any(n => string.Equals(n, stationId, StringComparison.OrdinalIgnoreCase)))
-                                    matchedFields.Add("AlternateNames");
-                            }
-                            if (matchedFields.Count == 0)
-                                Logger.Info("[gracenote-diag]   station {0}: no match in {1}", stationId, providerLabel);
-                            else
-                                Logger.Info("[gracenote-diag]   station {0}: matched in {1} via [{2}]",
-                                    stationId, providerLabel, string.Join(",", matchedFields.Distinct()));
                         }
                     }
 
@@ -768,9 +690,6 @@ namespace Emby.Xtream.Plugin.Service
                 Logger.Info("StampGracenoteLogos: 0 logos stamped — {0} channel(s) had a station ID but no listings provider returned a matching channel with an image URL",
                     channelsByStationId.Count);
             }
-
-            if (firstRunDiagnostic)
-                Logger.Info("[gracenote-diag] done");
         }
 
         /// <summary>

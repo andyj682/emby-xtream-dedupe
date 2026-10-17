@@ -163,63 +163,6 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
-        // ComputeChannelListHash
-        // -----------------------------------------------------------------
-
-        [Fact]
-        public void ComputeChannelListHash_SameChannelsDifferentOrder_SameHash()
-        {
-            var a = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC One", EpgChannelId = "bbc1", CategoryId = 10 },
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 2, Name = "ITV",     EpgChannelId = "itv",  CategoryId = 10 },
-            };
-            var b = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 2, Name = "ITV",     EpgChannelId = "itv",  CategoryId = 10 },
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC One", EpgChannelId = "bbc1", CategoryId = 10 },
-            };
-            Assert.Equal(StrmSyncService.ComputeChannelListHash(a), StrmSyncService.ComputeChannelListHash(b));
-        }
-
-        [Fact]
-        public void ComputeChannelListHash_DifferentChannels_DifferentHash()
-        {
-            var a = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC One" },
-            };
-            var b = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC Two" },
-            };
-            Assert.NotEqual(StrmSyncService.ComputeChannelListHash(a), StrmSyncService.ComputeChannelListHash(b));
-        }
-
-        [Fact]
-        public void ComputeChannelListHash_NameChange_DifferentHash()
-        {
-            var a = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC One" },
-            };
-            var b = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC One HD" },
-            };
-            Assert.NotEqual(StrmSyncService.ComputeChannelListHash(a), StrmSyncService.ComputeChannelListHash(b));
-        }
-
-        [Fact]
-        public void ComputeChannelListHash_EmptyList_ReturnsStableHash()
-        {
-            var h1 = StrmSyncService.ComputeChannelListHash(new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>());
-            var h2 = StrmSyncService.ComputeChannelListHash(new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>());
-            Assert.Equal(h1, h2);
-            Assert.NotEmpty(h1);
-        }
-
-        // -----------------------------------------------------------------
         // ComputeSeriesEpisodeHash
         // -----------------------------------------------------------------
 

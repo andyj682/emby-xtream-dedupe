@@ -26,8 +26,6 @@ namespace Emby.Xtream.Plugin
         public string CustomEpgUrl { get; set; } = string.Empty;
         public bool DeferEpgToGuideData { get; set; } = true;
 
-        // Back-compat: migrate EnableEpg (bool) → EpgSource on first load
-        [Obsolete("Use EpgSource instead")] public bool EnableEpg { get; set; } = true;
         public int EpgCacheMinutes { get; set; } = 30;
         public int EpgDaysToFetch { get; set; } = 2;
         public int M3UCacheMinutes { get; set; } = 15;
@@ -161,7 +159,6 @@ namespace Emby.Xtream.Plugin
         public string AutoSyncDailyTime     { get; set; } = "03:00";    // HH:mm server local time
 
         // Sync state (persisted across restarts)
-        public string LastChannelListHash { get; set; } = string.Empty;
         public long LastMovieSyncTimestamp { get; set; }
         public long LastSeriesSyncTimestamp { get; set; }
         public int StrmNamingVersion { get; set; }  // default 0; bumped when naming logic changes to force re-sync
