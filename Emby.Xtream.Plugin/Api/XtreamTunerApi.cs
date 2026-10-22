@@ -12,108 +12,126 @@ using MediaBrowser.Controller.Api;
 using MediaBrowser.Controller.Net;
 using MediaBrowser.Model.Logging;
 using MediaBrowser.Model.Services;
+using MediaBrowser.Model.Tasks;
 
 namespace Emby.Xtream.Plugin.Api
 {
+    // Every route is admin-only. Emby already requires a login on a route with no attribute,
+    // but checks no role, so any signed-in user could delete content, install an update or
+    // restart the server. AuthenticatedRoutesTests fails on a route without this attribute.
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Epg", "GET", Summary = "Gets XMLTV EPG data for Live TV channels")]
     public class GetEpgXml : IReturnVoid
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/LiveTv", "GET", Summary = "Gets M3U playlist for Live TV channels")]
     public class GetM3UPlaylist : IReturnVoid
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Categories/Live", "GET", Summary = "Gets Live TV categories from Xtream API")]
     public class GetLiveCategories : IReturn<List<Category>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/RefreshCache", "POST", Summary = "Invalidates M3U and EPG caches")]
     public class RefreshCache : IReturnVoid
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Categories/Vod", "GET", Summary = "Gets VOD movie categories from Xtream API")]
     public class GetVodCategories : IReturn<List<Category>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Categories/Series", "GET", Summary = "Gets Series categories from Xtream API")]
     public class GetSeriesCategories : IReturn<List<Category>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Items/Vod", "GET", Summary = "Gets VOD movie titles for one category")]
     public class GetVodItems : IReturn<List<ContentItemSummary>>
     {
         public int CategoryId { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Items/Series", "GET", Summary = "Gets series titles for one category")]
     public class GetSeriesItems : IReturn<List<ContentItemSummary>>
     {
         public int CategoryId { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Items/VodDeduped", "GET", Summary = "Lists de-duplicated VOD titles across the selected categories, each with its category memberships")]
     public class GetVodDedupedItems : IReturn<List<DedupedItemDto>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Items/SeriesDeduped", "GET", Summary = "Lists de-duplicated series titles across the selected categories, each with its category memberships")]
     public class GetSeriesDedupedItems : IReturn<List<DedupedItemDto>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Sync/Movies", "POST", Summary = "Triggers VOD movie STRM sync")]
     public class SyncMovies : IReturn<SyncResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Sync/Series", "POST", Summary = "Triggers series STRM sync")]
     public class SyncSeries : IReturn<SyncResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Sync/Status", "GET", Summary = "Gets current sync progress")]
     public class GetSyncStatus : IReturn<SyncStatusResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Dashboard", "GET", Summary = "Gets dashboard data including sync history and library stats")]
     public class GetDashboard : IReturn<DashboardResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Content/Movies", "DELETE", Summary = "Deletes all movie STRM content")]
     public class DeleteMovieContent : IReturn<DeleteContentResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Content/Series", "DELETE", Summary = "Deletes all series STRM content")]
     public class DeleteSeriesContent : IReturn<DeleteContentResult>
     {
     }
 
-    [Route("/XtreamTuner/WritablePaths", "GET", Summary = "Returns writable mount points available to Emby")]
-    public class GetWritablePaths : IReturn<List<string>>
-    {
-    }
-
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/BrowsePath", "GET", Summary = "Lists subdirectories at the given path, or writable mounts if no path given")]
     public class BrowsePath : IReturn<BrowsePathResult>
     {
         public string Path { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/ValidateStrmPath", "POST", Summary = "Validates that the STRM library path is writable")]
     public class ValidateStrmPath : IReturn<TestConnectionResult>
     {
         public string Path { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/TestConnection", "POST", Summary = "Tests connection to Xtream server")]
     public class TestXtreamConnection : IReturn<TestConnectionResult>
     {
@@ -122,6 +140,7 @@ namespace Emby.Xtream.Plugin.Api
         public string Password { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/TestDispatcharr", "POST", Summary = "Tests connection to Dispatcharr")]
     public class TestDispatcharrConnection : IReturn<TestConnectionResult>
     {
@@ -130,65 +149,69 @@ namespace Emby.Xtream.Plugin.Api
         public string Password { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/DispatcharrProfiles", "GET", Summary = "Gets Channel Profiles from Dispatcharr")]
     public class GetDispatcharrProfiles : IReturn<List<Client.Models.DispatcharrProfile>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/CheckUpdate", "GET", Summary = "Checks GitHub for a newer plugin release")]
     public class CheckForUpdate : IReturn<UpdateCheckResult>
     {
         public bool? Beta { get; set; }
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Sync/FailedItems", "GET", Summary = "Returns items that failed during the last sync")]
     public class GetFailedItems : IReturn<List<FailedSyncItem>>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Sync/RetryFailed", "POST", Summary = "Retries all items that failed during the last sync")]
     public class RetryFailed : IReturn<SyncResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/Logs", "GET", Summary = "Downloads sanitized plugin logs")]
     public class GetSanitizedLogs : IReturnVoid
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/InstallUpdate", "POST", Summary = "Downloads and installs the latest plugin update")]
     public class InstallUpdate : IReturn<InstallUpdateResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/RestartEmby", "POST", Summary = "Restarts the Emby server")]
     public class RestartEmby : IReturnVoid
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/ConfigurationCopies", "GET", Summary = "Lists saved configurations that can be restored")]
     public class GetConfigurationCopies : IReturn<ConfigurationCopyList>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/RestoreConfiguration", "POST", Summary = "Replaces the live configuration with a saved copy")]
     public class RestoreConfiguration : IReturn<RestoreConfigurationResult>
     {
         public string Path { get; set; }
     }
 
-    [Route("/XtreamTuner/TestTmdbLookup", "GET", Summary = "Tests TMDB fallback lookup")]
-    public class TestTmdbLookup : IReturn<TestConnectionResult>
-    {
-        public string Name { get; set; }
-        public int? Year { get; set; }
-    }
-
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/SyncGuideMappings", "POST", Summary = "Detaches listing providers from the Xtream tuner so Gracenote EPG is fetched by the tuner directly")]
     public class SyncGuideMappings : IReturn<SyncGuideMappingsResult>
     {
     }
 
+    [Authenticated(Roles = "Admin")]
     [Route("/XtreamTuner/StreamStats", "GET", Summary = "Returns cached stream stats received from Dispatcharr for all known streams")]
     public class GetStreamStats : IReturn<object>
     {
@@ -282,6 +305,7 @@ namespace Emby.Xtream.Plugin.Api
         public bool IsRunning { get; set; }
         public LibraryStats LibraryStats { get; set; }
         public bool AutoSyncOn { get; set; }
+        public string AutoSyncSchedule { get; set; }
         public DateTime? NextSyncTime { get; set; }
     }
 
@@ -366,10 +390,7 @@ namespace Emby.Xtream.Plugin.Api
                 return new List<Category>();
             }
 
-            var url = string.Format(
-                System.Globalization.CultureInfo.InvariantCulture,
-                "{0}/player_api.php?username={1}&password={2}&action=get_vod_categories",
-                config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password));
+            var url = XtreamUrls.PlayerApi(config, "get_vod_categories");
 
             try
             {
@@ -423,10 +444,7 @@ namespace Emby.Xtream.Plugin.Api
             {
                 using (var httpClient = Plugin.CreateHttpClient())
                 {
-                    var url = string.Format(
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        "{0}/player_api.php?username={1}&password={2}&action=get_series_categories",
-                        config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password));
+                    var url = XtreamUrls.PlayerApi(config, "get_series_categories");
 
                     var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
                     var categories = System.Text.Json.JsonSerializer.Deserialize<List<Category>>(json, jsonOptions)
@@ -436,10 +454,7 @@ namespace Emby.Xtream.Plugin.Api
                     // Fallback: derive categories from series list when server returns empty
                     if (sorted.Count == 0)
                     {
-                        var seriesUrl = string.Format(
-                            System.Globalization.CultureInfo.InvariantCulture,
-                            "{0}/player_api.php?username={1}&password={2}&action=get_series",
-                            config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password));
+                        var seriesUrl = XtreamUrls.PlayerApi(config, "get_series");
 
                         var seriesJson = await httpClient.GetStringAsync(seriesUrl).ConfigureAwait(false);
                         var seriesList = System.Text.Json.JsonSerializer.Deserialize<List<SeriesInfo>>(seriesJson, jsonOptions)
@@ -500,11 +515,7 @@ namespace Emby.Xtream.Plugin.Api
                 return new List<ContentItemSummary>();
             }
 
-            var url = string.Format(
-                System.Globalization.CultureInfo.InvariantCulture,
-                "{0}/player_api.php?username={1}&password={2}&action=get_vod_streams&category_id={3}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password),
-                request.CategoryId);
+            var url = XtreamUrls.PlayerApi(config, "get_vod_streams", "category_id", request.CategoryId);
 
             try
             {
@@ -535,11 +546,7 @@ namespace Emby.Xtream.Plugin.Api
                 return new List<ContentItemSummary>();
             }
 
-            var url = string.Format(
-                System.Globalization.CultureInfo.InvariantCulture,
-                "{0}/player_api.php?username={1}&password={2}&action=get_series&category_id={3}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username), Uri.EscapeDataString(config.Password),
-                request.CategoryId);
+            var url = XtreamUrls.PlayerApi(config, "get_series", "category_id", request.CategoryId);
 
             try
             {
@@ -983,6 +990,36 @@ namespace Emby.Xtream.Plugin.Api
             }
         }
 
+        // The two SYNC tasks, by key. Not by category: the fork's configuration backup task shares
+        // the "Xtream Tuner" category and runs on its own schedule, so selecting by category would
+        // report the backup's daily trigger as the sync schedule. config.js selects the same way.
+        private static readonly HashSet<string> SyncTaskKeys = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "XtreamTunerSyncMovies",
+            "XtreamTunerSyncSeries",
+        };
+
+        private static SyncSchedule.Summary ReadSyncSchedule()
+        {
+            try
+            {
+                var taskManager = Plugin.Instance.ApplicationHost.Resolve<ITaskManager>();
+                var tasks = taskManager.ScheduledTasks
+                    .Where(t => t.ScheduledTask != null && SyncTaskKeys.Contains(t.ScheduledTask.Key))
+                    .Select(t => new SyncSchedule.TaskSchedule
+                    {
+                        Triggers = t.Triggers,
+                        LastRunEndUtc = t.LastExecutionResult?.EndTimeUtc,
+                    })
+                    .ToList();
+                return SyncSchedule.Describe(tasks, DateTime.Now);
+            }
+            catch (Exception)
+            {
+                return new SyncSchedule.Summary { On = false, Description = "Unknown" };
+            }
+        }
+
         public object Get(GetDashboard request)
         {
             var syncService = Plugin.Instance.StrmSyncService;
@@ -1032,27 +1069,9 @@ namespace Emby.Xtream.Plugin.Api
             }
             catch { }
 
-            // Compute next sync time
-            DateTime? nextSyncTime = null;
-            if (config.AutoSyncEnabled)
-            {
-                if (string.Equals(config.AutoSyncMode, "daily", StringComparison.OrdinalIgnoreCase))
-                {
-                    var parts = (config.AutoSyncDailyTime ?? "03:00").Split(':');
-                    int hour = 0, minute = 0;
-                    if (parts.Length >= 1) int.TryParse(parts[0], out hour);
-                    if (parts.Length >= 2) int.TryParse(parts[1], out minute);
-                    var nextLocal = DateTime.Today.AddHours(hour).AddMinutes(minute);
-                    if (nextLocal <= DateTime.Now) nextLocal = nextLocal.AddDays(1);
-                    nextSyncTime = nextLocal.ToUniversalTime();
-                }
-                else
-                {
-                    var intervalHours = Math.Max(1, config.AutoSyncIntervalHours);
-                    var lastEnd = history.Count > 0 ? history[0].EndTime : DateTime.UtcNow;
-                    nextSyncTime = lastEnd.AddHours(intervalHours);
-                }
-            }
+            // The schedule Emby actually holds for the sync tasks, which may have been set in
+            // Emby's Scheduled Tasks rather than through the plugin's Auto-Sync settings.
+            var schedule = ReadSyncSchedule();
 
             return new DashboardResult
             {
@@ -1060,8 +1079,9 @@ namespace Emby.Xtream.Plugin.Api
                 LastSync = history.Count > 0 ? history[0] : null,
                 History = history,
                 IsRunning = syncService.MovieProgress.IsRunning || syncService.SeriesProgress.IsRunning,
-                AutoSyncOn = config.AutoSyncEnabled,
-                NextSyncTime = nextSyncTime,
+                AutoSyncOn = schedule.On,
+                AutoSyncSchedule = schedule.Description,
+                NextSyncTime = schedule.NextRunUtc,
                 LibraryStats = new LibraryStats
                 {
                     MovieFolders   = movieFolders,
@@ -1142,130 +1162,10 @@ namespace Emby.Xtream.Plugin.Api
             return result;
         }
 
-        public async Task<object> Get(TestTmdbLookup request)
-        {
-            var result = new TestConnectionResult();
-            try
-            {
-                var host = Plugin.Instance?.ApplicationHost;
-                if (host == null)
-                {
-                    result.Message = "ApplicationHost is null";
-                    return result;
-                }
-
-                var providerManager = host.Resolve<MediaBrowser.Controller.Providers.IProviderManager>();
-                if (providerManager == null)
-                {
-                    result.Message = "IProviderManager resolved to null";
-                    return result;
-                }
-
-                result.Message = "IProviderManager resolved: " + providerManager.GetType().FullName;
-
-                var name = request.Name ?? "Apocalypto";
-                var movieType = typeof(MediaBrowser.Controller.Entities.Movies.Movie);
-                var lookupInfoType = typeof(MediaBrowser.Controller.Providers.ItemLookupInfo);
-
-                // Find MovieInfo type at runtime (not in compile-time SDK)
-                Type movieInfoType = null;
-                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                {
-                    try
-                    {
-                        foreach (var t in asm.GetTypes())
-                        {
-                            if (t.Name == "MovieInfo" && lookupInfoType.IsAssignableFrom(t))
-                            {
-                                movieInfoType = t;
-                                break;
-                            }
-                        }
-                        if (movieInfoType != null) break;
-                    }
-                    catch { }
-                }
-
-                result.Message += " | MovieInfoType: " + (movieInfoType != null ? movieInfoType.FullName : "NOT FOUND");
-
-                if (movieInfoType != null)
-                {
-                    var searchInfo = Activator.CreateInstance(movieInfoType);
-                    movieInfoType.GetProperty("Name").SetValue(searchInfo, name);
-                    if (request.Year.HasValue)
-                        movieInfoType.GetProperty("Year").SetValue(searchInfo, request.Year);
-
-                    var queryType = typeof(MediaBrowser.Controller.Providers.RemoteSearchQuery<>).MakeGenericType(movieInfoType);
-                    var queryObj = Activator.CreateInstance(queryType);
-                    queryType.GetProperty("SearchInfo").SetValue(queryObj, searchInfo);
-                    queryType.GetProperty("IncludeDisabledProviders").SetValue(queryObj, true);
-
-                    // Use GetMethods() filtering to avoid AmbiguousMatchException
-                    var methods = typeof(MediaBrowser.Controller.Providers.IProviderManager).GetMethods();
-                    System.Reflection.MethodInfo method = null;
-                    foreach (var m in methods)
-                    {
-                        if (m.Name == "GetRemoteSearchResults" && m.IsGenericMethodDefinition && m.GetGenericArguments().Length == 2)
-                        {
-                            method = m;
-                            break;
-                        }
-                    }
-
-                    if (method == null)
-                    {
-                        result.Message += " | GetRemoteSearchResults method not found";
-                        return result;
-                    }
-
-                    var genericMethod = method.MakeGenericMethod(movieType, movieInfoType);
-                    var task = (Task)genericMethod.Invoke(providerManager, new object[] { queryObj, CancellationToken.None });
-                    await task.ConfigureAwait(false);
-
-                    var resultProp = task.GetType().GetProperty("Result");
-                    var searchResults = resultProp.GetValue(task) as System.Collections.IEnumerable;
-                    var count = 0;
-                    MediaBrowser.Model.Providers.RemoteSearchResult firstResult = null;
-                    foreach (var item in searchResults)
-                    {
-                        if (count == 0) firstResult = item as MediaBrowser.Model.Providers.RemoteSearchResult;
-                        count++;
-                    }
-
-                    result.Message += " | Results: " + count;
-                    if (firstResult != null)
-                    {
-                        result.Message += " | First: " + firstResult.Name;
-                        result.Success = true;
-                        if (firstResult.ProviderIds != null)
-                        {
-                            foreach (var kvp in firstResult.ProviderIds)
-                                result.Message += " | " + kvp.Key + "=" + kvp.Value;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                result.Message = "Exception: [" + ex.GetType().FullName + "] " + ex.Message;
-                if (ex.InnerException != null)
-                {
-                    result.Message += " | Inner: [" + ex.InnerException.GetType().FullName + "] " + ex.InnerException.Message;
-                }
-            }
-
-            return result;
-        }
-
         public void Post(RefreshCache request)
         {
             Plugin.Instance.LiveTvService.InvalidateCache();
             XtreamTunerHost.Instance?.ClearCaches();
-        }
-
-        public object Get(GetWritablePaths request)
-        {
-            return EnumerateWritableMountPaths();
         }
 
         public object Get(BrowsePath request)
@@ -1720,41 +1620,14 @@ namespace Emby.Xtream.Plugin.Api
             var config = Plugin.Instance.Configuration;
             var logDir = Plugin.Instance.ApplicationPaths.LogDirectoryPath;
             var lines = new List<string>();
-
             try
             {
-                var logFiles = Directory.GetFiles(logDir, "*.txt")
-                    .Concat(Directory.GetFiles(logDir, "*.log"))
-                    .OrderByDescending(f => File.GetLastWriteTimeUtc(f))
-                    .Take(5)
-                    .ToArray();
-
-                var keywords = new[] { "XtreamTuner", "Xtream", "Dispatcharr", "LiveTv" };
-
-                foreach (var logFile in logFiles)
-                {
-                    try
-                    {
-                        using (var reader = new StreamReader(logFile, Encoding.UTF8))
-                        {
-                            string line;
-                            while ((line = reader.ReadLine()) != null)
-                            {
-                                foreach (var kw in keywords)
-                                {
-                                    if (line.IndexOf(kw, StringComparison.OrdinalIgnoreCase) >= 0)
-                                    {
-                                        lines.Add(line);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    catch { }
-                }
+                lines = PluginLogCollector.Collect(logDir);
             }
-            catch { }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                lines.Add("[log download] Could not list the log folder: " + ex.GetType().Name);
+            }
 
             // Sanitize PII
             var sanitized = new StringBuilder();

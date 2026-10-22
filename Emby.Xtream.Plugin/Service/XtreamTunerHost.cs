@@ -345,7 +345,10 @@ namespace Emby.Xtream.Plugin.Service
                 catch (Exception ex) when (!(ex is TaskCanceledException) && !(ex is OperationCanceledException))
                 {
                     Logger.Warn("LiveTvService channel fetch failed, falling back to direct API: {0}", ex.Message);
-                    return await FetchAllChannelsDirectAsync(config).ConfigureAwait(false);
+                    // The same category and adult filters as the normal fetch, or a single failed
+                    // request would show channels the user switched off.
+                    var all = await FetchAllChannelsDirectAsync(config).ConfigureAwait(false);
+                    return LiveTvService.ApplyChannelFilters(all, config);
                 }
             }
 
@@ -370,42 +373,14 @@ namespace Emby.Xtream.Plugin.Service
                     return;
                 try
                 {
-                    _dispatcharrClient.Configure(config.DispatcharrUser, config.DispatcharrPass);
-
-                    // Profile filtering: build the set of allowed Dispatcharr channel IDs.
-                    HashSet<int> enabledChannelIds = null;
-                    if (config.SelectedDispatcharrProfileIds != null && config.SelectedDispatcharrProfileIds.Length > 0)
-                    {
-                        var profiles = await _dispatcharrClient.GetProfilesAsync(
-                            config.DispatcharrUrl, cancellationToken).ConfigureAwait(false);
-                        enabledChannelIds = new HashSet<int>();
-                        foreach (var profile in profiles)
-                        {
-                            if (Array.IndexOf(config.SelectedDispatcharrProfileIds, profile.Id) >= 0)
-                            {
-                                foreach (var chId in profile.Channels)
-                                    enabledChannelIds.Add(chId);
-                            }
-                        }
-                        Logger.Info("Profile filter active: {0} profile(s), {1} enabled Dispatcharr channel IDs",
-                            config.SelectedDispatcharrProfileIds.Length, enabledChannelIds.Count);
-                    }
-
-                    // Started first so the two small profile requests ride along with the big
-                    // channel-data request instead of queueing behind it.
-                    var profileFetch = StartStreamProfileFetch(config.DispatcharrUrl, cancellationToken);
-
-                    var (uuidMap, statsMap, tvgIdMap, stationIdMap, allowedStreamIds, channelNumberMap, streamProfileIdMap) =
-                        await _dispatcharrClient.GetChannelDataAsync(
-                            config.DispatcharrUrl, cancellationToken, enabledChannelIds).ConfigureAwait(false);
-                    newStats = statsMap;
-                    newProfileCodecs = await BuildProfileCodecMapAsync(profileFetch, streamProfileIdMap)
-                        .ConfigureAwait(false);
-                    _channelUuidMap = uuidMap;
-                    _tvgIdMap = tvgIdMap;
-                    _stationIdMap = stationIdMap;
-                    _channelNumberMap = channelNumberMap;
-                    _allowedStreamIds = allowedStreamIds;
+                    var data = await FetchDispatcharrDataAsync(config, cancellationToken).ConfigureAwait(false);
+                    newStats = data.Stats;
+                    newProfileCodecs = data.ProfileCodecs;
+                    _channelUuidMap = data.UuidMap;
+                    _tvgIdMap = data.TvgIdMap;
+                    _stationIdMap = data.StationIdMap;
+                    _channelNumberMap = data.ChannelNumberMap;
+                    _allowedStreamIds = data.AllowedStreamIds;
                     _dispatcharrDataLoaded = true;
                 }
                 catch (Exception ex)
@@ -594,8 +569,8 @@ namespace Emby.Xtream.Plugin.Service
             var firstRunDiagnostic = !_gracenoteFieldDiagnosticLogged;
             _gracenoteFieldDiagnosticLogged = true;
 
-            // For diagnostic only: build a set of ALL plugin station IDs so we can report
-            // the full intersection with each provider's channel list.
+            // On the first run each provider's lineup is also checked for shadowing (ADR-008),
+            // which needs every plugin station ID.
             var allPluginStationIds = firstRunDiagnostic
                 ? new HashSet<string>(
                     _stationIdMap.Values.Where(s => !string.IsNullOrEmpty(s)),
@@ -615,19 +590,6 @@ namespace Emby.Xtream.Plugin.Service
             if (channelsByStationId.Count == 0 && !firstRunDiagnostic)
             {
                 return;
-            }
-
-            var stationIdsToProbe = firstRunDiagnostic
-                ? _stationIdMap.Values
-                    .Where(s => !string.IsNullOrEmpty(s))
-                    .Distinct()
-                    .Take(5)
-                    .ToList()
-                : null;
-            if (firstRunDiagnostic)
-            {
-                Logger.Info("[gracenote-diag] probing {0} listings provider(s) for station IDs: [{1}]",
-                    providers.Length, string.Join(", ", stationIdsToProbe));
             }
 
             var matchedFieldCounts = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -653,49 +615,17 @@ namespace Emby.Xtream.Plugin.Service
                     }
                     catch (Exception ex)
                     {
-                        if (firstRunDiagnostic)
-                            Logger.Warn("[gracenote-diag] {0}: GetChannels threw: {1}", providerLabel, ex.Message);
+                        Logger.Debug("Listings provider {0}: GetChannels threw: {1}", providerLabel, ex.Message);
                         continue;
                     }
 
                     if (providerChannels == null || providerChannels.Count == 0)
                     {
-                        if (firstRunDiagnostic)
-                            Logger.Info("[gracenote-diag] {0}: 0 channels", providerLabel);
                         continue;
                     }
 
                     if (firstRunDiagnostic)
                     {
-                        Logger.Info("[gracenote-diag] {0}: {1} channels", providerLabel, providerChannels.Count);
-
-                        // Full-coverage intersection — count how many plugin station IDs
-                        // match ANY field on ANY channel in this provider. This is the
-                        // upper bound on what stamping could ever achieve for this user.
-                        int idHits = 0, listingsChannelIdHits = 0, tunerChannelIdHits = 0, altNameHits = 0;
-                        foreach (var ch in providerChannels)
-                        {
-                            if (allPluginStationIds.Contains(ch.Id ?? string.Empty))
-                                idHits++;
-                            if (!string.IsNullOrEmpty(ch.ListingsChannelId) && allPluginStationIds.Contains(ch.ListingsChannelId))
-                                listingsChannelIdHits++;
-                            if (!string.IsNullOrEmpty(ch.TunerChannelId) && allPluginStationIds.Contains(ch.TunerChannelId))
-                                tunerChannelIdHits++;
-                            if (ch.AlternateNames != null)
-                            {
-                                foreach (var alt in ch.AlternateNames)
-                                {
-                                    if (!string.IsNullOrEmpty(alt) && allPluginStationIds.Contains(alt))
-                                    {
-                                        altNameHits++;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        Logger.Info("[gracenote-diag] {0}: intersection with {1} plugin station IDs — Id:{2} ListingsChannelId:{3} TunerChannelId:{4} AlternateNames:{5}",
-                            providerLabel, allPluginStationIds.Count, idHits, listingsChannelIdHits, tunerChannelIdHits, altNameHits);
-
                         // ADR-008 / BUG-023: a non-Gracenote listings provider that covers
                         // most of the plugin's station IDs is likely to shadow Gracenote
                         // programs in Emby's guide rendering. Warn so users can spot the
@@ -706,44 +636,11 @@ namespace Emby.Xtream.Plugin.Service
                                 out coveredStationIdCount))
                         {
                             Logger.Warn(
-                                "[gracenote-diag] WARNING: {0} (type='{1}') covers {2}/{3} of your Gracenote station IDs. " +
+                                "WARNING: listings provider {0} (type='{1}') covers {2}/{3} of your Gracenote station IDs. " +
                                 "Its programs may shadow Gracenote data in the Emby guide. " +
                                 "If channels are showing placeholder EPG (channel name as program title, fixed-duration blocks), " +
                                 "remove this listings provider from Emby's Live TV settings.",
                                 providerLabel, listingsProvider.Type, coveredStationIdCount, allPluginStationIds.Count);
-                        }
-
-                        foreach (var ch in providerChannels.Take(5))
-                        {
-                            Logger.Info(
-                                "[gracenote-diag]   sample: Id='{0}' Number='{1}' Name='{2}' CallSign='{3}' " +
-                                "ListingsChannelId='{4}' ListingsId='{5}' TunerChannelId='{6}' " +
-                                "AlternateNames=[{7}] HasImageUrl={8}",
-                                ch.Id, ch.Number, ch.Name, ch.CallSign,
-                                ch.ListingsChannelId, ch.ListingsId, ch.TunerChannelId,
-                                ch.AlternateNames == null ? string.Empty : string.Join(",", ch.AlternateNames),
-                                !string.IsNullOrEmpty(ch.ImageUrl));
-                        }
-                        foreach (var stationId in stationIdsToProbe)
-                        {
-                            var matchedFields = new List<string>();
-                            foreach (var ch in providerChannels)
-                            {
-                                if (string.Equals(ch.Id, stationId, StringComparison.OrdinalIgnoreCase))
-                                    matchedFields.Add("Id");
-                                if (string.Equals(ch.ListingsChannelId, stationId, StringComparison.OrdinalIgnoreCase))
-                                    matchedFields.Add("ListingsChannelId");
-                                if (string.Equals(ch.TunerChannelId, stationId, StringComparison.OrdinalIgnoreCase))
-                                    matchedFields.Add("TunerChannelId");
-                                if (ch.AlternateNames != null
-                                    && ch.AlternateNames.Any(n => string.Equals(n, stationId, StringComparison.OrdinalIgnoreCase)))
-                                    matchedFields.Add("AlternateNames");
-                            }
-                            if (matchedFields.Count == 0)
-                                Logger.Info("[gracenote-diag]   station {0}: no match in {1}", stationId, providerLabel);
-                            else
-                                Logger.Info("[gracenote-diag]   station {0}: matched in {1} via [{2}]",
-                                    stationId, providerLabel, string.Join(",", matchedFields.Distinct()));
                         }
                     }
 
@@ -765,9 +662,6 @@ namespace Emby.Xtream.Plugin.Service
                 Logger.Info("StampGracenoteLogos: 0 logos stamped — {0} channel(s) had a station ID but no listings provider returned a matching channel with an image URL",
                     channelsByStationId.Count);
             }
-
-            if (firstRunDiagnostic)
-                Logger.Info("[gracenote-diag] done");
         }
 
         /// <summary>
@@ -885,10 +779,7 @@ namespace Emby.Xtream.Plugin.Service
         {
             using (var httpClient = Plugin.CreateHttpClient(30))
             {
-                var url = string.Format(
-                    CultureInfo.InvariantCulture,
-                    "{0}/player_api.php?username={1}&password={2}&action=get_live_streams",
-                    config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty));
+                var url = XtreamUrls.PlayerApi(config, "get_live_streams");
 
                 var json = await httpClient.GetStringAsync(url).ConfigureAwait(false);
                 return STJ.JsonSerializer.Deserialize<List<Client.Models.LiveStreamInfo>>(json, JsonOptions)
@@ -1385,47 +1276,21 @@ namespace Emby.Xtream.Plugin.Service
             }
 
             Logger.Info("Dispatcharr data missing at playback time, fetching on-demand");
-            _dispatcharrClient.Configure(config.DispatcharrUser, config.DispatcharrPass);
 
             try
             {
-                // Profile filtering on-demand: re-compute the enabled channel set if profiles are selected.
-                HashSet<int> enabledChannelIds = null;
-                if (config.SelectedDispatcharrProfileIds != null && config.SelectedDispatcharrProfileIds.Length > 0)
-                {
-                    var profiles = await _dispatcharrClient.GetProfilesAsync(
-                        config.DispatcharrUrl, cancellationToken).ConfigureAwait(false);
-                    enabledChannelIds = new HashSet<int>();
-                    foreach (var profile in profiles)
-                    {
-                        if (Array.IndexOf(config.SelectedDispatcharrProfileIds, profile.Id) >= 0)
-                        {
-                            foreach (var chId in profile.Channels)
-                                enabledChannelIds.Add(chId);
-                        }
-                    }
-                }
-
-                // This runs inside a tune, so the profile requests are started up front and
-                // awaited alongside the channel data rather than after it: two extra serial
-                // round trips in front of playback is the BUG-007 shape.
-                var profileFetch = StartStreamProfileFetch(config.DispatcharrUrl, cancellationToken);
-
-                var (uuidMap, statsMap, tvgIdMap, stationIdMap, allowedStreamIds, channelNumberMap, streamProfileIdMap) =
-                    await _dispatcharrClient.GetChannelDataAsync(
-                        config.DispatcharrUrl, cancellationToken, enabledChannelIds).ConfigureAwait(false);
-                if (statsMap.Count > 0) _streamStats = statsMap;
-                var profileCodecs = await BuildProfileCodecMapAsync(profileFetch, streamProfileIdMap)
-                    .ConfigureAwait(false);
-                if (profileCodecs.Count > 0) _streamProfileCodecs = profileCodecs;
-                if (uuidMap.Count > 0) _channelUuidMap = uuidMap;
-                if (tvgIdMap.Count > 0) _tvgIdMap = tvgIdMap;
-                if (stationIdMap.Count > 0) _stationIdMap = stationIdMap;
-                if (channelNumberMap.Count > 0) _channelNumberMap = channelNumberMap;
-                _allowedStreamIds = allowedStreamIds;
+                var data = await FetchDispatcharrDataAsync(config, cancellationToken).ConfigureAwait(false);
+                // Unlike a full refresh, keep what is already loaded when a map comes back empty.
+                if (data.Stats.Count > 0) _streamStats = data.Stats;
+                if (data.ProfileCodecs.Count > 0) _streamProfileCodecs = data.ProfileCodecs;
+                if (data.UuidMap.Count > 0) _channelUuidMap = data.UuidMap;
+                if (data.TvgIdMap.Count > 0) _tvgIdMap = data.TvgIdMap;
+                if (data.StationIdMap.Count > 0) _stationIdMap = data.StationIdMap;
+                if (data.ChannelNumberMap.Count > 0) _channelNumberMap = data.ChannelNumberMap;
+                _allowedStreamIds = data.AllowedStreamIds;
                 _dispatcharrDataLoaded = true;
                 Logger.Info("Loaded {0} UUIDs and {1} stream stats from Dispatcharr on-demand",
-                    uuidMap.Count, statsMap.Count);
+                    data.UuidMap.Count, data.Stats.Count);
             }
             catch (Exception ex)
             {
@@ -1450,33 +1315,179 @@ namespace Emby.Xtream.Plugin.Service
 
         private (string Url, bool IsDispatcharr) BuildStreamUrl(PluginConfiguration config, int streamId)
         {
-            // When Dispatcharr is enabled and we have a UUID for this channel,
-            // use the proxy stream URL instead of the Xtream-style URL.
+            var result = ResolveStreamUrl(config, streamId, _channelUuidMap);
+            switch (result.Route)
+            {
+                case StreamRoute.DispatcharrProxy:
+                    Logger.Debug("Stream {0}: using Dispatcharr proxy URL (uuid={1})", streamId,
+                        _channelUuidMap.TryGetValue(streamId, out var uuid) ? uuid : "?");
+                    break;
+                case StreamRoute.DispatcharrXtream:
+                    // Never log the URL itself: the Xtream password is in its path.
+                    Logger.Debug("Stream {0}: using Dispatcharr Xtream URL", streamId);
+                    break;
+                case StreamRoute.Skipped:
+                    Logger.Warn("Stream {0}: no Dispatcharr UUID and fallback disabled, skipping", streamId);
+                    break;
+                case StreamRoute.DirectXtream:
+                    if (config.EnableDispatcharr && !string.IsNullOrEmpty(config.DispatcharrUrl))
+                        Logger.Debug("Stream {0}: no Dispatcharr UUID, falling back to direct Xtream URL", streamId);
+                    break;
+            }
+
+            if (result.XtreamEndpointIgnored && !_xtreamEndpointWarned)
+            {
+                _xtreamEndpointWarned = true;
+                Logger.Warn("Dispatcharr stream URL is set to Xtream, but the Xtream server URL is not the " +
+                    "Dispatcharr URL. Using the Dispatcharr proxy URL instead, so streams keep going through Dispatcharr.");
+            }
+
+            return (result.Url, result.Route == StreamRoute.DispatcharrProxy || result.Route == StreamRoute.DispatcharrXtream);
+        }
+
+        private volatile bool _xtreamEndpointWarned;
+
+        internal enum StreamRoute { DispatcharrProxy, DispatcharrXtream, DirectXtream, Skipped }
+
+        internal struct StreamUrlResult
+        {
+            public string Url;
+            public StreamRoute Route;
+
+            /// <summary>True when the Xtream endpoint was asked for but could not be used.</summary>
+            public bool XtreamEndpointIgnored;
+        }
+
+        /// <summary>
+        /// Decides which URL a channel plays from. A channel Dispatcharr knows (it has a UUID)
+        /// plays from Dispatcharr: the proxy URL by default, or the Xtream URL of the connection
+        /// above when <see cref="PluginConfiguration.DispatcharrStreamEndpoint"/> is <c>xtream</c>
+        /// and that connection is the Dispatcharr server. Either way it counts as a Dispatcharr
+        /// stream (no probing, profile codec wins), since both URLs run through Dispatcharr's proxy
+        /// code (ADR-001, ADR-022). The Xtream URL is always <c>.ts</c>, matching the proxy URL.
+        /// </summary>
+        internal static StreamUrlResult ResolveStreamUrl(
+            PluginConfiguration config, int streamId, IReadOnlyDictionary<int, string> uuidMap)
+        {
+            var result = new StreamUrlResult();
             if (config.EnableDispatcharr && !string.IsNullOrEmpty(config.DispatcharrUrl))
             {
-                if (_channelUuidMap.TryGetValue(streamId, out var uuid))
+                if (uuidMap.TryGetValue(streamId, out var uuid))
                 {
-                    var proxyUrl = string.Format(CultureInfo.InvariantCulture,
+                    if (string.Equals(config.DispatcharrStreamEndpoint, "xtream", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (IsSameServer(config.BaseUrl, config.DispatcharrUrl))
+                        {
+                            result.Url = BuildXtreamUrl(config, streamId, "ts");
+                            result.Route = StreamRoute.DispatcharrXtream;
+                            return result;
+                        }
+
+                        result.XtreamEndpointIgnored = true;
+                    }
+
+                    result.Url = string.Format(CultureInfo.InvariantCulture,
                         "{0}/proxy/ts/stream/{1}",
                         config.DispatcharrUrl.TrimEnd('/'), uuid);
-                    Logger.Debug("Stream {0}: using Dispatcharr proxy URL (uuid={1})", streamId, uuid);
-                    return (proxyUrl, true);
+                    result.Route = StreamRoute.DispatcharrProxy;
+                    return result;
                 }
 
                 if (!config.DispatcharrFallbackToXtream)
                 {
-                    Logger.Warn("Stream {0}: no Dispatcharr UUID and fallback disabled, skipping", streamId);
-                    return (null, false);
+                    result.Route = StreamRoute.Skipped;
+                    return result;
                 }
-
-                Logger.Debug("Stream {0}: no Dispatcharr UUID, falling back to direct Xtream URL", streamId);
             }
 
             var extension = string.Equals(config.LiveTvOutputFormat, "ts", StringComparison.OrdinalIgnoreCase)
                 ? "ts" : "m3u8";
-            return (string.Format(CultureInfo.InvariantCulture,
-                "{0}/live/{1}/{2}/{3}.{4}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), streamId, extension), false);
+            result.Url = BuildXtreamUrl(config, streamId, extension);
+            result.Route = StreamRoute.DirectXtream;
+            return result;
+        }
+
+        private static string BuildXtreamUrl(PluginConfiguration config, int streamId, string extension)
+        {
+            return XtreamUrls.Stream(config, "live", streamId, extension);
+        }
+
+        /// <summary>
+        /// Same scheme, host, port and path (ignoring a trailing slash). The path matters behind a
+        /// reverse proxy, where <c>/provider</c> and <c>/dispatcharr</c> on one host are different
+        /// services.
+        /// </summary>
+        internal static bool IsSameServer(string a, string b)
+        {
+            if (!Uri.TryCreate(a?.Trim(), UriKind.Absolute, out var ua) ||
+                !Uri.TryCreate(b?.Trim(), UriKind.Absolute, out var ub))
+                return false;
+
+            return string.Equals(ua.Scheme, ub.Scheme, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(ua.Host, ub.Host, StringComparison.OrdinalIgnoreCase)
+                && ua.Port == ub.Port
+                && string.Equals(ua.AbsolutePath.TrimEnd('/'), ub.AbsolutePath.TrimEnd('/'), StringComparison.Ordinal);
+        }
+
+        private sealed class DispatcharrData
+        {
+            public Dictionary<int, string> UuidMap;
+            public Dictionary<int, StreamStatsInfo> Stats;
+            public Dictionary<int, string> TvgIdMap;
+            public Dictionary<int, string> StationIdMap;
+            public HashSet<int> AllowedStreamIds;
+            public Dictionary<int, double> ChannelNumberMap;
+            public Dictionary<int, string> ProfileCodecs;
+        }
+
+        /// <summary>
+        /// Fetches everything the tuner uses from Dispatcharr: channel data filtered by the selected
+        /// channel profiles, plus the codec each stream profile emits. Stores nothing; the channel
+        /// refresh and the on-demand load at playback time apply the result differently.
+        /// </summary>
+        private async Task<DispatcharrData> FetchDispatcharrDataAsync(PluginConfiguration config, CancellationToken cancellationToken)
+        {
+            _dispatcharrClient.Configure(config.DispatcharrUser, config.DispatcharrPass);
+
+            HashSet<int> enabledChannelIds = null;
+            if (config.SelectedDispatcharrProfileIds != null && config.SelectedDispatcharrProfileIds.Length > 0)
+            {
+                var profiles = await _dispatcharrClient.GetProfilesAsync(
+                    config.DispatcharrUrl, cancellationToken).ConfigureAwait(false);
+                enabledChannelIds = new HashSet<int>();
+                foreach (var profile in profiles)
+                {
+                    if (Array.IndexOf(config.SelectedDispatcharrProfileIds, profile.Id) >= 0)
+                    {
+                        foreach (var chId in profile.Channels)
+                            enabledChannelIds.Add(chId);
+                    }
+                }
+                Logger.Info("Profile filter active: {0} profile(s), {1} enabled Dispatcharr channel IDs",
+                    config.SelectedDispatcharrProfileIds.Length, enabledChannelIds.Count);
+            }
+
+            // Started before the channel-data request so the two small profile requests ride along
+            // with it. On the on-demand path this runs inside a tune, and extra serial round trips
+            // in front of playback is the BUG-007 shape.
+            var profileFetch = StartStreamProfileFetch(config.DispatcharrUrl, cancellationToken);
+
+            var (uuidMap, statsMap, tvgIdMap, stationIdMap, allowedStreamIds, channelNumberMap, streamProfileIdMap) =
+                await _dispatcharrClient.GetChannelDataAsync(
+                    config.DispatcharrUrl, cancellationToken, enabledChannelIds).ConfigureAwait(false);
+            var profileCodecs = await BuildProfileCodecMapAsync(profileFetch, streamProfileIdMap)
+                .ConfigureAwait(false);
+
+            return new DispatcharrData
+            {
+                UuidMap = uuidMap,
+                Stats = statsMap,
+                TvgIdMap = tvgIdMap,
+                StationIdMap = stationIdMap,
+                AllowedStreamIds = allowedStreamIds,
+                ChannelNumberMap = channelNumberMap,
+                ProfileCodecs = profileCodecs,
+            };
         }
 
         /// <summary>

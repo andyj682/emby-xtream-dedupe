@@ -73,8 +73,38 @@ function (BaseView, loading) {
             updateTmdbVisibility(view);
         });
 
+        view.querySelector('.chkEnableNfoFiles').addEventListener('change', function () {
+            updateTmdbVisibility(view);
+        });
+
         view.querySelector('.chkEnableDispatcharr').addEventListener('change', function () {
             updateDispatcharrVisibility(view);
+        });
+
+        view.querySelector('.chkEnableLiveTv').addEventListener('change', function () {
+            updateLiveTvVisibility(view);
+        });
+
+        // Replaces the schedule in Emby's Scheduled Tasks with the one shown on the page. Saving
+        // only writes it when these settings change, so this is the way back from a mismatch.
+        // Saves first, so the schedule applied is the one on screen and not an older saved one.
+        view.querySelector('.btnApplyAutoSyncSchedule').addEventListener('click', function () {
+            saveConfig(self, function () {
+                ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                    return applyScheduleToTasks(view, config, ApiClient).then(function () {
+                        showScheduleMismatch(view, config, ApiClient);
+                    });
+                });
+            });
+        });
+
+        ['.selDispatcharrStreamEndpoint', '.txtBaseUrl', '.txtDispatcharrUrl'].forEach(function (sel) {
+            view.querySelector(sel).addEventListener('input', function () {
+                updateStreamEndpointWarning(view);
+            });
+            view.querySelector(sel).addEventListener('change', function () {
+                updateStreamEndpointWarning(view);
+            });
         });
 
 
@@ -299,13 +329,15 @@ function (BaseView, loading) {
             loadSeriesCategoriesMulti(self);
         });
 
-        // Sync buttons
+        // Sync buttons. The server syncs from the saved configuration, so save what is on
+        // screen first: otherwise ticking a category and pressing Sync ran the old selection.
+        // A failed save shows its own alert and the sync does not start.
         view.querySelector('.btnSyncMovies').addEventListener('click', function () {
-            syncMovies(view);
+            saveConfig(self, function () { syncMovies(view); });
         });
 
         view.querySelector('.btnSyncSeries').addEventListener('click', function () {
-            syncSeries(view);
+            saveConfig(self, function () { syncSeries(view); });
         });
 
         // Delete content buttons
@@ -329,7 +361,7 @@ function (BaseView, loading) {
 
         // Dashboard sync all button
         view.querySelector('.btnDashboardSyncAll').addEventListener('click', function () {
-            dashboardSyncAll(self);
+            saveConfig(self, function () { dashboardSyncAll(self); });
         });
 
         // Retry failed items button
@@ -506,6 +538,64 @@ function (BaseView, loading) {
         config[configKey] = serialize(instance[key]);
     }
 
+    function copySet(set) {
+        var copy = {};
+        Object.keys(set || {}).forEach(function (id) { copy[id] = true; });
+        return copy;
+    }
+
+    // Changes `target` in place to hold exactly the ids in `source`. In place because the
+    // de-dup view keeps reading the same object.
+    function setContentsTo(target, source) {
+        Object.keys(target).forEach(function (id) { if (!source[id]) delete target[id]; });
+        Object.keys(source).forEach(function (id) { target[id] = true; });
+    }
+
+    // Writes a reviewed list back as the CHANGES made on this page, not the page's whole copy.
+    //
+    // The sync adds to the reviewed lists on its own (the review gate marks a title reviewed
+    // when one already on disk comes back under a new id), so the copy captured at page load
+    // goes stale. Writing that copy back wholesale silently undid those marks, and once the
+    // Sync buttons started saving the page first it did so on every Sync click, not only on an
+    // explicit Save. So: start from the list as stored NOW (`config` was fetched just before
+    // this save), add what was marked here, remove what was unmarked here. "Here" is measured
+    // against the baseline recorded at load and moved forward on each successful save.
+    //
+    // An unreadable store keeps the old path: saveStore leaves it alone unless the user
+    // approved replacing it. A store that read fine at load but will not parse now is left
+    // alone too — the same rule, applied to the moment of writing.
+    function saveReviewedStore(instance, config, key, configKey) {
+        if (instance[key + 'Unreadable']) {
+            saveStore(instance, config, key, configKey, serializeReviewedSet);
+            return null;
+        }
+        var stored = parseReviewedSet(config[configKey]);
+        if (stored === null) {
+            console.error('Xtream: ' + configKey + ' no longer parses on the server; left as it is.');
+            return null;
+        }
+        var page = instance[key] || {};
+        var baseline = instance[key + 'Baseline'] || {};
+        var merged = {};
+        Object.keys(stored).forEach(function (id) {
+            if (!(baseline[id] && !page[id])) merged[id] = true;
+        });
+        Object.keys(page).forEach(function (id) {
+            if (!baseline[id]) merged[id] = true;
+        });
+        config[configKey] = serializeReviewedSet(merged);
+        return merged;
+    }
+
+    // After a successful save: the page now shows what was stored, sync additions included,
+    // and later changes are measured from there.
+    function adoptSavedReviewed(instance, key, merged) {
+        if (!merged) return;
+        if (!instance[key]) instance[key] = {};
+        setContentsTo(instance[key], merged);
+        instance[key + 'Baseline'] = copySet(merged);
+    }
+
     // Escape hatch, so "we refuse to overwrite it" does not also mean "the decisions you just
     // made vanish without a word". An unreadable store loads EMPTY, so anything in the working
     // copy was put there in this session — a precise signal for "there is something here worth
@@ -551,6 +641,24 @@ function (BaseView, loading) {
         }
     }
 
+    // The Xtream stream URL is only used when the Xtream server is the Dispatcharr server
+    // (same scheme, host, port and path, as XtreamTunerHost.IsSameServer checks). Otherwise the
+    // plugin keeps the proxy URL, so say so here rather than only in the server log (ADR-022).
+    function updateStreamEndpointWarning(view) {
+        var warning = view.querySelector('.dispatcharrStreamEndpointWarning');
+        var wantsXtream = view.querySelector('.selDispatcharrStreamEndpoint').value === 'xtream';
+        var same = false;
+        try {
+            var a = new URL(view.querySelector('.txtBaseUrl').value.trim());
+            var b = new URL(view.querySelector('.txtDispatcharrUrl').value.trim());
+            same = a.origin === b.origin &&
+                a.pathname.replace(/\/+$/, '') === b.pathname.replace(/\/+$/, '');
+        } catch (e) {
+            same = false;
+        }
+        warning.style.display = wantsXtream && !same ? '' : 'none';
+    }
+
     function loadConfig(instance) {
         loading.show();
         ApiClient.getPluginConfiguration(pluginId).then(function (config) {
@@ -594,6 +702,8 @@ function (BaseView, loading) {
             view.querySelector('.chkDispatcharrFallback').checked = config.DispatcharrFallbackToXtream !== false;
             view.querySelector('.chkForceAudioTranscode').checked = !!config.ForceAudioTranscode;
             view.querySelector('.selDispatcharrCodecSource').value = config.DispatcharrVideoCodecSource || 'auto';
+            view.querySelector('.selDispatcharrStreamEndpoint').value = config.DispatcharrStreamEndpoint || 'proxy';
+            updateStreamEndpointWarning(view);
             view.querySelector('.chkDeclareDvbSubtitles').checked = !!config.DeclareDvbSubtitles;
 
             instance.selectedDispatcharrProfileIds = config.SelectedDispatcharrProfileIds || [];
@@ -620,6 +730,7 @@ function (BaseView, loading) {
                 parseExcludedList(config.ExcludedVodStreamIds), [], storeProblems);
             adoptStore(instance, 'reviewedVodStreamIds',
                 parseReviewedSet(config.ReviewedVodStreamIdsJson), {}, storeProblems);
+            instance.reviewedVodStreamIdsBaseline = copySet(instance.reviewedVodStreamIds);
 
             // Series
             view.querySelector('.chkSyncSeries').checked = !!config.SyncSeries;
@@ -632,6 +743,7 @@ function (BaseView, loading) {
                 parseExcludedList(config.ExcludedSeriesIds), [], storeProblems);
             adoptStore(instance, 'reviewedSeriesIds',
                 parseReviewedSet(config.ReviewedSeriesIdsJson), {}, storeProblems);
+            instance.reviewedSeriesIdsBaseline = copySet(instance.reviewedSeriesIds);
 
             // Update channel
             view.querySelector('.chkUseBetaChannel').checked = !!config.UseBetaChannel;
@@ -662,6 +774,7 @@ function (BaseView, loading) {
             view.querySelector('.txtAutoSyncIntervalHours').value = config.AutoSyncIntervalHours || 24;
             view.querySelector('.txtAutoSyncDailyTime').value = config.AutoSyncDailyTime || '03:00';
             updateAutoSyncVisibility(view);
+            showScheduleMismatch(view, config, ApiClient);
 
             // Metadata ID naming (unified)
             var metadataIdEnabled = !!config.EnableTmdbFolderNaming || !!config.EnableSeriesIdFolderNaming;
@@ -674,6 +787,7 @@ function (BaseView, loading) {
             updateNameCleaningVisibility(view);
             updateDispatcharrVisibility(view);
             updateEpgVisibility(view);
+            updateLiveTvVisibility(view);
             updateVodMovieVisibility(view);
             updateSeriesVisibility(view);
             updateFoldersVisibility(view, 'movie');
@@ -685,7 +799,6 @@ function (BaseView, loading) {
 
             // Health bar, auto-sync line, empty-state
             renderHealthBar(view, config);
-            renderAutoSyncDashboardLine(view, config);
             updateDashboardEmptyState(view, config);
 
             loading.hide();
@@ -749,6 +862,7 @@ function (BaseView, loading) {
             config.DispatcharrFallbackToXtream = view.querySelector('.chkDispatcharrFallback').checked;
             config.ForceAudioTranscode = view.querySelector('.chkForceAudioTranscode').checked;
             config.DispatcharrVideoCodecSource = view.querySelector('.selDispatcharrCodecSource').value;
+            config.DispatcharrStreamEndpoint = view.querySelector('.selDispatcharrStreamEndpoint').value;
             config.DeclareDvbSubtitles = view.querySelector('.chkDeclareDvbSubtitles').checked;
             config.SelectedDispatcharrProfileIds = getSelectedDispatcharrProfileIds(instance);
 
@@ -759,8 +873,7 @@ function (BaseView, loading) {
             config.SelectedVodCategoryIds = getSelectedVodCategoryIds(instance);
             saveStore(instance, config, 'excludedVodStreamIds', 'ExcludedVodStreamIds',
                 function (v) { return v.slice(); });
-            saveStore(instance, config, 'reviewedVodStreamIds', 'ReviewedVodStreamIdsJson',
-                serializeReviewedSet);
+            var savedReviewedVod = saveReviewedStore(instance, config, 'reviewedVodStreamIds', 'ReviewedVodStreamIdsJson');
 
             // Series
             config.SyncSeries = view.querySelector('.chkSyncSeries').checked;
@@ -769,8 +882,7 @@ function (BaseView, loading) {
             config.SelectedSeriesCategoryIds = getSelectedSeriesCategoryIds(instance);
             saveStore(instance, config, 'excludedSeriesIds', 'ExcludedSeriesIds',
                 function (v) { return v.slice(); });
-            saveStore(instance, config, 'reviewedSeriesIds', 'ReviewedSeriesIdsJson',
-                serializeReviewedSet);
+            var savedReviewedSeries = saveReviewedStore(instance, config, 'reviewedSeriesIds', 'ReviewedSeriesIdsJson');
 
             // Update channel
             config.UseBetaChannel = view.querySelector('.chkUseBetaChannel').checked;
@@ -796,10 +908,12 @@ function (BaseView, loading) {
             config.EnableNfoFiles = view.querySelector('.chkEnableNfoFiles').checked;
 
             // Auto-sync schedule
+            var scheduleBefore = scheduleKey(config);
             config.AutoSyncEnabled = view.querySelector('.chkAutoSyncEnabled').checked;
             config.AutoSyncMode = view.querySelector('.selAutoSyncMode').value;
             config.AutoSyncIntervalHours = parseInt(view.querySelector('.txtAutoSyncIntervalHours').value, 10) || 24;
             config.AutoSyncDailyTime = view.querySelector('.txtAutoSyncDailyTime').value || '03:00';
+            var scheduleChanged = scheduleKey(config) !== scheduleBefore;
 
             // Metadata ID naming (unified → both backend properties)
             var metadataIdOn = view.querySelector('.chkEnableTmdbFolderNaming').checked;
@@ -814,7 +928,12 @@ function (BaseView, loading) {
             // up and no error was shown.
             return ApiClient.updatePluginConfiguration(pluginId, config).then(function () {
                 Dashboard.processPluginConfigurationUpdateResult();
-                applyScheduleToTasks(view, config, ApiClient);
+                adoptSavedReviewed(instance, 'reviewedVodStreamIds', savedReviewedVod);
+                adoptSavedReviewed(instance, 'reviewedSeriesIds', savedReviewedSeries);
+                // Only when the auto-sync settings changed: writing them on every save replaced
+                // (or, with auto-sync off, wiped) a schedule set in Emby's Scheduled Tasks.
+                (scheduleChanged ? applyScheduleToTasks(view, config, ApiClient) : Promise.resolve())
+                    .then(function () { showScheduleMismatch(view, config, ApiClient); });
                 setDedupedCatNudge(instance, 'vod', false);
                 setDedupedCatNudge(instance, 'series', false);
                 ['vod', 'series'].forEach(function (t) {
@@ -841,8 +960,8 @@ function (BaseView, loading) {
             btns[i].style.borderBottomColor = 'transparent';
         }
 
-        var panelMap = { dashboard: '.tabDashboard', generic: '.tabGeneric', movies: '.tabMovies', series: '.tabSeries', liveTv: '.tabLiveTv' };
-        var btnMap = { dashboard: '.tabBtnDashboard', generic: '.tabBtnGeneric', movies: '.tabBtnMovies', series: '.tabBtnSeries', liveTv: '.tabBtnLiveTv' };
+        var panelMap = { dashboard: '.tabDashboard', generic: '.tabGeneric', library: '.tabLibrary', movies: '.tabMovies', series: '.tabSeries', liveTv: '.tabLiveTv' };
+        var btnMap = { dashboard: '.tabBtnDashboard', generic: '.tabBtnGeneric', library: '.tabBtnLibrary', movies: '.tabBtnMovies', series: '.tabBtnSeries', liveTv: '.tabBtnLiveTv' };
 
         var panel = view.querySelector(panelMap[tabName]);
         if (panel) panel.style.display = 'block';
@@ -858,14 +977,27 @@ function (BaseView, loading) {
         if (footer) footer.style.display = tabName === 'dashboard' ? 'none' : '';
     }
 
+    // The ID lookup feeds folder names and .nfo files, so it is shown when either is on.
     function updateTmdbVisibility(view) {
-        var enabled = view.querySelector('.chkEnableTmdbFolderNaming').checked;
+        var enabled = view.querySelector('.chkEnableTmdbFolderNaming').checked
+            || view.querySelector('.chkEnableNfoFiles').checked;
         view.querySelector('.tmdbSettings').style.display = enabled ? '' : 'none';
     }
 
+    // Dispatcharr's own settings, plus the Live TV options that only apply with Dispatcharr.
     function updateDispatcharrVisibility(view) {
         var enabled = view.querySelector('.chkEnableDispatcharr').checked;
-        view.querySelector('.dispatcharrSettings').style.display = enabled ? '' : 'none';
+        ['.dispatcharrSettings', '.dispatcharrPlaybackSettings', '.dispatcharrGuideSettings'].forEach(function (sel) {
+            var el = view.querySelector(sel);
+            if (el) el.style.display = enabled ? '' : 'none';
+        });
+        var hint = view.querySelector('.dispatcharrOffHint');
+        if (hint) hint.style.display = enabled ? 'none' : '';
+    }
+
+    function updateLiveTvVisibility(view) {
+        var enabled = view.querySelector('.chkEnableLiveTv').checked;
+        view.querySelector('.liveTvSettings').style.display = enabled ? '' : 'none';
     }
 
 function updateEpgVisibility(view) {
@@ -941,22 +1073,63 @@ function updateEpgVisibility(view) {
         return [{ Type: 'IntervalTrigger', IntervalTicks: hours * 36000000000 }];
     }
 
+    // The auto-sync settings that decide the triggers, as one comparable string.
+    function scheduleKey(config) {
+        return JSON.stringify(buildTriggers(config));
+    }
+
+    function triggersKey(triggers) {
+        return JSON.stringify((triggers || []).map(function (t) {
+            return t.Type === 'DailyTrigger'
+                ? { Type: t.Type, TimeOfDayTicks: t.TimeOfDayTicks }
+                : { Type: t.Type, IntervalTicks: t.IntervalTicks };
+        }));
+    }
+
+    // The two SYNC tasks. Not every "Xtream Tuner" task: the configuration backup task shares
+    // that category and keeps its own schedule, so selecting by category overwrote the backup's
+    // trigger with the sync's on every save (and with auto-sync off, left it with none). Matched
+    // on the task key, falling back to the name if a server version does not send the key.
+    // XtreamTunerApi.SyncTaskKeys selects the same two tasks for the dashboard.
+    var SYNC_TASK_KEYS = ['XtreamTunerSyncMovies', 'XtreamTunerSyncSeries'];
+
+    function isSyncTask(t) {
+        if (t.Key) return SYNC_TASK_KEYS.indexOf(t.Key) !== -1;
+        return t.Category === 'Xtream Tuner' && /Sync (Movies|Series)$/.test(t.Name || '');
+    }
+
+    // Says so when a sync task's schedule in Emby's Scheduled Tasks is not what these
+    // settings describe. Saving leaves that schedule alone unless the settings here change.
+    function showScheduleMismatch(view, config, apiClient) {
+        var note = view.querySelector('.autoSyncScheduleMismatch');
+        if (!note) return;
+        apiClient.getJSON(apiClient.getUrl('ScheduledTasks')).then(function (tasks) {
+            if (!Array.isArray(tasks)) return;
+            var expected = scheduleKey(config);
+            var differs = tasks.some(function (t) {
+                return isSyncTask(t) && triggersKey(t.Triggers) !== expected;
+            });
+            note.style.display = differs ? '' : 'none';
+        }).catch(function () {
+            note.style.display = 'none';
+        });
+    }
+
+    // Resolves once Emby has stored the triggers, so a check that follows sees them.
     function applyScheduleToTasks(view, config, apiClient) {
-        apiClient.getJSON(apiClient.getUrl('ScheduledTasks'))
+        return apiClient.getJSON(apiClient.getUrl('ScheduledTasks'))
             .then(function (tasks) {
                 if (!Array.isArray(tasks)) return;
-                var xtreamTasks = tasks.filter(function (t) {
-                    return t.Category === 'Xtream Tuner';
-                });
+                var xtreamTasks = tasks.filter(isSyncTask);
                 var triggers = buildTriggers(config);
-                xtreamTasks.forEach(function (task) {
-                    apiClient.ajax({
+                return Promise.all(xtreamTasks.map(function (task) {
+                    return apiClient.ajax({
                         url: apiClient.getUrl('ScheduledTasks/' + task.Id + '/Triggers'),
                         type: 'POST',
                         contentType: 'application/json',
                         data: JSON.stringify(triggers)
                     });
-                });
+                }));
             });
     }
 
@@ -1133,6 +1306,8 @@ function updateEpgVisibility(view) {
 
         // Run the test server-side so it can reach hosts that the browser cannot
         // resolve (e.g. Docker container names on the Emby server's network).
+        // Only the latest test may report, so a slow earlier reply can't overwrite it.
+        var requestId = instance.xtreamTestRequestId = (instance.xtreamTestRequestId || 0) + 1;
         ApiClient.ajax({
             type: 'POST',
             url: ApiClient.getUrl('XtreamTuner/TestConnection'),
@@ -1140,11 +1315,14 @@ function updateEpgVisibility(view) {
             data: JSON.stringify({ BaseUrl: url, Username: user, Password: pass }),
             dataType: 'json'
         }).then(function (result) {
+            if (requestId !== instance.xtreamTestRequestId) return;
             setPillResult(resultEl, result.Success, result.Message);
+            setXtreamHealthFromTest(view, result.Success, user);
             if (result.Success) {
                 saveConfig(instance);
             }
         }).catch(function () {
+            if (requestId !== instance.xtreamTestRequestId) return;
             setPillResult(resultEl, false, 'Test request failed. Check server logs.');
         });
     }
@@ -1285,11 +1463,13 @@ function updateEpgVisibility(view) {
             dataType: 'json'
         }).then(function (result) {
             setPillResult(resultEl, result.Success, result.Message);
+            setDispatcharrHealthFromTest(instance.view, result.Success);
             if (result.Success) {
                 saveConfig(instance);
             }
         }).catch(function () {
             setPillResult(resultEl, false, 'Test request failed. Check server logs.');
+            setDispatcharrHealthFromTest(instance.view, false);
         });
     }
 
@@ -1378,8 +1558,10 @@ function updateEpgVisibility(view) {
         var badge = view.querySelector('.dispatcharrProfileCountBadge');
         if (badge) {
             badge.style.display = checkboxes.length > 0 ? '' : 'none';
-            badge.querySelector('.profileCountSelected').textContent = selected;
-            badge.querySelector('.profileCountTotal').textContent = checkboxes.length;
+            // No profile ticked means no filtering: every channel is shown.
+            badge.textContent = selected === 0
+                ? 'No profile ticked: all channels shown'
+                : selected + ' / ' + checkboxes.length + ' selected';
         }
     }
 
@@ -1881,7 +2063,10 @@ function updateEpgVisibility(view) {
         if (serverSet === null) return;
         if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
         var local = instance[cfg.reviewedKey];
-        Object.keys(serverSet).forEach(function (id) { local[id] = true; });
+        // Into the baseline too: these came from the server, so a save must not count them as
+        // marks made on this page.
+        var baseline = instance[cfg.reviewedKey + 'Baseline'] || (instance[cfg.reviewedKey + 'Baseline'] = {});
+        Object.keys(serverSet).forEach(function (id) { local[id] = true; baseline[id] = true; });
     }
 
     function loadDeduped(instance, type) {
@@ -2619,7 +2804,7 @@ function updateEpgVisibility(view) {
             instance.loadedVodCategories = categories;
 
             if (!categories || categories.length === 0) {
-                listEl.innerHTML = '<div style="opacity:0.5;">No VOD categories found. Your provider may not include VOD access on this account.</div>';
+                listEl.innerHTML = '<div style="opacity:0.5;">No movie categories found. Your provider may not include VOD access on this account.</div>';
                 return;
             }
 
@@ -2633,7 +2818,7 @@ function updateEpgVisibility(view) {
             updateCategoryCountBadge(view, 'vod');
         }).catch(function () {
             loadingEl.style.display = 'none';
-            listEl.innerHTML = '<div style="color:#cc0000;">Failed to load VOD categories. Save your connection settings first, then try again.</div>';
+            listEl.innerHTML = '<div style="color:#cc0000;">Failed to load movie categories. Save your connection settings first, then try again.</div>';
         });
     }
 
@@ -2665,7 +2850,7 @@ function updateEpgVisibility(view) {
             instance.loadedVodCategories = categories || [];
 
             if (!categories || categories.length === 0) {
-                statusEl.textContent = 'No VOD categories found. Your provider may not include VOD access on this account.';
+                statusEl.textContent = 'No movie categories found. Your provider may not include VOD access on this account.';
                 statusEl.style.color = '#cc0000'; statusEl.style.opacity = '1';
                 clearFolderCardCategories(view, 'movie');
                 return;
@@ -3008,6 +3193,7 @@ function updateEpgVisibility(view) {
         ApiClient.getJSON(apiUrl).then(function (data) {
             loadDashboard._retries = 0;
             renderDashboardStatus(view, data);
+            renderAutoSyncDashboardLine(view, data);
 
             // Auto-bust browser cache when plugin was updated.
             // localStorage remembers the last-seen version; if the server
@@ -3571,7 +3757,7 @@ function updateEpgVisibility(view) {
 
             if (!doMovies && !doSeries) {
                 btn.disabled = false;
-                setPillResult(resultEl, false, 'Nothing to sync. Enable Movies or Series sync in Settings first.');
+                setPillResult(resultEl, false, 'Nothing to sync. Enable Movies or Series sync on the Movies or Series tab first.');
                 return;
             }
 
@@ -3793,10 +3979,11 @@ function updateEpgVisibility(view) {
         var total    = view.querySelectorAll(entry.checkbox).length;
         var selected = view.querySelectorAll(entry.checkbox + ':checked').length;
         if (total === 0) { badge.style.display = 'none'; return; }
-        badge.querySelector('.countSelected').textContent = selected;
-        badge.querySelector('.countTotal').textContent    = total;
+        // Nothing ticked means every category is synced, so say that instead of a warning-coloured 0.
+        badge.textContent = selected === 0
+            ? 'All ' + total + ' categories included (none ticked)'
+            : selected + ' / ' + total + ' categories selected';
         badge.style.display = '';
-        badge.classList.toggle('zero-selected', selected === 0);
     }
 
     function renderHealthBar(view, config) {
@@ -3806,17 +3993,19 @@ function updateEpgVisibility(view) {
         if (!xtreamItem) return;
 
         // Xtream dot
+        // Only says what is configured: no request is made here, so it must not claim the
+        // connection works (#86). Test Connection replaces it with a real result.
         var xtreamOk = !!(config.BaseUrl && config.Username);
         setHealthDot(xtreamItem, xtreamOk ? 'ok' : 'grey');
         xtreamItem.querySelector('.healthLabel').textContent = xtreamOk
-            ? 'Xtream: Connected (' + config.Username + ')'
+            ? 'Xtream: Configured (' + config.Username + ')'
             : 'Xtream: Not configured';
 
-        // Dispatcharr dot
+        // Dispatcharr dot: like Xtream above, only what is configured until a test runs.
         var dispatcharrOn = !!config.EnableDispatcharr;
-        setHealthDot(dispatcharrItem, dispatcharrOn ? 'ok' : 'grey');
+        setHealthDot(dispatcharrItem, 'grey');
         dispatcharrItem.querySelector('.healthLabel').textContent = dispatcharrOn
-            ? 'Dispatcharr: Active'
+            ? 'Dispatcharr: Enabled (not tested)'
             : 'Dispatcharr: Disabled';
 
         // Last sync dot — prefer SyncHistoryJson[0].EndTime (updated on every sync),
@@ -3854,6 +4043,24 @@ function updateEpgVisibility(view) {
         syncItem.querySelector('.healthLabel').textContent = syncLabel;
     }
 
+    function setXtreamHealthFromTest(view, success, user) {
+        var item = view.querySelector('.healthItemXtream');
+        if (!item) return;
+        setHealthDot(item, success ? 'ok' : 'error');
+        item.querySelector('.healthLabel').textContent = success
+            ? 'Xtream: Connected (' + user + ')'
+            : 'Xtream: Connection failed';
+    }
+
+    function setDispatcharrHealthFromTest(view, success) {
+        var item = view.querySelector('.healthItemDispatcharr');
+        if (!item) return;
+        setHealthDot(item, success ? 'ok' : 'error');
+        item.querySelector('.healthLabel').textContent = success
+            ? 'Dispatcharr: Connected'
+            : 'Dispatcharr: Connection failed';
+    }
+
     function setHealthDot(itemEl, status) {
         var dot = itemEl.querySelector('.healthDot');
         if (!dot) return;
@@ -3885,35 +4092,33 @@ function updateEpgVisibility(view) {
         }
     }
 
-    function renderAutoSyncDashboardLine(view, config) {
+    // From the Dashboard endpoint, which reads the triggers Emby holds for the sync tasks,
+    // so a schedule set in Emby's Scheduled Tasks is shown as it is.
+    function renderAutoSyncDashboardLine(view, data) {
         var el = view.querySelector('.dashboardAutoSyncLine');
         if (!el) return;
-        if (!config.AutoSyncEnabled) {
-            el.innerHTML = 'Auto-sync: Off \u00a0\u2014\u00a0<a class="lnkGoToAutoSync" href="#" style="color:inherit; text-decoration:underline;">Enable in Settings</a>';
+        if (!data.AutoSyncOn && data.AutoSyncSchedule === 'Unknown') {
+            // The server could not read Emby's scheduled tasks; don't claim it is off.
+            el.textContent = 'Auto-sync: Unknown (see Emby\'s Scheduled Tasks)';
+        } else if (!data.AutoSyncOn) {
+            el.innerHTML = 'Auto-sync: Off \u00a0\u2014\u00a0<a class="lnkGoToAutoSync" href="#" style="color:inherit; text-decoration:underline;">Enable on the Library tab</a>';
         } else {
-            var interval = config.AutoSyncIntervalHours || 24;
             var nextText = '';
-            var lastTs = config.LastMovieSyncTimestamp;
-            if (lastTs) {
-                var lastDate = typeof lastTs === 'number' ? new Date(lastTs * 1000) : new Date(lastTs);
-                if (!isNaN(lastDate.getTime())) {
-                    var diff = new Date(lastDate.getTime() + interval * 3600000) - new Date();
-                    if (diff > 0) {
-                        var h = Math.floor(diff / 3600000);
-                        var m = Math.floor((diff % 3600000) / 60000);
-                        nextText = ' \u2014 next run in ' + (h > 0 ? h + 'h ' : '') + m + 'm';
-                    } else {
-                        nextText = ' \u2014 overdue';
-                    }
+            if (data.NextSyncTime) {
+                var diff = new Date(data.NextSyncTime) - new Date();
+                if (diff > 0) {
+                    var h = Math.floor(diff / 3600000);
+                    var m = Math.floor((diff % 3600000) / 60000);
+                    nextText = ' \u2014 next run in ' + (h > 0 ? h + 'h ' : '') + m + 'm';
                 }
             }
-            el.textContent = 'Auto-sync: Every ' + interval + 'h' + nextText;
+            el.textContent = 'Auto-sync: ' + (data.AutoSyncSchedule || 'On') + nextText;
         }
         var link = el.querySelector('.lnkGoToAutoSync');
         if (link) {
             link.addEventListener('click', function (e) {
                 e.preventDefault();
-                switchTab(view, 'generic');
+                switchTab(view, 'library');
             });
         }
     }

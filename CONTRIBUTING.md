@@ -21,7 +21,7 @@ This means:
 
 ### Delta sync state via PluginConfiguration
 
-`PluginConfiguration` is serialised to XML by Emby automatically. Fields added to it persist across restarts without any extra work. Use this for sync watermarks (`LastMovieSyncTimestamp`, `LastSeriesSyncTimestamp`), channel hashes (`LastChannelListHash`), and similar durable state.
+`PluginConfiguration` is serialised to XML by Emby automatically. Fields added to it persist across restarts without any extra work. Use this for sync watermarks (`LastMovieSyncTimestamp`, `LastSeriesSyncTimestamp`), and similar durable state.
 
 ### SupportsGuideData and EPG
 

@@ -8,6 +8,55 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Security
+
+- **Only Emby administrators can use the plugin's controls now.** Until this release any signed-in
+  Emby user, including a family or guest account that only watches, could call the plugin
+  directly to delete every synced title, install an update, restart Emby, download the channel
+  list with your provider login in it, or put back an older saved configuration. Every plugin
+  endpoint now requires an administrator, this fork's own included (the de-dup lists, the list of
+  saved configurations and restore). From upstream, extended to the fork's endpoints.
+- **The sanitized log download no longer contains Emby access tokens.** From upstream.
+
+### Added
+
+- **Dispatcharr channels can play through Dispatcharr's Xtream address**, so Dispatcharr shows
+  which Emby user is watching. Off by default; under Live TV → Dispatcharr Playback. From upstream.
+
+### Changed
+
+- **The settings page is reorganized.** A new **Library** tab holds the library folder, the
+  auto-sync schedule, folder names and what happens after a sync, and settings most people never
+  change sit in collapsed **Advanced** blocks. This fork's settings moved to the Library tab too:
+  **Review Before Sync**, the **wanted movies list**, **configuration backups** and **restore**.
+  The old Settings tab is now **Connection**. From upstream.
+- **The Sync buttons save the page first**, so a sync always runs with what the page shows. From
+  upstream.
+- **Saving the settings page no longer replaces a sync schedule you set in Emby's Scheduled
+  Tasks.** The page tells you when the two differ. From upstream.
+
+### Fixed
+
+- **Saving the settings page replaced the configuration backup's schedule with the sync's.** The
+  backup then ran whenever a sync started instead of at its own time, and with auto-sync off it was
+  left with no schedule at all, so scheduled backups quietly stopped. Saving now only touches the
+  two sync tasks. The dashboard's new schedule line reads only those two as well.
+- **Saving the settings page could undo reviewed marks a sync had just added.** The page wrote its
+  whole reviewed list back, as it was when the page opened, so marks the sync made in the meantime
+  were lost. With the Sync buttons now saving first, that would have happened on every second Sync
+  click. The page now saves only the review changes you made on it.
+- **A second "Refresh the Emby library" checkbox did nothing.** It is gone; the one on the Library
+  tab works as before.
+- **Syncs failed on providers that compress their responses.** From upstream.
+- **Recordings that started before a channel went live came out empty.** From upstream.
+- **The dashboard said "Connected" when it was not, and the log download could come back empty.**
+  From upstream.
+- **One failed channel request could bring back adult channels and categories you had switched
+  off.** The fallback fetch skipped your filters; it now applies them. From upstream.
+- **"Retry failed items" counted a movie as done even when nothing was written**, and wrote movies
+  through separate code that could disagree with the sync. Retried movies now go through the
+  sync's own writer. From upstream.
+
 ## [1.9.0] - 2026-10-06
 
 ### Added

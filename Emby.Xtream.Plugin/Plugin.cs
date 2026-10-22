@@ -94,7 +94,7 @@ namespace Emby.Xtream.Plugin
         /// </summary>
         public static HttpClient CreateHttpClient(int timeoutSeconds = 10)
         {
-            var handler = new Service.XtreamRateLimitHandler { InnerHandler = new HttpClientHandler() };
+            var handler = Service.XtreamRateLimitHandler.CreateDefault();
             var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(timeoutSeconds) };
             var ua = _instance?.Configuration?.HttpUserAgent;
             if (!string.IsNullOrEmpty(ua))

@@ -236,5 +236,65 @@ namespace Emby.Xtream.Plugin.Tests
                 "the password field is empty", "", "pass", "", "");
             Assert.Equal("the <redacted>word field is empty", result);
         }
+
+        // Emby request lines carry the session token in the query string, with the value wrapped
+        // in zero-width non-joiners. These reached the "sanitized" download unredacted.
+        private const string FakeToken = "0123456789abcdef0123456789abcdef";
+
+        [Fact]
+        public void EmbyRequestLine_TokenInQueryString_IsRedacted()
+        {
+            var line = "2026-03-01 10:00:00.000 Debug Server: http/1.1 GET http://host:8096/emby/LiveTV/Folder"
+                + "?X-Emby-Client=Emby%20Web&X-Emby-Token=\u200c" + FakeToken + "\u200c&X-Emby-Language=en-us. Time: 2ms";
+
+            var result = LogSanitizer.SanitizeLine(line, "user", "pass", null, null);
+
+            Assert.DoesNotContain(FakeToken, result);
+            Assert.Contains("X-Emby-Token=<token-redacted>", result);
+            Assert.Contains("X-Emby-Language=en-us", result);
+        }
+
+        [Theory]
+        [InlineData("GET /emby/Items?api_key=" + FakeToken + "&Limit=10")]
+        [InlineData("GET /emby/Items?X-MediaBrowser-Token=" + FakeToken)]
+        [InlineData("token " + FakeToken + " in some other form")]
+        public void EmbyToken_InOtherForms_IsRedacted(string line)
+        {
+            var result = LogSanitizer.SanitizeLine(line, null, null, null, null);
+
+            Assert.DoesNotContain(FakeToken, result);
+        }
+
+        [Fact]
+        public void Bare32Hex_WrappedInZeroWidthCharacters_IsRedacted()
+        {
+            // UserId is not one of the named token parameters, so only the backstop sees it. Emby
+            // wraps it in zero-width non-joiners, which .NET treats as word characters.
+            var line = "GET /emby/Users/x?UserId=\u200c" + FakeToken + "\u200c&Fields=Name";
+
+            var result = LogSanitizer.SanitizeLine(line, null, null, null, null);
+
+            Assert.DoesNotContain(FakeToken, result);
+        }
+
+        [Fact]
+        public void AuthorizationHeaderToken_IsRedacted_WhateverItsLength()
+        {
+            // Not 32 hex, so only the header rule can catch it.
+            var line = "X-Emby-Authorization: MediaBrowser Client=\"Emby Web\", Token=\"short-token-value\"";
+
+            var result = LogSanitizer.SanitizeLine(line, null, null, null, null);
+
+            Assert.DoesNotContain("short-token-value", result);
+            Assert.Contains("Token=\"<token-redacted>\"", result);
+        }
+
+        [Fact]
+        public void WordsEndingInToken_AreLeftAlone()
+        {
+            var line = "Refreshing Dispatcharr JWT; cancellationToken was not cancelled";
+
+            Assert.Equal(line, LogSanitizer.SanitizeLine(line, null, null, null, null));
+        }
     }
 }

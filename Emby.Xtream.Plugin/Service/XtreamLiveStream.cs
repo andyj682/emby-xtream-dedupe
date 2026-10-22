@@ -162,16 +162,200 @@ namespace Emby.Xtream.Plugin.Service
             }
         }
 
+        /// <summary>Wait between attempts while the channel is not live yet.</summary>
+        internal TimeSpan RecordingRetryInterval { get; set; } = TimeSpan.FromSeconds(10);
+
+        /// <summary>Wait before reconnecting after a live stream dropped.</summary>
+        internal TimeSpan RecordingReconnectDelay { get; set; } = TimeSpan.FromSeconds(1);
+
+        /// <summary>Longest an attempt may take to deliver headers and the live threshold.</summary>
+        internal TimeSpan RecordingAttemptTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+        /// <summary>Bytes an attempt must deliver before any of it is written to the recording.</summary>
+        internal int RecordingLiveThresholdBytes { get; set; } = 64 * 1024;
+
+        private static readonly TimeSpan MaxRetryAfter = TimeSpan.FromSeconds(60);
+
+        // Only Emby's DirectRecorder calls this overload; live viewing uses the PipeWriter one.
+        // A recording often starts before an event channel is live, so instead of one attempt
+        // this keeps trying until the recording window ends, which is when Emby cancels the
+        // token. Without it a timeout or an early end of stream ends the recording as
+        // "Completed" with an empty file, and Emby never retries. See ADR-021.
         public async Task CopyToAsync(
             Stream writer,
             DateTimeOffset? wallClockStartTime,
             Action<SegmentedStreamSegmentInfo> onSegmentWritten,
             CancellationToken cancellationToken)
         {
-            if (_stream == null)
-                await ConnectAsync(cancellationToken).ConfigureAwait(false);
+            long totalWritten = 0;
+            int attempt = 0;
+            string lastReason = null;
+            try
+            {
+                while (true)
+                {
+                    attempt++;
+                    var result = await RecordAttemptAsync(writer, cancellationToken).ConfigureAwait(false);
+                    totalWritten += result.Written;
 
-            await _stream.CopyToAsync(writer, 262144, cancellationToken).ConfigureAwait(false);
+                    TimeSpan delay;
+                    if (result.Written > 0)
+                    {
+                        // Quick reconnect only after a connection that held up. A source that
+                        // sends a burst and closes again must not be hit every second.
+                        delay = result.Duration >= RecordingRetryInterval ? RecordingReconnectDelay : RecordingRetryInterval;
+                        _logger?.Info("[XtreamLiveStream] Recording stream ended after {0} bytes ({1}), reconnecting", result.Written, result.Reason);
+                    }
+                    else
+                    {
+                        lastReason = result.Reason;
+                        delay = ClampRetryDelay(result.RetryAfter);
+                        if (attempt <= 6 || attempt % 6 == 0)
+                        {
+                            _logger?.Info("[XtreamLiveStream] Recording attempt {0}: stream not live yet ({1}), retrying in {2}s",
+                                attempt, result.Reason, (int)delay.TotalSeconds);
+                        }
+                    }
+
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                if (totalWritten == 0)
+                {
+                    _logger?.Error("[XtreamLiveStream] Recording window ended after {0} attempts without the stream going live. Last result: {1}",
+                        attempt, lastReason ?? "none");
+                }
+
+                throw;
+            }
+            finally
+            {
+                DisposeConnection();
+            }
+        }
+
+        internal TimeSpan ClampRetryDelay(TimeSpan? retryAfter)
+        {
+            var delay = retryAfter ?? RecordingRetryInterval;
+            if (delay < RecordingRetryInterval) delay = RecordingRetryInterval;
+            if (delay > MaxRetryAfter) delay = MaxRetryAfter;
+            return delay;
+        }
+
+        // One connection to the upstream. Bytes are held back until RecordingLiveThresholdBytes
+        // have arrived, so an error packet from a channel that is not live never reaches the
+        // file. Only the recording token's cancellation escapes as an exception; every other
+        // failure comes back as a result so the caller can retry.
+        private async Task<RecordAttemptResult> RecordAttemptAsync(Stream output, CancellationToken cancellationToken)
+        {
+            DisposeConnection();
+            long written = 0;
+            var started = Stopwatch.StartNew();
+            // Set while writing to the recording file, so a full disk or a locked file reaches
+            // Emby as an error instead of being mistaken for an upstream failure and retried.
+            bool writingOutput = false;
+            using (var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                attemptCts.CancelAfter(RecordingAttemptTimeout);
+                try
+                {
+                    _response = await _httpClient.GetAsync(
+                        MediaSource.Path,
+                        HttpCompletionOption.ResponseHeadersRead,
+                        attemptCts.Token).ConfigureAwait(false);
+
+                    if (!_response.IsSuccessStatusCode)
+                    {
+                        return RecordAttemptResult.NotLive(
+                            "HTTP " + (int)_response.StatusCode,
+                            GetRetryAfter(_response));
+                    }
+
+                    _stream = await _response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+
+                    var buffer = new byte[262144];
+                    var held = new MemoryStream();
+                    var readToken = attemptCts.Token;
+                    while (true)
+                    {
+                        int bytesRead = await _stream.ReadAsync(buffer, 0, buffer.Length, readToken).ConfigureAwait(false);
+                        if (bytesRead == 0) break;
+
+                        if (held == null)
+                        {
+                            writingOutput = true;
+                            await output.WriteAsync(buffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
+                            writingOutput = false;
+                            written += bytesRead;
+                            continue;
+                        }
+
+                        held.Write(buffer, 0, bytesRead);
+                        if (held.Length < RecordingLiveThresholdBytes) continue;
+
+                        held.Position = 0;
+                        writingOutput = true;
+                        await held.CopyToAsync(output, 81920, cancellationToken).ConfigureAwait(false);
+                        writingOutput = false;
+                        written = held.Length;
+                        held = null;
+                        // Live from here on: only the end of the recording window bounds reads.
+                        readToken = cancellationToken;
+                        _logger?.Info("[XtreamLiveStream] Recording stream is live");
+                    }
+
+                    return written > 0
+                        ? RecordAttemptResult.Ended(written, "end of stream", started.Elapsed)
+                        : RecordAttemptResult.NotLive("stream ended after " + (held?.Length ?? 0) + " bytes", null);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    // HttpClient.Timeout and the attempt timeout both surface as cancellation.
+                    // Emby would read that as the recording being stopped, so it must not escape.
+                    return written > 0
+                        ? RecordAttemptResult.Ended(written, "timed out", started.Elapsed)
+                        : RecordAttemptResult.NotLive("no data within " + (int)RecordingAttemptTimeout.TotalSeconds + "s", null);
+                }
+                catch (Exception ex) when (!writingOutput && (ex is HttpRequestException || ex is IOException))
+                {
+                    return written > 0
+                        ? RecordAttemptResult.Ended(written, ex.Message, started.Elapsed)
+                        : RecordAttemptResult.NotLive(ex.Message, null);
+                }
+            }
+        }
+
+        private static TimeSpan? GetRetryAfter(HttpResponseMessage response)
+        {
+            var retryAfter = response.Headers.RetryAfter;
+            if (retryAfter == null) return null;
+            if (retryAfter.Delta.HasValue) return retryAfter.Delta.Value;
+            if (retryAfter.Date.HasValue) return retryAfter.Date.Value - DateTimeOffset.UtcNow;
+            return null;
+        }
+
+        private void DisposeConnection()
+        {
+            _stream?.Dispose();
+            _response?.Dispose();
+            _stream = null;
+            _response = null;
+        }
+
+        private struct RecordAttemptResult
+        {
+            public long Written;
+            public string Reason;
+            public TimeSpan? RetryAfter;
+            public TimeSpan Duration;
+
+            public static RecordAttemptResult NotLive(string reason, TimeSpan? retryAfter) =>
+                new RecordAttemptResult { Reason = reason, RetryAfter = retryAfter };
+
+            public static RecordAttemptResult Ended(long written, string reason, TimeSpan duration) =>
+                new RecordAttemptResult { Written = written, Reason = reason, Duration = duration };
         }
 
         public void Dispose()

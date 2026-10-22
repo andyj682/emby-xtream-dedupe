@@ -21,12 +21,9 @@ namespace Emby.Xtream.Plugin.Service
 
         public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
         {
-            // One-time default (first install). Plugin UI overrides this via Emby's trigger API.
-            yield return new TaskTriggerInfo
-            {
-                Type = TaskTriggerInfo.TriggerDaily,
-                TimeOfDayTicks = TimeSpan.FromHours(3).Ticks  // 03:00
-            };
+            // No schedule until the user turns Auto-Sync on, which is what the config page
+            // shows by default. A daily default here ran syncs while the page said "off".
+            return Array.Empty<TaskTriggerInfo>();
         }
 
         public async Task Execute(CancellationToken cancellationToken, IProgress<double> progress)

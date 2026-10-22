@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Emby.Xtream.Plugin.Client;
 using Emby.Xtream.Plugin.Client.Models;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Logging;
@@ -198,7 +199,7 @@ namespace Emby.Xtream.Plugin.Service
 
         private static readonly int MaxHistoryEntries = 10;
         private static readonly HttpClient SharedHttpClient = new HttpClient(
-            new XtreamRateLimitHandler { InnerHandler = new HttpClientHandler() })
+            XtreamRateLimitHandler.CreateDefault())
         { Timeout = TimeSpan.FromSeconds(30) };
 
         // Increment when naming logic changes so existing installs force a full re-sync on next run.
@@ -391,32 +392,6 @@ namespace Emby.Xtream.Plugin.Service
                     sb.Append(ep.Id);
                     sb.Append('|');
                 }
-            }
-
-            using (var sha = SHA256.Create())
-            {
-                var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString()));
-                return BitConverter.ToString(bytes).Replace("-", string.Empty).ToLowerInvariant();
-            }
-        }
-
-        /// <summary>
-        /// Computes a stable hash of the channel list for change detection.
-        /// </summary>
-        internal static string ComputeChannelListHash(List<LiveStreamInfo> channels)
-        {
-            var sorted = channels.OrderBy(c => c.StreamId);
-            var sb = new StringBuilder();
-            foreach (var c in sorted)
-            {
-                sb.Append(c.StreamId);
-                sb.Append(':');
-                sb.Append(c.Name ?? string.Empty);
-                sb.Append(':');
-                sb.Append(c.EpgChannelId ?? string.Empty);
-                sb.Append(':');
-                sb.Append(c.CategoryId?.ToString(CultureInfo.InvariantCulture) ?? string.Empty);
-                sb.Append('|');
             }
 
             using (var sha = SHA256.Create())
@@ -2549,92 +2524,70 @@ namespace Emby.Xtream.Plugin.Service
                 int moviesWrittenCount = 0;
 
                 // Shared Dispatcharr VOD client — only queried per-movie, after smart-skip
-                Emby.Xtream.Plugin.Client.DispatcharrClient dispatcharrVodClient = null;
-                if (config.EnableDispatcharr && !string.IsNullOrEmpty(config.DispatcharrUrl))
+                var dispatcharrVodClient = CreateDispatcharrVodClient(config);
+
+                var writeContext = new MovieWriteContext
                 {
-                    dispatcharrVodClient = new Emby.Xtream.Plugin.Client.DispatcharrClient(_logger);
-                    dispatcharrVodClient.Configure(config.DispatcharrUser, config.DispatcharrPass);
+                    Config = config,
+                    CategoryNames = categoryNames,
+                    FolderMappings = folderMappings,
+                    WrittenPaths = writtenPaths,
+                    DispatcharrVodClient = dispatcharrVodClient,
+                    LastMovieTimestamp = lastMovieTs,
+                    Wanted = wantedMovies,
+                };
+
+                if (reviewGateOn)
+                {
+                    // Exempt when the user already keeps this title: matched on the provider's
+                    // TMDB id, else on the folder name the sync would write. A re-addition under
+                    // a new StreamId is therefore restored rather than withheld, and its new id is
+                    // recorded as reviewed so the checkpoint heals itself instead of drifting.
+                    //
+                    // Held is not excluded: nothing is added to a blocklist and no folder is
+                    // removed. And a held title has no files to protect — anything on disk
+                    // matched the index above and took the exempt path.
+                    writeContext.HoldForReview = (movie, cleanedName, movieName) =>
+                    {
+                        if (reviewedVodSet.Contains(movie.StreamId))
+                        {
+                            return false;
+                        }
+
+                        int providerTmdb;
+                        var hasTmdb = IsValidTmdbId(movie.TmdbId)
+                            && int.TryParse(movie.TmdbId.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out providerTmdb)
+                            && libraryTmdbIds.Contains(providerTmdb);
+
+                        if (!hasTmdb && !libraryFolderNames.Contains(movieName))
+                        {
+                            Interlocked.Increment(ref heldForReview);
+                            lock (heldTitles)
+                            {
+                                if (heldTitles.Count < HeldSampleSize) heldTitles.Add(cleanedName);
+                            }
+                            return true;
+                        }
+
+                        lock (autoReviewed) { autoReviewed.Add(Tuple.Create(movie.StreamId, cleanedName)); }
+                        return false;
+                    };
                 }
 
                 var tasks = allStreams.Select(async movie =>
                 {
                     await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    string movieDirForFailure = null;
+                    var write = new MovieWriteResult();
                     try
                     {
-                        var cleanedName = config.EnableContentNameCleaning
-                            ? ContentNameCleaner.CleanContentName(movie.Name, config.ContentRemoveTerms)
-                            : movie.Name;
-                        var movieName = SanitizeFileName(cleanedName);
-                        if (string.IsNullOrWhiteSpace(movieName))
+                        var outcome = await WriteMovieAsync(movie, writeContext, write, cancellationToken).ConfigureAwait(false);
+                        if (outcome == MovieWriteOutcome.InvalidName)
                         {
                             Interlocked.Increment(ref _movieProgress.Failed);
                             return;
                         }
 
-                        // Review gate, before the TMDB resolve below so a held title never costs
-                        // a fallback lookup. Exempt when the user already keeps this title:
-                        // matched on the provider's TMDB id, else on the folder name the sync
-                        // would write. A re-addition under a new StreamId is therefore restored
-                        // rather than withheld, and its new id is recorded as reviewed so the
-                        // checkpoint heals itself instead of drifting.
-                        //
-                        // Held is not excluded: nothing is added to a blocklist and no folder is
-                        // removed. And a held title has no files to protect — anything on disk
-                        // matched the index above and took the exempt path.
-                        if (reviewGateOn && !reviewedVodSet.Contains(movie.StreamId))
-                        {
-                            int providerTmdb;
-                            var hasTmdb = IsValidTmdbId(movie.TmdbId)
-                                && int.TryParse(movie.TmdbId.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out providerTmdb)
-                                && libraryTmdbIds.Contains(providerTmdb);
-
-                            if (!hasTmdb && !libraryFolderNames.Contains(movieName))
-                            {
-                                Interlocked.Increment(ref heldForReview);
-                                lock (heldTitles)
-                                {
-                                    if (heldTitles.Count < HeldSampleSize) heldTitles.Add(cleanedName);
-                                }
-                                Interlocked.Increment(ref _movieProgress.Skipped);
-                                Interlocked.Increment(ref _movieProgress.Completed);
-                                ReportTaskProgress(_movieProgress, taskProgress);
-                                return;
-                            }
-
-                            lock (autoReviewed) { autoReviewed.Add(Tuple.Create(movie.StreamId, cleanedName)); }
-                        }
-
-                        // Two distinct skip probes, picked by the flag combination:
-                        //   * Folder naming ON — folder path depends on the TMDB ID, so resolve
-                        //     first and probe the suffixed path. Otherwise we'd skip on a path
-                        //     that never gets written.
-                        //   * Folder naming OFF — probe the plain (un-suffixed) path first. If
-                        //     the STRM already exists, we skip without ever running the
-                        //     network fallback. Only resolve the TMDB ID when we'll proceed
-                        //     past the skip check (the NFO writer may still need it).
-                        //
-                        // See ADR-015 for the NFO/folder-naming decoupling context.
-                        string tmdbId = null;
-                        if (config.EnableTmdbFolderNaming)
-                        {
-                            tmdbId = await ResolveMovieTmdbIdAsync(
-                                movie, cleanedName, config,
-                                (n, y, ct) => _tmdbLookupService.LookupTmdbIdAsync(n, y, ct),
-                                _logger,
-                                cancellationToken).ConfigureAwait(false);
-                        }
-
-                        var folderName = BuildMovieFolderName(cleanedName, tmdbId);
-                        if (string.IsNullOrWhiteSpace(folderName))
-                        {
-                            Interlocked.Increment(ref _movieProgress.Failed);
-                            return;
-                        }
-
-                        var subFolder = BuildContentFolderPath(
-                            config.MovieFolderMode, movie.CategoryId, categoryNames, folderMappings, "Movies");
-                        if (subFolder == null)
+                        if (outcome == MovieWriteOutcome.Held || outcome == MovieWriteOutcome.NoFolder || outcome == MovieWriteOutcome.Skipped)
                         {
                             Interlocked.Increment(ref _movieProgress.Skipped);
                             Interlocked.Increment(ref _movieProgress.Completed);
@@ -2642,143 +2595,12 @@ namespace Emby.Xtream.Plugin.Service
                             return;
                         }
 
-                        var movieDir = Path.Combine(config.StrmLibraryPath, subFolder, folderName);
-                        movieDirForFailure = movieDir;
-                        var strmPath = Path.Combine(movieDir, folderName + ".strm");
-
-                        // The title is wanted from here on: not excluded, past the review gate,
-                        // and resolved to a folder this run owns.
-                        //
-                        // 🔑 THE PLACEMENT IS THE FEATURE. It has to be ABOVE the smart-skip
-                        // return, because in steady state almost every wanted title skips — a
-                        // capture point after the write would produce a nearly empty file every
-                        // night and every other test would still pass. It has to be BELOW the
-                        // review gate and the null-subFolder return, or it would claim titles
-                        // the sync deliberately does not keep. A failed write below still counts:
-                        // the user wants the title, and the next run retries it.
-                        //
-                        // tmdbId is whatever has been resolved by HERE, which is the provider's
-                        // id or a fallback lookup when folder naming is on, and null otherwise.
-                        // It is only ever used for titles the provider gave no id for, and the
-                        // publish warns when that leaves it empty — deliberately NOT re-read
-                        // after the NFO-path resolve below, which would mean two collection
-                        // points and still miss every smart-skipped title.
-                        lock (wantedMovies) { wantedMovies.Add(Tuple.Create(movie, tmdbId)); }
-
-                        // Smart skip: if file already exists AND the movie is not new (delta), skip
-                        var isNewMovie = lastMovieTs == 0 || movie.Added > lastMovieTs;
-                        if (!isNewMovie && config.SmartSkipExisting && File.Exists(strmPath))
-                        {
-                            lock (writtenPaths)
-                            {
-                                writtenPaths.Add(strmPath);
-                            }
-                            Interlocked.Increment(ref _movieProgress.Skipped);
-                            Interlocked.Increment(ref _movieProgress.Completed);
-                            ReportTaskProgress(_movieProgress, taskProgress);
-                            return;
-                        }
-
-                        // Folder naming off + NFO on: defer the TMDB fallback lookup until after
-                        // the skip check. Movies that get skipped never trigger a network call.
-                        if (!config.EnableTmdbFolderNaming && config.EnableNfoFiles && tmdbId == null)
-                        {
-                            tmdbId = await ResolveMovieTmdbIdAsync(
-                                movie, cleanedName, config,
-                                (n, y, ct) => _tmdbLookupService.LookupTmdbIdAsync(n, y, ct),
-                                _logger,
-                                cancellationToken).ConfigureAwait(false);
-                        }
-
-                        var ext = !string.IsNullOrEmpty(movie.ContainerExtension)
-                            ? movie.ContainerExtension
-                            : "mp4";
-
-                        var streamUrl = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0}/movie/{1}/{2}/{3}.{4}",
-                            config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), movie.StreamId, ext);
-
-                        // Build list of STRM entries (multi-version via Dispatcharr, or single)
-                        var strmEntries = new List<Tuple<string, string>>();
-
-                        if (dispatcharrVodClient != null)
-                        {
-                            try
-                            {
-                                var vodDetail = await dispatcharrVodClient.GetVodMovieDetailAsync(
-                                    config.DispatcharrUrl, movie.StreamId, cancellationToken).ConfigureAwait(false);
-                                if (vodDetail != null && !string.IsNullOrEmpty(vodDetail.Uuid))
-                                {
-                                    var providers = await dispatcharrVodClient.GetVodMovieProvidersAsync(
-                                        config.DispatcharrUrl, movie.StreamId, cancellationToken).ConfigureAwait(false);
-                                    if (providers.Count > 1)
-                                    {
-                                        for (int vi = 0; vi < providers.Count; vi++)
-                                        {
-                                            var suffix = vi == 0 ? string.Empty
-                                                : string.Format(CultureInfo.InvariantCulture, " - Version {0}", vi + 1);
-                                            var providerUrl = string.Format(
-                                                CultureInfo.InvariantCulture,
-                                                "{0}/proxy/vod/movie/{1}?stream_id={2}",
-                                                config.DispatcharrUrl, vodDetail.Uuid, providers[vi].StreamId);
-                                            strmEntries.Add(Tuple.Create(
-                                                Path.Combine(movieDir, folderName + suffix + ".strm"),
-                                                providerUrl));
-                                        }
-                                    }
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.Debug("Dispatcharr VOD lookup failed for '{0}': {1}", movie.Name, ex.Message);
-                            }
-                        }
-
-                        if (strmEntries.Count == 0)
-                            strmEntries.Add(Tuple.Create(strmPath, streamUrl));
-
-                        Directory.CreateDirectory(movieDir);
-                        var isAnyNewFile = false;
-                        foreach (var entry in strmEntries)
-                        {
-                            var itemPath = entry.Item1;
-                            var itemUrl = entry.Item2;
-                            var fileExists = File.Exists(itemPath);
-
-                            // Skip write if file content is already up to date (avoids Emby library re-scan)
-                            if (!fileExists || File.ReadAllText(itemPath) != itemUrl)
-                            {
-                                File.WriteAllText(itemPath, itemUrl);
-                                if (!fileExists)
-                                {
-                                    Interlocked.Increment(ref _movieProgress.Added);
-                                    isAnyNewFile = true;
-                                }
-                            }
-                            lock (writtenPaths) { writtenPaths.Add(itemPath); }
-                        }
-                        if (isAnyNewFile)
+                        if (write.AddedNewFile)
                         {
                             lock (addedMovieTitles)
                             {
-                                if (addedMovieTitles.Count < 20) addedMovieTitles.Add(cleanedName);
+                                if (addedMovieTitles.Count < 20) addedMovieTitles.Add(write.CleanedName);
                             }
-                        }
-
-                        if (config.EnableNfoFiles)
-                        {
-                            var nfoPath = Path.Combine(movieDir, folderName + ".nfo");
-                            var yearMatch = YearInTitleRegex.Match(cleanedName);
-                            int? nfoYear = null;
-                            if (yearMatch.Success)
-                            {
-                                int y;
-                                if (int.TryParse(yearMatch.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out y))
-                                    nfoYear = y;
-                            }
-                            try { NfoWriter.WriteMovieNfo(nfoPath, cleanedName, tmdbId, nfoYear); }
-                            catch (Exception ex) { _logger.Debug("NFO write failed for '{0}': {1}", movie.Name, ex.Message); }
                         }
 
                         Interlocked.Increment(ref moviesWrittenCount);
@@ -2792,7 +2614,7 @@ namespace Emby.Xtream.Plugin.Service
                         // Keep what an earlier sync wrote for this movie in writtenPaths, so the
                         // exclusion pass treats its folder as in use (ADR-018). Orphan cleanup is
                         // unaffected: it does not run on a sync with a failed item.
-                        RecordExistingStrms(movieDirForFailure, writtenPaths);
+                        RecordExistingStrms(write.MovieDir, writtenPaths);
                         lock (_failedItemsLock)
                         {
                             _failedItems.Add(new FailedSyncItem
@@ -3730,10 +3552,7 @@ namespace Emby.Xtream.Plugin.Service
                                     ? episode.ContainerExtension
                                     : "mp4";
 
-                                var streamUrl = string.Format(
-                                    CultureInfo.InvariantCulture,
-                                    "{0}/series/{1}/{2}/{3}.{4}",
-                                    config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), episode.Id, ext);
+                                var streamUrl = XtreamUrls.Stream(config, "series", episode.Id, ext);
 
                                 // Skip write if file content is already up to date (avoids Emby library re-scan)
                                 var fileExists = File.Exists(strmPath);
@@ -4010,6 +3829,253 @@ namespace Emby.Xtream.Plugin.Service
             }
         }
 
+        /// <summary>Handler for the Dispatcharr VOD client; null uses the real network. For tests.</summary>
+        internal System.Net.Http.HttpMessageHandler DispatcharrHandler { get; set; }
+
+        /// <summary>The Dispatcharr client the movie writer asks for extra versions, or null without Dispatcharr.</summary>
+        private Emby.Xtream.Plugin.Client.DispatcharrClient CreateDispatcharrVodClient(PluginConfiguration config)
+        {
+            if (!config.EnableDispatcharr || string.IsNullOrEmpty(config.DispatcharrUrl))
+                return null;
+            var client = new Emby.Xtream.Plugin.Client.DispatcharrClient(_logger, DispatcharrHandler);
+            client.Configure(config.DispatcharrUser, config.DispatcharrPass);
+            return client;
+        }
+
+        private enum MovieWriteOutcome { InvalidName, Held, NoFolder, Skipped, Written }
+
+        /// <summary>What one movie write produced, filled in as it goes so a caller's catch can read it.</summary>
+        private sealed class MovieWriteResult
+        {
+            public string CleanedName;
+            public string MovieDir;
+            public bool AddedNewFile;
+        }
+
+        private sealed class MovieWriteContext
+        {
+            public PluginConfiguration Config;
+            public Dictionary<int, string> CategoryNames;
+            public Dictionary<int, string> FolderMappings;
+            public HashSet<string> WrittenPaths;
+            public Emby.Xtream.Plugin.Client.DispatcharrClient DispatcharrVodClient;
+            /// <summary>0 treats every movie as new, so smart skip never applies (the retry passes 0).</summary>
+            public long LastMovieTimestamp;
+
+            /// <summary>
+            /// The review gate (ADR-F002): given the movie, its cleaned name and its sanitized
+            /// folder name, returns true to hold it out of the library. Null when the gate is off,
+            /// and always null on the retry path — a retried movie already passed the gate on the
+            /// sync that failed it.
+            /// </summary>
+            public Func<VodStreamInfo, string, string, bool> HoldForReview;
+
+            /// <summary>
+            /// The wanted set (ADR-F008): every movie that gets past the gate and resolves to a
+            /// folder, with the TMDB id resolved by that point. Null on the retry path.
+            /// </summary>
+            public List<Tuple<VodStreamInfo, string>> Wanted;
+        }
+
+        /// <summary>
+        /// Writes one movie's .strm files (and NFO) exactly as the movie sync does. The sync and
+        /// "Retry failed items" both call this, so a retried movie lands where the sync puts it;
+        /// a separate retry writer drifted before, for movies and for series (ADR-020). Counters
+        /// other than Added are the caller's. Throws on a failed write.
+        /// </summary>
+        private async Task<MovieWriteOutcome> WriteMovieAsync(
+            VodStreamInfo movie, MovieWriteContext ctx, MovieWriteResult result, CancellationToken cancellationToken)
+        {
+            var config = ctx.Config;
+            var categoryNames = ctx.CategoryNames;
+            var folderMappings = ctx.FolderMappings;
+            var writtenPaths = ctx.WrittenPaths;
+            var dispatcharrVodClient = ctx.DispatcharrVodClient;
+            var lastMovieTs = ctx.LastMovieTimestamp;
+
+            var cleanedName = config.EnableContentNameCleaning
+                ? ContentNameCleaner.CleanContentName(movie.Name, config.ContentRemoveTerms)
+                : movie.Name;
+            result.CleanedName = cleanedName;
+            var movieName = SanitizeFileName(cleanedName);
+            if (string.IsNullOrWhiteSpace(movieName))
+            {
+                return MovieWriteOutcome.InvalidName;
+            }
+
+            // Review gate, before the TMDB resolve below so a held title never costs a fallback
+            // lookup (ADR-F002). The decision and its bookkeeping live with the caller.
+            if (ctx.HoldForReview != null && ctx.HoldForReview(movie, cleanedName, movieName))
+            {
+                return MovieWriteOutcome.Held;
+            }
+
+            // Two distinct skip probes, picked by the flag combination:
+            //   * Folder naming ON — folder path depends on the TMDB ID, so resolve
+            //     first and probe the suffixed path. Otherwise we'd skip on a path
+            //     that never gets written.
+            //   * Folder naming OFF — probe the plain (un-suffixed) path first. If
+            //     the STRM already exists, we skip without ever running the
+            //     network fallback. Only resolve the TMDB ID when we'll proceed
+            //     past the skip check (the NFO writer may still need it).
+            //
+            // See ADR-015 for the NFO/folder-naming decoupling context.
+            string tmdbId = null;
+            if (config.EnableTmdbFolderNaming)
+            {
+                tmdbId = await ResolveMovieTmdbIdAsync(
+                    movie, cleanedName, config,
+                    (n, y, ct) => _tmdbLookupService.LookupTmdbIdAsync(n, y, ct),
+                    _logger,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            var folderName = BuildMovieFolderName(cleanedName, tmdbId);
+            if (string.IsNullOrWhiteSpace(folderName))
+            {
+                return MovieWriteOutcome.InvalidName;
+            }
+
+            var subFolder = BuildContentFolderPath(
+                config.MovieFolderMode, movie.CategoryId, categoryNames, folderMappings, "Movies");
+            if (subFolder == null)
+            {
+                return MovieWriteOutcome.NoFolder;
+            }
+
+            var movieDir = Path.Combine(config.StrmLibraryPath, subFolder, folderName);
+            result.MovieDir = movieDir;
+            var strmPath = Path.Combine(movieDir, folderName + ".strm");
+
+            // The title is wanted from here on: not excluded, past the review gate,
+            // and resolved to a folder this run owns.
+            //
+            // 🔑 THE PLACEMENT IS THE FEATURE. It has to be ABOVE the smart-skip
+            // return, because in steady state almost every wanted title skips — a
+            // capture point after the write would produce a nearly empty file every
+            // night and every other test would still pass. It has to be BELOW the
+            // review gate and the null-subFolder return, or it would claim titles
+            // the sync deliberately does not keep. A failed write below still counts:
+            // the user wants the title, and the next run retries it.
+            //
+            // tmdbId is whatever has been resolved by HERE, which is the provider's
+            // id or a fallback lookup when folder naming is on, and null otherwise.
+            // It is only ever used for titles the provider gave no id for, and the
+            // publish warns when that leaves it empty — deliberately NOT re-read
+            // after the NFO-path resolve below, which would mean two collection
+            // points and still miss every smart-skipped title.
+            if (ctx.Wanted != null)
+            {
+                lock (ctx.Wanted) { ctx.Wanted.Add(Tuple.Create(movie, tmdbId)); }
+            }
+
+            // Smart skip: if file already exists AND the movie is not new (delta), skip
+            var isNewMovie = lastMovieTs == 0 || movie.Added > lastMovieTs;
+            if (!isNewMovie && config.SmartSkipExisting && File.Exists(strmPath))
+            {
+                lock (writtenPaths)
+                {
+                    writtenPaths.Add(strmPath);
+                }
+                return MovieWriteOutcome.Skipped;
+            }
+
+            // Folder naming off + NFO on: defer the TMDB fallback lookup until after
+            // the skip check. Movies that get skipped never trigger a network call.
+            if (!config.EnableTmdbFolderNaming && config.EnableNfoFiles && tmdbId == null)
+            {
+                tmdbId = await ResolveMovieTmdbIdAsync(
+                    movie, cleanedName, config,
+                    (n, y, ct) => _tmdbLookupService.LookupTmdbIdAsync(n, y, ct),
+                    _logger,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
+            var ext = !string.IsNullOrEmpty(movie.ContainerExtension)
+                ? movie.ContainerExtension
+                : "mp4";
+
+            var streamUrl = XtreamUrls.Stream(config, "movie", movie.StreamId, ext);
+
+            // Build list of STRM entries (multi-version via Dispatcharr, or single)
+            var strmEntries = new List<Tuple<string, string>>();
+
+            if (dispatcharrVodClient != null)
+            {
+                try
+                {
+                    var vodDetail = await dispatcharrVodClient.GetVodMovieDetailAsync(
+                        config.DispatcharrUrl, movie.StreamId, cancellationToken).ConfigureAwait(false);
+                    if (vodDetail != null && !string.IsNullOrEmpty(vodDetail.Uuid))
+                    {
+                        var providers = await dispatcharrVodClient.GetVodMovieProvidersAsync(
+                            config.DispatcharrUrl, movie.StreamId, cancellationToken).ConfigureAwait(false);
+                        if (providers.Count > 1)
+                        {
+                            for (int vi = 0; vi < providers.Count; vi++)
+                            {
+                                var suffix = vi == 0 ? string.Empty
+                                    : string.Format(CultureInfo.InvariantCulture, " - Version {0}", vi + 1);
+                                var providerUrl = string.Format(
+                                    CultureInfo.InvariantCulture,
+                                    "{0}/proxy/vod/movie/{1}?stream_id={2}",
+                                    config.DispatcharrUrl, vodDetail.Uuid, providers[vi].StreamId);
+                                strmEntries.Add(Tuple.Create(
+                                    Path.Combine(movieDir, folderName + suffix + ".strm"),
+                                    providerUrl));
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Debug("Dispatcharr VOD lookup failed for '{0}': {1}", movie.Name, ex.Message);
+                }
+            }
+
+            if (strmEntries.Count == 0)
+                strmEntries.Add(Tuple.Create(strmPath, streamUrl));
+
+            Directory.CreateDirectory(movieDir);
+            var isAnyNewFile = false;
+            foreach (var entry in strmEntries)
+            {
+                var itemPath = entry.Item1;
+                var itemUrl = entry.Item2;
+                var fileExists = File.Exists(itemPath);
+
+                // Skip write if file content is already up to date (avoids Emby library re-scan)
+                if (!fileExists || File.ReadAllText(itemPath) != itemUrl)
+                {
+                    File.WriteAllText(itemPath, itemUrl);
+                    if (!fileExists)
+                    {
+                        Interlocked.Increment(ref _movieProgress.Added);
+                        isAnyNewFile = true;
+                    }
+                }
+                lock (writtenPaths) { writtenPaths.Add(itemPath); }
+            }
+            result.AddedNewFile = isAnyNewFile;
+
+            if (config.EnableNfoFiles)
+            {
+                var nfoPath = Path.Combine(movieDir, folderName + ".nfo");
+                var yearMatch = YearInTitleRegex.Match(cleanedName);
+                int? nfoYear = null;
+                if (yearMatch.Success)
+                {
+                    int y;
+                    if (int.TryParse(yearMatch.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out y))
+                        nfoYear = y;
+                }
+                try { NfoWriter.WriteMovieNfo(nfoPath, cleanedName, tmdbId, nfoYear); }
+                catch (Exception ex) { _logger.Debug("NFO write failed for '{0}': {1}", movie.Name, ex.Message); }
+            }
+
+            return MovieWriteOutcome.Written;
+        }
+
         /// <summary>
         /// Re-attempts the items that failed in the last sync.
         /// </summary>
@@ -4073,18 +4139,63 @@ namespace Emby.Xtream.Plugin.Service
                 retryStarted = true;
 
                 var semaphore = new SemaphoreSlim(ResolveSyncParallelism(config));
-                var categoryNames = new Dictionary<int, string>();
-                var folderMappings = FolderMappingParser.Parse(config.MovieFolderMappings);
                 var writtenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var succeeded = new List<FailedSyncItem>();
                 var succeededLock = new object();
+
+                // The same inputs the movie sync gives its writer. Only the old category-name mode
+                // ("multiple", converted to "custom" when the config page saves) reads the names;
+                // without them that retry wrote nothing and still counted as done.
+                var categoryNames = new Dictionary<int, string>();
+                Exception categoryError = null;
+                if (movieItems.Count > 0 && string.Equals(config.MovieFolderMode, "multiple", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        foreach (var cat in await FetchCategoriesAsync("get_vod_categories", config, cancellationToken).ConfigureAwait(false))
+                            categoryNames[cat.CategoryId] = cat.CategoryName;
+                    }
+                    catch (Exception ex) when (!(ex is OperationCanceledException))
+                    {
+                        categoryError = ex;
+                    }
+                }
+
+                var dispatcharrVodClient = CreateDispatcharrVodClient(config);
+
+                var writeContext = new MovieWriteContext
+                {
+                    Config = config,
+                    CategoryNames = categoryNames,
+                    FolderMappings = FolderMappingParser.Parse(config.MovieFolderMappings),
+                    WrittenPaths = writtenPaths,
+                    DispatcharrVodClient = dispatcharrVodClient,
+                    // The movie failed last time, so write it whatever is on disk, as the old retry did.
+                    LastMovieTimestamp = 0,
+                };
 
                 var tasks = movieItems.Select(async item =>
                 {
                     await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
                     try
                     {
-                        await RetryMovieItemAsync(item, config, categoryNames, folderMappings, writtenPaths, cancellationToken).ConfigureAwait(false);
+                        // Writing into a guessed folder would split the movie from the sync's copy.
+                        if (categoryError != null)
+                            throw new InvalidOperationException("Could not load VOD categories: " + categoryError.Message, categoryError);
+
+                        var movie = new VodStreamInfo
+                        {
+                            StreamId = item.StreamId,
+                            Name = item.Name,
+                            CategoryId = item.CategoryId,
+                            TmdbId = item.TmdbId,
+                            ContainerExtension = item.ContainerExtension,
+                        };
+                        var outcome = await WriteMovieAsync(movie, writeContext, new MovieWriteResult(), cancellationToken).ConfigureAwait(false);
+                        // Only a written movie is done. A retry that wrote nothing (no folder for its
+                        // category, or no usable name) stays in the failed list for the next sync.
+                        if (outcome != MovieWriteOutcome.Written)
+                            throw new InvalidOperationException("Nothing written (" + outcome + ")");
 
                         lock (succeededLock) { succeeded.Add(item); }
                         Interlocked.Increment(ref _movieProgress.Completed);
@@ -4141,112 +4252,6 @@ namespace Emby.Xtream.Plugin.Service
                 }
                 _movieSyncGate.Release();
             }
-        }
-
-        private async Task RetryMovieItemAsync(
-            FailedSyncItem item,
-            PluginConfiguration config,
-            Dictionary<int, string> categoryNames,
-            Dictionary<int, string> folderMappings,
-            HashSet<string> writtenPaths,
-            CancellationToken cancellationToken)
-        {
-            var cleanedName = config.EnableContentNameCleaning
-                ? ContentNameCleaner.CleanContentName(item.Name, config.ContentRemoveTerms)
-                : item.Name;
-
-            // Folder naming on retry honours EnableTmdbFolderNaming like the main loop: the
-            // [tmdbid=…] suffix only goes on the folder when the user asked for it. Without
-            // this gate, an NFO-only retry would write "The Matrix [tmdbid=603]" while the
-            // main sync wrote "The Matrix", splitting one movie across two folders and
-            // emitting the retry NFO in a folder the main loop never wrote.
-            // The NFO writer and the TMDB fallback lookup only run when EnableNfoFiles wants
-            // them — see ResolveMovieTmdbIdForRetryAsync for the gate.
-            //
-            // When folder naming is on but the provider did not supply a TMDB ID, run the
-            // resolver before building the folder name. The main sync loop does this for the
-            // same reason: a retry that wrote "The Matrix" (no suffix) while the main loop
-            // already wrote "The Matrix [tmdbid=603]" would split one movie across two
-            // folders. The resolver returns the provider ID if valid, else the fallback
-            // result, else null — so the suffix appears whenever the main loop would have
-            // applied it. We only run it when folder naming is on; otherwise the folder name
-            // never carries the suffix and an extra network lookup is wasted.
-            // Folder-naming TMDB ID: provider-supplied when valid, otherwise a one-shot
-            // fallback lookup. The same call's result is reused for the NFO writer below
-            // so a config with both flags on does not pay for two TMDB lookups on the
-            // same item. The helper handles the provider/fallback split, validation,
-            // and trimming. When folder naming is off, this branch never runs and
-            // folderName is built without a suffix.
-            string tmdbId = null;
-            string folderTmdbId = null;
-            if (config.EnableTmdbFolderNaming)
-            {
-                folderTmdbId = await ResolveRetryFolderTmdbIdAsync(
-                    item, cleanedName, config,
-                    (n, y, ct) => _tmdbLookupService.LookupTmdbIdAsync(n, y, ct),
-                    _logger,
-                    cancellationToken).ConfigureAwait(false);
-                tmdbId = folderTmdbId;
-            }
-            var folderName = BuildMovieFolderName(cleanedName, folderTmdbId);
-            if (string.IsNullOrWhiteSpace(folderName)) return;
-
-            // NFO writer needs the TMDB ID even when folder naming is off (issue #63).
-            // The folder-naming branch above already populated tmdbId when it ran, so
-            // only resolve when folder naming is off — the resolver does not run twice.
-            if (config.EnableNfoFiles && string.IsNullOrEmpty(tmdbId))
-            {
-                tmdbId = await ResolveMovieTmdbIdForRetryAsync(
-                    item, cleanedName, config,
-                    (n, y, ct) => _tmdbLookupService.LookupTmdbIdAsync(n, y, ct),
-                    _logger,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            var subFolder = BuildContentFolderPath(
-                config.MovieFolderMode, item.CategoryId, categoryNames, folderMappings, "Movies");
-            if (subFolder == null) return;
-
-            var movieDir = Path.Combine(config.StrmLibraryPath, subFolder, folderName);
-            var strmPath = Path.Combine(movieDir, folderName + ".strm");
-            var ext = !string.IsNullOrEmpty(item.ContainerExtension) ? item.ContainerExtension : "mp4";
-            var streamUrl = string.Format(
-                CultureInfo.InvariantCulture,
-                "{0}/movie/{1}/{2}/{3}.{4}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), item.StreamId, ext);
-
-            var fileExists = File.Exists(strmPath);
-
-            // Skip write if file content is already up to date (avoids Emby library re-scan)
-            if (!fileExists || File.ReadAllText(strmPath) != streamUrl)
-            {
-                Directory.CreateDirectory(movieDir);
-                File.WriteAllText(strmPath, streamUrl);
-
-                if (!fileExists)
-                {
-                    Interlocked.Increment(ref _movieProgress.Added);
-                }
-            }
-
-            lock (writtenPaths) { writtenPaths.Add(strmPath); }
-
-            if (config.EnableNfoFiles && !string.IsNullOrEmpty(tmdbId))
-            {
-                var nfoPath = Path.Combine(movieDir, folderName + ".nfo");
-                var yearMatch = YearInTitleRegex.Match(cleanedName);
-                int? nfoYear = null;
-                if (yearMatch.Success)
-                {
-                    int y;
-                    if (int.TryParse(yearMatch.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out y))
-                        nfoYear = y;
-                }
-                try { NfoWriter.WriteMovieNfo(nfoPath, cleanedName, tmdbId, nfoYear); }
-                catch (Exception ex) { _logger.Debug("NFO write failed on retry for '{0}': {1}", item.Name, ex.Message); }
-            }
-
-            await Task.CompletedTask.ConfigureAwait(false);
         }
 
         private void AddHistoryEntry(SyncHistoryEntry entry)
@@ -4330,91 +4335,6 @@ namespace Emby.Xtream.Plugin.Service
             }
 
             return null;
-        }
-
-        /// <summary>
-        /// Retry-path fallback TMDB lookup. The retry path only carries <see cref="FailedSyncItem"/>
-        /// (no full <see cref="VodStreamInfo"/>). Returns the provider-supplied ID when valid, or
-        /// runs the TMDB fallback lookup when <see cref="PluginConfiguration.EnableTmdbFallbackLookup"/>
-        /// is set. Returns null on lookup failure or when the lookup is disabled.
-        ///
-        /// The caller is responsible for gating this helper on <see cref="PluginConfiguration.EnableNfoFiles"/>
-        /// (or whichever flag needs the ID). Folder naming on retry is handled by the caller
-        /// separately because the retry path predates <see cref="PluginConfiguration.EnableTmdbFolderNaming"/>.
-        /// </summary>
-        internal static async Task<string> ResolveMovieTmdbIdForRetryAsync(
-            FailedSyncItem item, string cleanedName, PluginConfiguration config,
-            Func<string, int?, CancellationToken, Task<string>> lookupTmdbIdAsync,
-            ILogger logger,
-            CancellationToken cancellationToken)
-        {
-            if (IsValidTmdbId(item.TmdbId))
-            {
-                return item.TmdbId.Trim();
-            }
-
-            if (config.EnableTmdbFallbackLookup)
-            {
-                var yearMatch = YearInTitleRegex.Match(cleanedName);
-                int? yearForLookup = null;
-                if (yearMatch.Success)
-                {
-                    int y;
-                    if (int.TryParse(yearMatch.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out y))
-                    {
-                        yearForLookup = y;
-                    }
-                }
-
-                try
-                {
-                    return await lookupTmdbIdAsync(cleanedName, yearForLookup, cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    logger.Debug("TMDB fallback error for '{0}': {1}", item.Name, ex.Message);
-                }
-            }
-
-            return null;
-        }
-
-        /// <summary>
-        /// Retry-path folder-naming TMDB ID. Returns the provider-supplied ID when valid,
-        /// otherwise runs the fallback lookup; the returned value is validated as a usable
-        /// TMDB ID and trimmed. Returns null when folder naming should produce an unsuffixed
-        /// folder (no provider ID, no fallback hit, fallback disabled, or lookup failed).
-        ///
-        /// Encapsulates the retry-path branch so tests exercise the same code as production
-        /// — previously each test re-implemented the provider/fallback/validate/trim chain
-        /// inline, which let the tests pass even when the production shape drifted.
-        /// </summary>
-        internal static async Task<string> ResolveRetryFolderTmdbIdAsync(
-            FailedSyncItem item,
-            string cleanedName,
-            PluginConfiguration config,
-            Func<string, int?, CancellationToken, Task<string>> lookupTmdbIdAsync,
-            ILogger logger,
-            CancellationToken cancellationToken)
-        {
-            var folderTmdbId = IsValidTmdbId(item.TmdbId)
-                ? item.TmdbId.Trim()
-                : null;
-            if (folderTmdbId != null) return folderTmdbId;
-
-            folderTmdbId = await ResolveMovieTmdbIdForRetryAsync(
-                item, cleanedName, config,
-                lookupTmdbIdAsync, logger, cancellationToken).ConfigureAwait(false);
-
-            if (folderTmdbId != null && !IsValidTmdbId(folderTmdbId))
-            {
-                return null;
-            }
-            return folderTmdbId?.Trim();
         }
 
         internal static string BuildMovieFolderName(string cleanedName, string tmdbId)
@@ -4608,10 +4528,7 @@ namespace Emby.Xtream.Plugin.Service
 
         private async Task<List<Category>> FetchCategoriesAsync(string action, PluginConfiguration config, CancellationToken cancellationToken)
         {
-            var url = string.Format(
-                CultureInfo.InvariantCulture,
-                "{0}/player_api.php?username={1}&password={2}&action={3}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), action);
+            var url = XtreamUrls.PlayerApi(config, action);
 
             var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
             return STJ.JsonSerializer.Deserialize<List<Category>>(json, JsonOptions)
@@ -4654,10 +4571,7 @@ namespace Emby.Xtream.Plugin.Service
                 // Fetch all VOD streams. A throw here propagates: the caller's outer catch
                 // aborts the sync before cleanup, which is the correct outcome for the
                 // whole-catalogue request failing.
-                var url = string.Format(
-                    CultureInfo.InvariantCulture,
-                    "{0}/player_api.php?username={1}&password={2}&action=get_vod_streams",
-                    config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty));
+                var url = XtreamUrls.PlayerApi(config, "get_vod_streams");
 
                 var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
                 allStreams = STJ.JsonSerializer.Deserialize<List<VodStreamInfo>>(json, JsonOptions)
@@ -4672,10 +4586,7 @@ namespace Emby.Xtream.Plugin.Service
                     await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
                     try
                     {
-                        var url = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0}/player_api.php?username={1}&password={2}&action=get_vod_streams&category_id={3}",
-                            config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), catId);
+                        var url = XtreamUrls.PlayerApi(config, "get_vod_streams", "category_id", catId);
 
                         var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
                         var streams = STJ.JsonSerializer.Deserialize<List<VodStreamInfo>>(json, JsonOptions)
@@ -4735,10 +4646,7 @@ namespace Emby.Xtream.Plugin.Service
 
             if (categoryIds == null || categoryIds.Length == 0)
             {
-                var url = string.Format(
-                    CultureInfo.InvariantCulture,
-                    "{0}/player_api.php?username={1}&password={2}&action=get_series",
-                    config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty));
+                var url = XtreamUrls.PlayerApi(config, "get_series");
 
                 var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
                 allSeries = STJ.JsonSerializer.Deserialize<List<SeriesInfo>>(json, JsonOptions)
@@ -4753,10 +4661,7 @@ namespace Emby.Xtream.Plugin.Service
                     await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
                     try
                     {
-                        var url = string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0}/player_api.php?username={1}&password={2}&action=get_series&category_id={3}",
-                            config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), catId);
+                        var url = XtreamUrls.PlayerApi(config, "get_series", "category_id", catId);
 
                         var json = await _httpClient.GetStringAsync(url).ConfigureAwait(false);
                         var series = STJ.JsonSerializer.Deserialize<List<SeriesInfo>>(json, JsonOptions)
@@ -4806,10 +4711,7 @@ namespace Emby.Xtream.Plugin.Service
         private async Task<SeriesDetailInfo> FetchSeriesDetailAsync(
             int seriesId, PluginConfiguration config, CancellationToken cancellationToken)
         {
-            var url = string.Format(
-                CultureInfo.InvariantCulture,
-                "{0}/player_api.php?username={1}&password={2}&action=get_series_info&series_id={3}",
-                config.BaseUrl, Uri.EscapeDataString(config.Username ?? string.Empty), Uri.EscapeDataString(config.Password ?? string.Empty), seriesId);
+            var url = XtreamUrls.PlayerApi(config, "get_series_info", "series_id", seriesId);
 
             // Some providers answer 200 with an empty episode list when several detail requests
             // arrive at once, and the same series comes back fine a moment later.

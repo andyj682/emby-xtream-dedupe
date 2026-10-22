@@ -163,63 +163,6 @@ namespace Emby.Xtream.Plugin.Tests
         }
 
         // -----------------------------------------------------------------
-        // ComputeChannelListHash
-        // -----------------------------------------------------------------
-
-        [Fact]
-        public void ComputeChannelListHash_SameChannelsDifferentOrder_SameHash()
-        {
-            var a = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC One", EpgChannelId = "bbc1", CategoryId = 10 },
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 2, Name = "ITV",     EpgChannelId = "itv",  CategoryId = 10 },
-            };
-            var b = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 2, Name = "ITV",     EpgChannelId = "itv",  CategoryId = 10 },
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC One", EpgChannelId = "bbc1", CategoryId = 10 },
-            };
-            Assert.Equal(StrmSyncService.ComputeChannelListHash(a), StrmSyncService.ComputeChannelListHash(b));
-        }
-
-        [Fact]
-        public void ComputeChannelListHash_DifferentChannels_DifferentHash()
-        {
-            var a = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC One" },
-            };
-            var b = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC Two" },
-            };
-            Assert.NotEqual(StrmSyncService.ComputeChannelListHash(a), StrmSyncService.ComputeChannelListHash(b));
-        }
-
-        [Fact]
-        public void ComputeChannelListHash_NameChange_DifferentHash()
-        {
-            var a = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC One" },
-            };
-            var b = new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>
-            {
-                new Emby.Xtream.Plugin.Client.Models.LiveStreamInfo { StreamId = 1, Name = "BBC One HD" },
-            };
-            Assert.NotEqual(StrmSyncService.ComputeChannelListHash(a), StrmSyncService.ComputeChannelListHash(b));
-        }
-
-        [Fact]
-        public void ComputeChannelListHash_EmptyList_ReturnsStableHash()
-        {
-            var h1 = StrmSyncService.ComputeChannelListHash(new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>());
-            var h2 = StrmSyncService.ComputeChannelListHash(new List<Emby.Xtream.Plugin.Client.Models.LiveStreamInfo>());
-            Assert.Equal(h1, h2);
-            Assert.NotEmpty(h1);
-        }
-
-        // -----------------------------------------------------------------
         // ComputeSeriesEpisodeHash
         // -----------------------------------------------------------------
 
@@ -721,114 +664,15 @@ namespace Emby.Xtream.Plugin.Tests
                     cts.Token));
         }
 
-        [Fact]
-        public async System.Threading.Tasks.Task ResolveMovieTmdbIdForRetryAsync_LookupCanceled_Propagates()
-        {
-            // Same regression on the retry-path resolver: cancellation must propagate.
-            var item = new FailedSyncItem { Name = "The Matrix", TmdbId = null, StreamId = 1 };
-            var config = new PluginConfiguration
-            {
-                EnableNfoFiles = true,
-                EnableTmdbFolderNaming = false,
-                EnableTmdbFallbackLookup = true,
-            };
-            using var cts = new System.Threading.CancellationTokenSource();
-            cts.Cancel();
-
-            await Assert.ThrowsAsync<System.OperationCanceledException>(() =>
-                StrmSyncService.ResolveMovieTmdbIdForRetryAsync(
-                    item, "The Matrix", config,
-                    (n, y, ct) =>
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        return System.Threading.Tasks.Task.FromResult("603");
-                    },
-                    new NullLogger(),
-                    cts.Token));
-        }
+        // The retry path used to have resolvers of its own (ResolveMovieTmdbIdForRetryAsync,
+        // ResolveRetryFolderTmdbIdAsync). It now writes through the sync's writer, so these two
+        // folder-suffix cases from PR #65 run against ResolveMovieTmdbIdAsync. The cancellation,
+        // NFO-only and no-fallback cases are covered by the ResolveMovieTmdbIdAsync tests above.
 
         [Fact]
-        public async System.Threading.Tasks.Task ResolveMovieTmdbIdForRetryAsync_NfoOnly_PerformsLookup_WhenProviderTmdbMissing()
+        public async System.Threading.Tasks.Task FolderNaming_FallbackSuppliesSuffix_WhenProviderTmdbMissing()
         {
-            // Retry path: when EnableNfoFiles is on and the provider supplied no TMDB ID,
-            // the caller invokes this helper to run the fallback lookup. The helper itself
-            // is gated on EnableTmdbFallbackLookup, not EnableNfoFiles — the caller decides
-            // whether to invoke it.
-            var item = new FailedSyncItem { Name = "The Matrix", TmdbId = null, StreamId = 1 };
-            var config = new PluginConfiguration
-            {
-                EnableNfoFiles = true,
-                EnableTmdbFolderNaming = false,
-                EnableTmdbFallbackLookup = true,
-            };
-            var result = await StrmSyncService.ResolveMovieTmdbIdForRetryAsync(
-                item, "The Matrix", config,
-                (n, y, ct) => System.Threading.Tasks.Task.FromResult("603"),
-                new NullLogger(),
-                System.Threading.CancellationToken.None);
-
-            Assert.Equal("603", result);
-        }
-
-        [Fact]
-        public async System.Threading.Tasks.Task ResolveMovieTmdbIdForRetryAsync_NoFallback_ReturnsNull()
-        {
-            // No fallback configured: the helper has nothing to do when the provider
-            // didn't supply a valid ID. Returns null. The caller's EnableNfoFiles gate
-            // decides whether to invoke the helper at all.
-            var item = new FailedSyncItem { Name = "The Matrix", TmdbId = null, StreamId = 1 };
-            var config = new PluginConfiguration
-            {
-                EnableNfoFiles = true,
-                EnableTmdbFolderNaming = false,
-                EnableTmdbFallbackLookup = false,
-            };
-            int callCount = 0;
-            var result = await StrmSyncService.ResolveMovieTmdbIdForRetryAsync(
-                item, "The Matrix", config,
-                (n, y, ct) => { callCount++; return System.Threading.Tasks.Task.FromResult("603"); },
-                new NullLogger(),
-                System.Threading.CancellationToken.None);
-
-            Assert.Null(result);
-            Assert.Equal(0, callCount);
-        }
-
-        [Fact]
-        public async System.Threading.Tasks.Task ResolveMovieTmdbIdForRetryAsync_ProviderTmdbValid_NoFallback()
-        {
-            // Provider supplied a valid ID — the helper short-circuits, even when the
-            // fallback would otherwise be enabled.
-            var item = new FailedSyncItem { Name = "The Matrix", TmdbId = "603", StreamId = 1 };
-            var config = new PluginConfiguration
-            {
-                EnableNfoFiles = true,
-                EnableTmdbFolderNaming = false,
-                EnableTmdbFallbackLookup = true,
-            };
-            int callCount = 0;
-            var result = await StrmSyncService.ResolveMovieTmdbIdForRetryAsync(
-                item, "The Matrix", config,
-                (n, y, ct) => { callCount++; return System.Threading.Tasks.Task.FromResult("999"); },
-                new NullLogger(),
-                System.Threading.CancellationToken.None);
-
-            Assert.Equal("603", result);
-            Assert.Equal(0, callCount);
-        }
-
-        [Fact]
-        public async System.Threading.Tasks.Task RetryPath_EnableTmdbFolderNaming_FallbackSuppliesSuffix_WhenProviderTmdbMissing()
-        {
-            // CodeRabbit review on PR #65 (head 0aabe5e): retry path built folderName from the
-            // provider TMDB ID before falling back, so a retry wrote "The Matrix" while the main
-            // sync wrote "The Matrix [tmdbid=603]" — splitting one movie across two folders.
-            // After the fix, the retry path mirrors the main loop: when folder naming is on but
-            // the provider ID is missing, the fallback lookup fills the suffix.
-            //
-            // Calls the production helper directly so the test cannot drift from the live code
-            // path (CodeRabbit PR #65 review on head c0da4e7).
-            var item = new FailedSyncItem { Name = "The Matrix", TmdbId = null, StreamId = 1 };
+            var movie = new VodStreamInfo { Name = "The Matrix", TmdbId = null, StreamId = 1 };
             var config = new PluginConfiguration
             {
                 EnableNfoFiles = false,
@@ -836,24 +680,19 @@ namespace Emby.Xtream.Plugin.Tests
                 EnableTmdbFallbackLookup = true,
             };
 
-            var folderTmdbId = await StrmSyncService.ResolveRetryFolderTmdbIdAsync(
-                item, "The Matrix", config,
+            var tmdbId = await StrmSyncService.ResolveMovieTmdbIdAsync(
+                movie, "The Matrix", config,
                 (n, y, ct) => System.Threading.Tasks.Task.FromResult("603"),
                 new NullLogger(),
                 System.Threading.CancellationToken.None);
-            var folderName = StrmSyncService.BuildMovieFolderName("The Matrix", folderTmdbId);
 
-            Assert.Equal("603", folderTmdbId);
-            Assert.Contains("[tmdbid=603]", folderName);
+            Assert.Contains("[tmdbid=603]", StrmSyncService.BuildMovieFolderName("The Matrix", tmdbId));
         }
 
         [Fact]
-        public async System.Threading.Tasks.Task RetryPath_EnableTmdbFolderNaming_NoSuffix_WhenFallbackReturnsNull()
+        public async System.Threading.Tasks.Task FolderNaming_NoSuffix_WhenFallbackReturnsNull()
         {
-            // Companion to the suffix test: when folder naming is on, the provider has no
-            // ID, and the fallback lookup also returns nothing, the folder gets no suffix.
-            // We must not invent one. The fallback's null is the contract.
-            var item = new FailedSyncItem { Name = "The Matrix", TmdbId = null, StreamId = 1 };
+            var movie = new VodStreamInfo { Name = "The Matrix", TmdbId = null, StreamId = 1 };
             var config = new PluginConfiguration
             {
                 EnableNfoFiles = false,
@@ -861,54 +700,14 @@ namespace Emby.Xtream.Plugin.Tests
                 EnableTmdbFallbackLookup = true,
             };
 
-            var folderTmdbId = await StrmSyncService.ResolveRetryFolderTmdbIdAsync(
-                item, "The Matrix", config,
+            var tmdbId = await StrmSyncService.ResolveMovieTmdbIdAsync(
+                movie, "The Matrix", config,
                 (n, y, ct) => System.Threading.Tasks.Task.FromResult<string>(null),
                 new NullLogger(),
                 System.Threading.CancellationToken.None);
-            var folderName = StrmSyncService.BuildMovieFolderName("The Matrix", folderTmdbId);
 
-            Assert.Null(folderTmdbId);
-            Assert.Equal("The Matrix", folderName);
-            Assert.DoesNotContain("[tmdbid=", folderName);
-        }
-
-        [Fact]
-        public void RetryPath_EnableTmdbFolderNaming_Off_NoSuffixEven_WhenFallbackSucceeds()
-        {
-            // When folder naming is off, the retry path never runs the resolver for folder
-            // purposes. The suffix never goes on. (The NFO writer uses the resolver
-            // independently — covered by ResolveMovieTmdbIdForRetryAsync_NfoOnly_*.)
-            var item = new FailedSyncItem { Name = "The Matrix", TmdbId = null, StreamId = 1 };
-            var config = new PluginConfiguration
-            {
-                EnableNfoFiles = true,
-                EnableTmdbFolderNaming = false,
-                EnableTmdbFallbackLookup = true,
-            };
-
-            string folderTmdbId = config.EnableTmdbFolderNaming && IsValidProviderTmdbId(item.TmdbId)
-                ? item.TmdbId.Trim()
-                : null;
-            var folderName = StrmSyncService.BuildMovieFolderName("The Matrix", folderTmdbId);
-
-            Assert.Null(folderTmdbId);
-            Assert.Equal("The Matrix", folderName);
-            Assert.DoesNotContain("[tmdbid=", folderName);
-        }
-
-        // Mirrors StrmSyncService.IsValidTmdbId's contract: trim, parse as int, must be > 0.
-        // We can't call the private static directly, but the retry path only treats the
-        // value as a folder-suffix ID — it must be a positive integer in practice.
-        private static bool IsValidProviderTmdbId(string s)
-        {
-            if (string.IsNullOrWhiteSpace(s)) return false;
-            if (!int.TryParse(s.Trim(), System.Globalization.NumberStyles.None,
-                    System.Globalization.CultureInfo.InvariantCulture, out var n))
-            {
-                return false;
-            }
-            return n > 0;
+            Assert.Null(tmdbId);
+            Assert.Equal("The Matrix", StrmSyncService.BuildMovieFolderName("The Matrix", tmdbId));
         }
 
         [Fact]

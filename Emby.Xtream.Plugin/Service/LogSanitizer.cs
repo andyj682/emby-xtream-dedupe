@@ -22,13 +22,35 @@ namespace Emby.Xtream.Plugin.Service
             @"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
             RegexOptions.Compiled);
 
+        // Emby writes its own request lines to the same log, and a client that sends its access
+        // token in the query string gets it logged: "...&X-Emby-Token=<32 hex>&...". Those lines
+        // match the "LiveTv" keyword, so without this the "sanitized" download carried live Emby
+        // session tokens that work as admin on a reachable server. Emby wraps logged values in
+        // zero-width characters, which [^&\s"'] keeps inside the redacted value.
+        private static readonly Regex TokenParamRegex = new Regex(
+            @"(?i)\b(x-emby-token|x-mediabrowser-token|api_key|apikey|access_?token|x-emby-device-id|deviceid)=[^&\s""']+",
+            RegexOptions.Compiled);
+
+        // The same token in an authorization header: Token="<value>".
+        private static readonly Regex TokenHeaderRegex = new Regex(
+            @"(?i)\b(token|x-emby-token|x-mediabrowser-token)(\s*[:=]\s*)""[^""]*""",
+            RegexOptions.Compiled);
+
+        // Backstop for a token in a form the rules above miss: Emby tokens and API keys are
+        // 32 hex characters. Also hides Emby user and item IDs, which a bug report can do without.
+        // Explicit lookarounds rather than \b: .NET counts the zero-width characters Emby wraps
+        // values in as word characters, so \b never fires next to them.
+        private static readonly Regex HexTokenRegex = new Regex(
+            @"(?<![0-9A-Za-z])[0-9a-fA-F]{32}(?![0-9A-Za-z])",
+            RegexOptions.Compiled);
+
         private static readonly Regex ProviderHostRegex = new Regex(
             @"(https?://)([^/:]+)(:\d+)?(/player_api\.php|/live/|/movie/|/series/)",
             RegexOptions.Compiled);
 
         /// <summary>
-        /// Sanitizes a single log line by redacting PII: known credentials, IP addresses,
-        /// Xtream URL credentials, emails, and provider hostnames.
+        /// Sanitizes a single log line by redacting PII: known credentials, Emby access tokens,
+        /// IP addresses, Xtream URL credentials, emails, and provider hostnames.
         /// </summary>
         public static string SanitizeLine(string line,
             string username, string password,
@@ -39,6 +61,11 @@ namespace Emby.Xtream.Plugin.Service
             var s = line;
 
             s = RedactCredentials(s, username, password, dispatcharrUser, dispatcharrPass);
+
+            // Emby access tokens and API keys, before anything else can split them.
+            s = TokenParamRegex.Replace(s, "$1=<token-redacted>");
+            s = TokenHeaderRegex.Replace(s, "$1$2\"<token-redacted>\"");
+            s = HexTokenRegex.Replace(s, "<hex-redacted>");
 
             // Redact IP addresses, but preserve version numbers (e.g. Version=1.2.0.0)
             // Replace version patterns with placeholders first, then redact IPs, then restore

@@ -26,8 +26,6 @@ namespace Emby.Xtream.Plugin
         public string CustomEpgUrl { get; set; } = string.Empty;
         public bool DeferEpgToGuideData { get; set; } = true;
 
-        // Back-compat: migrate EnableEpg (bool) → EpgSource on first load
-        [Obsolete("Use EpgSource instead")] public bool EnableEpg { get; set; } = true;
         public int EpgCacheMinutes { get; set; } = 30;
         public int EpgDaysToFetch { get; set; } = 2;
         public int M3UCacheMinutes { get; set; } = 15;
@@ -72,6 +70,16 @@ namespace Emby.Xtream.Plugin
         /// </para>
         /// </summary>
         public string DispatcharrVideoCodecSource { get; set; } = "auto";
+        /// <summary>
+        /// Which Dispatcharr URL a channel plays from. <c>proxy</c> (default) uses
+        /// <c>/proxy/ts/stream/{uuid}</c>, which Dispatcharr's stats list as an anonymous client.
+        /// <c>xtream</c> uses the Xtream URL of the connection above
+        /// (<c>/live/{user}/{pass}/{id}.ts</c>), so Dispatcharr shows that account and applies its
+        /// stream limits. Both run through the same proxy code inside Dispatcharr. The Xtream URL
+        /// is only used when <see cref="BaseUrl"/> is the Dispatcharr server; otherwise it would
+        /// skip Dispatcharr. See ADR-022.
+        /// </summary>
+        public string DispatcharrStreamEndpoint { get; set; } = "proxy";
         public int[] SelectedDispatcharrProfileIds { get; set; } = new int[0];
         public string CachedDispatcharrProfiles { get; set; } = string.Empty;
 
@@ -298,7 +306,6 @@ namespace Emby.Xtream.Plugin
         public string AutoSyncDailyTime     { get; set; } = "03:00";    // HH:mm server local time
 
         // Sync state (persisted across restarts)
-        public string LastChannelListHash { get; set; } = string.Empty;
         public long LastMovieSyncTimestamp { get; set; }
         public long LastSeriesSyncTimestamp { get; set; }
         public int StrmNamingVersion { get; set; }  // default 0; bumped when naming logic changes to force re-sync
