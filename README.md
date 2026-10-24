@@ -428,6 +428,7 @@ they are safe to run against a working setup. Nothing writes to the live config.
 | `repair-id-churn.py` | Re-points exclusions and reviewed marks after a provider reassigns IDs. Dry run by default; `--write` emits a *candidate* config for you to diff and install yourself |
 | `check-repair-safety.py` | Run before installing a `repair-id-churn.py` candidate: would any proposed exclusion land on a title that is currently on disk? Checks both the stream ID and the folder name, because exclusion is stored per ID but enforced per name |
 | `config-counts-canary.py` | How many exclusions and reviewed marks does a config actually contain? Works on the live config, a test rig's, or a repair candidate. Distinguishes "empty" from "unreadable", which look identical in a count and mean opposite things |
+| `migrate-series-ids.py` | **Run before upgrading Dispatcharr to 0.33.** From 0.33 every series ID changes, and the old and new numbers overlap, so an untranslated config can exclude shows you keep (deleting their folders) and let excluded ones back in. Given an ID mapping exported from Dispatcharr's database, reports what an untranslated first sync would do; `--write` emits a translated config to install with Emby stopped. Its docstring has the export command and the procedure |
 | `find-crosslisted-series.py` | Finds a cross-listed series, reports titles that are only partly excluded, and can emit a minimal test config |
 | `xtream_catalogue.py` | Shared helpers (not run directly) |
 

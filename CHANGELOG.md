@@ -20,6 +20,13 @@ starting at 1.0.0 — independent of upstream
 
 ### Added
 
+- **A script to run before upgrading Dispatcharr to 0.33: `scripts/migrate-series-ids.py`.**
+  Dispatcharr 0.33 gives every series a new ID, and the new numbers overlap the old ones, so a
+  config left as it is can match your exclusions and reviewed marks to the wrong shows. On the
+  first sync that excludes some shows you keep, deleting their folders, and writes some shows you
+  excluded. The script translates the stored IDs using a mapping exported from Dispatcharr, and
+  first reports what an untranslated sync would have done. Translate before the first series sync
+  on 0.33; the script's own notes give the steps.
 - **Dispatcharr channels can play through Dispatcharr's Xtream address**, so Dispatcharr shows
   which Emby user is watching. Off by default; under Live TV → Dispatcharr Playback. From upstream.
 
