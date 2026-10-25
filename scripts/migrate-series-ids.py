@@ -27,13 +27,18 @@ Export the mapping (read-only; numbers only, no titles, no credentials):
 
   docker exec dispatcharr python manage.py shell -v 0 -c "from apps.vod.models import M3USeriesRelation as R; print('relation_id,series_id,category_id,active'); [print(f'{a},{b},{c or 0},{int(bool(d))}') for a,b,c,d in R.objects.values_list('id','series_id','category_id','m3u_account__is_active')]" > series-id-map.csv
 
+Optionally, show names for --risk-out (titles, so keep the file on your own host):
+
+  docker exec dispatcharr python manage.py shell -v 0 -c "import csv,sys; from apps.vod.models import Series as S; w=csv.writer(sys.stdout); w.writerow(['series_id','name']); [w.writerow(r) for r in S.objects.values_list('id','name')]" > series-names.csv
+
 A plain JSON object of old id -> new id is accepted too. Without the category and active
 columns, the risk counts cover every show Dispatcharr knows rather than only the ones in
 your selected categories, so they are an upper bound; the translation itself is identical.
 
 Usage:
   python3 scripts/migrate-series-ids.py --map series-id-map.csv [--config-glob PATTERN]
-      [--compare-map earlier-map.csv] [--write translated.xml]
+      [--compare-map earlier-map.csv] [--risk-out at-risk.tsv [--names series-names.csv]]
+      [--write translated.xml]
 
 On the NAS (no network needed; reads two files):
   docker run --rm -v /etc/localtime:/etc/localtime:ro \\
@@ -76,6 +81,27 @@ class Mapping(object):
         self.category_for = {}      # relation id -> category id (only when exported)
         self.active_for = {}        # relation id -> bool (only when exported)
         self.has_placement = False  # category + active columns were present
+
+    def categories_by_series(self, selected_categories):
+        """series id -> the selected categories it is visible in (empty without placement data)."""
+        out = {}
+        if not self.has_placement:
+            return out
+        selected = set(selected_categories)
+        for rel, series in self.new_for.items():
+            if not self.active_for.get(rel, False):
+                continue
+            cat = self.category_for.get(rel)
+            if selected and cat not in selected:
+                continue
+            out.setdefault(series, set()).add(cat)
+        return out
+
+    def old_ids_by_series(self):
+        out = {}
+        for rel, series in self.new_for.items():
+            out.setdefault(series, []).append(rel)
+        return out
 
     def visible_series(self, selected_categories):
         """Series ids a sync can see: an active provider entry in a selected category.
@@ -279,6 +305,75 @@ def untranslated_risk(t, old_excluded, old_reviewed, old_hashes, visible):
     return kept, deleted, leaked, returning
 
 
+def load_names(path):
+    """series id -> name, from a CSV export of Dispatcharr's Series table (series_id,name)."""
+    names = {}
+    with open(path, encoding="utf-8-sig", newline="") as handle:
+        for row in csv.reader(handle):
+            if len(row) < 2:
+                continue
+            try:
+                names[int(row[0])] = row[1]
+            except ValueError:
+                continue  # header, or a shell banner line
+    return names
+
+
+def write_risk_files(path, mapping, selected, visible, t, kept, deleted, leaked, returning, names):
+    """Every at-risk show, plus a per-category summary for choosing rig-test categories.
+
+    One row per (risk, show); a show can carry two risks (an excluded show that returns AND
+    is written). Categories are the selected ones the show is visible in — the ones a rig
+    must sync to reproduce that risk.
+    """
+    cats = mapping.categories_by_series(selected)
+    olds = mapping.old_ids_by_series()
+    rows = [("delete", s) for s in deleted] + [("leak", s) for s in leaked] + [("return", s) for s in returning]
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        w = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        w.writerow(["risk", "series_id", "name", "categories", "old_ids"])
+        for risk, s in rows:
+            w.writerow([risk, s, names.get(s, ""),
+                        ",".join(str(c) for c in sorted(cats.get(s, ()))),
+                        ",".join(str(o) for o in sorted(olds.get(s, ())))])
+
+    summary = path + ".by-category.tsv"
+    per = {}
+    partners = {}  # category -> {other category: shows they share}
+    deleted_set, leaked_set, returning_set = set(deleted), set(leaked), set(returning)
+    for s in visible:
+        show_cats = cats.get(s, ())
+        for c in show_cats:
+            row = per.setdefault(c, [0, 0, 0, 0, 0, 0])
+            row[0] += 1
+            row[1] += s in kept
+            row[2] += s in deleted_set
+            row[3] += s in leaked_set
+            row[4] += s in returning_set
+            # Cross-listed: the same show visible in another selected category too. On 0.33
+            # those share ONE id, which is what the fetch's id de-duplication, the collapse
+            # and the de-dup view's grouping must handle — so a rig test wants a category pair
+            # that shares many of them.
+            if len(show_cats) > 1:
+                row[5] += 1
+                counts = partners.setdefault(c, {})
+                for other in show_cats:
+                    if other != c:
+                        counts[other] = counts.get(other, 0) + 1
+    with open(summary, "w", encoding="utf-8", newline="") as handle:
+        w = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        w.writerow(["category_id", "visible_shows", "kept", "would_delete", "would_leak", "would_return",
+                    "cross_listed", "top_partner", "shared_with_partner"])
+        # Most deletions first, then smallest: the best rig categories reproduce the most
+        # damage for the fewest shows (each show a sync fetches is a provider call).
+        for c in sorted(per, key=lambda c: (-per[c][2], per[c][0])):
+            counts = partners.get(c, {})
+            # Ties broken on the lower category id, so the file is the same on every run.
+            top = min(counts, key=lambda o: (-counts[o], o)) if counts else ""
+            w.writerow([c] + per[c] + [top, counts.get(top, 0) if counts else 0])
+    return summary
+
+
 def compare_maps(a, b, label_a, label_b):
     both = set(a.new_for) & set(b.new_for)
     changed = sorted(r for r in both if a.new_for[r] != b.new_for[r])
@@ -336,6 +431,10 @@ def main(argv):
     parser.add_argument("--write", metavar="PATH", help="write the translated config here")
     parser.add_argument("--ledger", metavar="PATH",
                         help="ledger of written outputs (default: beside --map)")
+    parser.add_argument("--risk-out", metavar="PATH",
+                        help="write every at-risk show here (TSV), plus PATH.by-category.tsv")
+    parser.add_argument("--names", metavar="PATH",
+                        help="series_id,name CSV, to put show names in --risk-out")
     parser.add_argument("--config-glob", help="override the config XML search pattern")
     args = parser.parse_args(argv)
 
@@ -408,6 +507,14 @@ def main(argv):
     if t.hash_disagreements:
         print("  shows with two different stored episode lists: %d (first kept; costs one rewrite)"
               % t.hash_disagreements)
+
+    if args.risk_out:
+        if not mapping.has_placement:
+            print("\nNote: the mapping has no category column, so --risk-out lists no categories.")
+        summary = write_risk_files(args.risk_out, mapping, selected_categories(root), visible, t,
+                                   kept, deleted, leaked, returning,
+                                   load_names(args.names) if args.names else {})
+        print("\nAt-risk shows written to %s; per-category summary in %s" % (args.risk_out, summary))
 
     if not args.write:
         print("\nReport only — nothing written. Re-run with --write PATH to emit the translated config.")

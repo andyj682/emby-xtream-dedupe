@@ -236,6 +236,38 @@ def test_unreadable_store():
         check("writes nothing", not os.path.exists(os.path.join(tmp, "t.xml")))
 
 
+def test_risk_out():
+    print("risk-out files")
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg, mp = write_fixture(tmp)
+        names = os.path.join(tmp, "names.csv")
+        with open(names, "w", encoding="utf-8") as handle:
+            handle.write("62 objects imported automatically\nseries_id,name\n3,\"Show K, the kept one\"\n5,Show U\n")
+        out = os.path.join(tmp, "at-risk.tsv")
+        code, text = run(["--map", mp, "--config-glob", cfg, "--risk-out", out, "--names", names])
+        check("exits 0", code == 0, text)
+        with open(out, encoding="utf-8") as handle:
+            rows = [line.rstrip("\n").split("\t") for line in handle][1:]
+        check("one row per (risk, show): delete 3; leak 5, 11; return 7, 11",
+              [(r[0], r[1]) for r in rows] == [("delete", "3"), ("leak", "5"), ("leak", "11"),
+                                               ("return", "7"), ("return", "11")], str(rows))
+        by = {(r[0], r[1]): r for r in rows}
+        check("names joined, commas in a name survive",
+              by[("delete", "3")][2] == "Show K, the kept one" and by[("leak", "5")][2] == "Show U"
+              and by[("leak", "11")][2] == "", str(rows))
+        check("categories are the selected ones the show is visible in",
+              by[("delete", "3")][3] == "1,2" and by[("leak", "11")][3] == "1", str(rows))
+        check("old ids listed", by[("return", "7")][4] == "3,4", str(rows))
+        with open(out + ".by-category.tsv", encoding="utf-8") as handle:
+            summary = [line.rstrip("\n").split("\t") for line in handle][1:]
+        # cat 2: shows 3, 7, 30 -> kept 3, 30; delete 3; return 7; all three also in cat 1
+        # cat 1: shows 3, 5, 7, 9, 11, 30, 60 -> kept 3, 9, 30, 60; delete 3; leak 5, 11;
+        #        return 7, 11; cross-listed 3, 7, 30 (shared with cat 2)
+        check("summary counts, most deletions then smallest first",
+              summary == [["2", "3", "2", "1", "0", "1", "3", "1", "3"],
+                          ["1", "7", "4", "1", "2", "2", "3", "2", "3"]], str(summary))
+
+
 def test_django_banner():
     print("django shell banner before the header")
     with tempfile.TemporaryDirectory() as tmp:
@@ -262,6 +294,7 @@ if __name__ == "__main__":
     test_json_mapping()
     test_compare_maps()
     test_unreadable_store()
+    test_risk_out()
     test_django_banner()
     test_conflicting_map()
     print("\n%s" % ("ALL PASSED" if not FAILURES else "%d FAILED: %s" % (len(FAILURES), FAILURES)))
