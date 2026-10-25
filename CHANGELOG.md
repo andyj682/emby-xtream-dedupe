@@ -8,6 +8,8 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-25
+
 ### Security
 
 - **Only Emby administrators can use the plugin's controls now.** Until this release any signed-in
@@ -669,7 +671,8 @@ Xtream `.strm` generator, tuned for Dispatcharr-proxied providers.
 Built on upstream firestaerter3/emby-xtream (MIT); all upstream install, Live TV, Dispatcharr
 integration, and credential-safety features are included.
 
-[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.9.0...HEAD
+[Unreleased]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.10.0...HEAD
+[1.10.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.9.0...dedupe-v1.10.0
 [1.9.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.8.0...dedupe-v1.9.0
 [1.8.0]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.7.1...dedupe-v1.8.0
 [1.7.1]: https://github.com/andyj682/emby-xtream-dedupe/compare/dedupe-v1.7.0...dedupe-v1.7.1
