@@ -52,6 +52,10 @@ starting at 1.0.0 — independent of upstream
   whole reviewed list back, as it was when the page opened, so marks the sync made in the meantime
   were lost. With the Sync buttons now saving first, that would have happened on every second Sync
   click. The page now saves only the review changes you made on it.
+- **Switching to another window and back threw away unsaved changes on the settings page.** Emby
+  reopens the page when its window regains focus, and the page reloaded every setting from the
+  server when it did, including review decisions you had not saved yet. It now keeps the page as
+  it is while it holds unsaved changes; saving, or opening the page fresh, loads it as before.
 - **A second "Refresh the Emby library" checkbox did nothing.** It is gone; the one on the Library
   tab works as before.
 - **Syncs failed on providers that compress their responses.** From upstream.

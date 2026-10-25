@@ -60,6 +60,21 @@ function (BaseView, loading) {
 
         var self = this;
 
+        // Unsaved changes. Emby resumes the view when the browser window or tab regains focus,
+        // and onResume reloaded the whole form from the server, so switching away and back
+        // threw away every unsaved edit, de-dup decisions included. Set by any user edit,
+        // cleared by a load or a save. Setting a field from code fires no input/change event,
+        // so loadConfig's own writes do not count. Search boxes and the de-dup category
+        // filter only change what is shown, so they do not count either.
+        this.formDirty = false;
+        var markDirtyFromEvent = function (e) {
+            var t = e.target;
+            if (t && t.closest && t.closest('.categorySearchInput, .vodDedupedCatFilter, .seriesDedupedCatFilter')) return;
+            self.formDirty = true;
+        };
+        view.addEventListener('input', markDirtyFromEvent);
+        view.addEventListener('change', markDirtyFromEvent);
+
         view.querySelector('.xtreamConfigForm').addEventListener('submit', function (e) {
             e.preventDefault();
             saveConfig(self);
@@ -468,7 +483,9 @@ function (BaseView, loading) {
 
     View.prototype.onResume = function (options) {
         BaseView.prototype.onResume.apply(this, arguments);
-        loadConfig(this);
+        // Keep the form as it is while it holds unsaved changes (see formDirty). The
+        // dashboard figures are read-only and always refresh.
+        if (!this.formDirty) loadConfig(this);
         loadDashboard(this.view);
         checkForUpdate(this.view);
     };
@@ -801,6 +818,7 @@ function (BaseView, loading) {
             renderHealthBar(view, config);
             updateDashboardEmptyState(view, config);
 
+            instance.formDirty = false;
             loading.hide();
 
             // Page-level, deliberately not the de-dup view's heal notice: an unreadable store
@@ -928,6 +946,7 @@ function (BaseView, loading) {
             // up and no error was shown.
             return ApiClient.updatePluginConfiguration(pluginId, config).then(function () {
                 Dashboard.processPluginConfigurationUpdateResult();
+                instance.formDirty = false;
                 adoptSavedReviewed(instance, 'reviewedVodStreamIds', savedReviewedVod);
                 adoptSavedReviewed(instance, 'reviewedSeriesIds', savedReviewedSeries);
                 // Only when the auto-sync settings changed: writing them on every save replaced
@@ -1794,6 +1813,7 @@ function updateEpgVisibility(view) {
     }
 
     function setContentExclusion(instance, contentType, itemId, shouldBeExcluded) {
+        instance.formDirty = true;
         var list = contentType === 'vod' ? instance.excludedVodStreamIds : instance.excludedSeriesIds;
         var idx = list.indexOf(itemId);
         if (shouldBeExcluded && idx === -1) {
@@ -2038,6 +2058,7 @@ function updateEpgVisibility(view) {
                 }
             }
         }
+        if (healedTitles > 0) instance.formDirty = true;
         return { count: healedTitles, names: healedNames };
     }
 
@@ -2404,6 +2425,7 @@ function updateEpgVisibility(view) {
     // that spans categories). Excluding the title adds all its ids to the blocklist;
     // including removes them all.
     function updateDedupedExclusion(instance, type, cb) {
+        instance.formDirty = true;
         var cfg = dedupedConfig(type);
         var ids = parseItemIds(cb.getAttribute('data-item-ids'));
         if (!instance[cfg.excludeKey]) instance[cfg.excludeKey] = [];
@@ -2469,6 +2491,7 @@ function updateEpgVisibility(view) {
     // row's toggle still works — see the note there. Marking still writes every id in the
     // row, which is what keeps the stored set group-complete under the ANY read rule.
     function toggleTitleReviewed(instance, type, ids, row) {
+        instance.formDirty = true;
         if (!ids || !ids.length) return;
         var cfg = dedupedConfig(type);
         if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
@@ -2556,6 +2579,7 @@ function updateEpgVisibility(view) {
     }
 
     function bulkDedupedExclusion(instance, type, exclude) {
+        instance.formDirty = true;
         var cfg = dedupedConfig(type);
         var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
         if (!instance[cfg.excludeKey]) instance[cfg.excludeKey] = [];
@@ -2634,6 +2658,7 @@ function updateEpgVisibility(view) {
     // exclusions — reviewing is orthogonal to keep/exclude. The rows stay on screen showing
     // their new state rather than being culled immediately; see refreshDedupedRowsInPlace.
     function bulkMarkReviewed(instance, type) {
+        instance.formDirty = true;
         var cfg = dedupedConfig(type);
         var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
         if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
@@ -2652,6 +2677,7 @@ function updateEpgVisibility(view) {
     // mark or re-surfacing a batch in the unreviewed worklist — and because the batch stays on
     // screen after either button, undoing one with the other now works without re-filtering.
     function bulkMarkUnreviewed(instance, type) {
+        instance.formDirty = true;
         var cfg = dedupedConfig(type);
         var matches = instance[cfg.prefix + 'DedupedMatches'] || [];
         if (!instance[cfg.reviewedKey]) instance[cfg.reviewedKey] = {};
