@@ -334,6 +334,90 @@ with `Method 'AddConsumer' ... does not have an implementation`, so its own upda
 available. Download `Emby.Xtream.Plugin.dll` from the latest release by hand once. After that,
 updates work on both versions.
 
+### Upgrading Dispatcharr to 0.33
+
+**Do this before the first series sync on Dispatcharr 0.33 if you have excluded or reviewed any
+series.** Dispatcharr 0.33 gives every series a new ID. Until 0.32, a show's ID belonged to one
+provider entry in one category; from 0.33 it is the show's own ID. The two number ranges overlap, so
+an ID this plugin stored can now belong to a different show. On the first sync that means two
+things, neither of which announces itself:
+
+- **Shows you keep can be deleted.** A kept show whose new ID matches an old excluded ID is treated
+  as excluded, and the exclusion pass removes its folder. That pass ignores the orphan safety limit,
+  because an exclusion is normally a deliberate choice.
+- **Shows you excluded can come back.** One whose new ID matches an old reviewed ID gets past "Only
+  sync movies and series you have reviewed". The rest are held for review.
+
+Movies are not affected, and existing `.strm` files keep playing (episode IDs did not change).
+
+The fix is to translate the stored IDs with `scripts/migrate-series-ids.py`, using a mapping read from
+Dispatcharr's own database. That mapping does not change in the upgrade, so it can be exported before
+it. The procedure below was tested against a copy of a real install before being used on it: without
+the translation, the first sync deleted exactly the kept shows the script predicted; with it, nothing
+was deleted, nothing unwanted was written, and every exclusion and review mark carried over.
+
+Run the commands from a copy of this repository on the Docker host. Replace `dispatcharr`, `emby` and
+the config path with your own container names and path. The plugin's configuration file is named
+after its DLL, usually `Emby.Xtream.Plugin.xml`.
+
+1. **Stop syncs.** Turn off Auto-Sync on the plugin's Library tab and save, then stop Emby
+   (`docker stop emby`) so nothing can sync or rewrite the configuration while you work.
+2. **Back up the plugin configuration** and keep the copy:
+   ```bash
+   mkdir -p upgrade-033
+   cp -a /path/to/emby/config/plugins/configurations/Emby.Xtream.Plugin.xml upgrade-033/config-before.xml
+   ```
+3. **Export the ID mapping while Dispatcharr is still on 0.32.** Read-only; numbers only:
+   ```bash
+   docker exec dispatcharr python manage.py shell -v 0 -c "from apps.vod.models import M3USeriesRelation as R; print('relation_id,series_id,category_id,active'); [print(f'{a},{b},{c or 0},{int(bool(d))}') for a,b,c,d in R.objects.values_list('id','series_id','category_id','m3u_account__is_active')]" > upgrade-033/series-id-map.csv
+   ```
+4. **See what is at stake.** Report mode changes nothing; it says how many shows you keep an
+   untranslated sync would delete and how many it would let through:
+   ```bash
+   docker run --rm -v "$PWD/scripts":/scripts:ro -v "$PWD":/work python:3-alpine \
+     python3 /scripts/migrate-series-ids.py --map /work/upgrade-033/series-id-map.csv \
+     --config-glob /work/upgrade-033/config-before.xml
+   ```
+   Check that it reports `conflicts resolved toward keeping: 0`. If not, the config holds a show
+   that is both excluded and kept under different IDs; the translation keeps it, but look at it first.
+5. **Upgrade Dispatcharr to 0.33.** Leave Emby stopped.
+6. **Translate.** Export the mapping again on 0.33 and compare it with the first one. The script
+   refuses to write if any entry now maps to a different show:
+   ```bash
+   docker exec dispatcharr sh -c 'DJANGO_SECRET_KEY="$(tr -d "\r\n" < /data/jwt)" python manage.py shell -v 0 -c "from apps.vod.models import M3USeriesRelation as R; print(\"relation_id,series_id,category_id,active\"); [print(f\"{a},{b},{c or 0},{int(bool(d))}\") for a,b,c,d in R.objects.values_list(\"id\",\"series_id\",\"category_id\",\"m3u_account__is_active\")]"' > upgrade-033/series-id-map-033.csv
+   docker run --rm -v "$PWD/scripts":/scripts:ro -v "$PWD":/work python:3-alpine \
+     python3 /scripts/migrate-series-ids.py --map /work/upgrade-033/series-id-map-033.csv \
+     --compare-map /work/upgrade-033/series-id-map.csv \
+     --config-glob /work/upgrade-033/config-before.xml --write /work/upgrade-033/config-translated.xml
+   ```
+   (On 0.33, `manage.py` run through `docker exec` needs the `DJANGO_SECRET_KEY` prefix shown.)
+7. **Install the translated config and sync once by hand:**
+   ```bash
+   cp upgrade-033/config-translated.xml /path/to/emby/config/plugins/configurations/Emby.Xtream.Plugin.xml
+   chown --reference=upgrade-033/config-before.xml /path/to/emby/config/plugins/configurations/Emby.Xtream.Plugin.xml
+   docker start emby
+   ```
+   Run **Xtream Tuner – Sync Series** from Emby's Scheduled Tasks. In the log, expect **no**
+   `Removed excluded item folder` lines, your shows reading "unchanged", about the usual number held
+   for review, and `0 failed`.
+8. **Turn Auto-Sync back on.**
+
+Run the translation **once**, on the backup from step 2. Translating an already translated config
+treats new IDs as old ones; the script refuses a file it wrote itself, but cannot recognize one after
+Emby has saved it again.
+
+**Already synced on 0.33 without translating?** Turn off Auto-Sync and put back a configuration
+from before the upgrade, either your own copy or one from **Restore a Saved Configuration** on the
+Library tab. Then stop Emby, copy the plugin's configuration file to `upgrade-033/config-before.xml`,
+and run steps 6–8, leaving out `--compare-map` (there is no 0.32 mapping to compare with, and none is
+needed: the mapping did not change in the upgrade). The next sync rewrites the kept shows that were
+deleted, and the translated exclusions remove the excluded shows that came back. This path has not
+been tested as a whole the way the main procedure was; check the step 7 log before turning
+Auto-Sync back on.
+
+**Hold off on Dispatcharr's new per-category language tags.** Tagging a category adds a `[XX]` suffix to
+show names, which renames their folders, and can split one show into several with new IDs.
+
 ---
 
 ## Configuration Reference
@@ -428,7 +512,7 @@ they are safe to run against a working setup. Nothing writes to the live config.
 | `repair-id-churn.py` | Re-points exclusions and reviewed marks after a provider reassigns IDs. Dry run by default; `--write` emits a *candidate* config for you to diff and install yourself |
 | `check-repair-safety.py` | Run before installing a `repair-id-churn.py` candidate: would any proposed exclusion land on a title that is currently on disk? Checks both the stream ID and the folder name, because exclusion is stored per ID but enforced per name |
 | `config-counts-canary.py` | How many exclusions and reviewed marks does a config actually contain? Works on the live config, a test rig's, or a repair candidate. Distinguishes "empty" from "unreadable", which look identical in a count and mean opposite things |
-| `migrate-series-ids.py` | **Run before upgrading Dispatcharr to 0.33.** From 0.33 every series ID changes, and the old and new numbers overlap, so an untranslated config can exclude shows you keep (deleting their folders) and let excluded ones back in. Given an ID mapping exported from Dispatcharr's database, reports what an untranslated first sync would do; `--write` emits a translated config to install with Emby stopped. Its docstring has the export command and the procedure |
+| `migrate-series-ids.py` | **Run before upgrading Dispatcharr to 0.33.** From 0.33 every series ID changes, and the old and new numbers overlap, so an untranslated config can exclude shows you keep (deleting their folders) and let excluded ones back in. Given an ID mapping exported from Dispatcharr's database, reports what an untranslated first sync would do; `--write` emits a translated config to install with Emby stopped. Step by step: [Upgrading Dispatcharr to 0.33](#upgrading-dispatcharr-to-033) |
 | `find-crosslisted-series.py` | Finds a cross-listed series, reports titles that are only partly excluded, and can emit a minimal test config |
 | `xtream_catalogue.py` | Shared helpers (not run directly) |
 

@@ -23,6 +23,10 @@ upgrade and can be exported in advance.
 REPORT BY DEFAULT. Without --write it changes nothing and reports what an UNTRANSLATED
 first sync on 0.33 would do to this config, then what the translation would produce.
 
+THE FULL UPGRADE PROCEDURE, in order, is in the README under "Upgrading Dispatcharr to 0.33".
+The order matters more than any single command: syncs off before anything else, the mapping
+exported before the upgrade, the translated config installed before the first series sync.
+
 Export the mapping (read-only; numbers only, no titles, no credentials):
 
   docker exec dispatcharr python manage.py shell -v 0 -c "from apps.vod.models import M3USeriesRelation as R; print('relation_id,series_id,category_id,active'); [print(f'{a},{b},{c or 0},{int(bool(d))}') for a,b,c,d in R.objects.values_list('id','series_id','category_id','m3u_account__is_active')]" > series-id-map.csv
