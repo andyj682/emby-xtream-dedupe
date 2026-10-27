@@ -8,6 +8,19 @@ starting at 1.0.0 — independent of upstream
 
 ## [Unreleased]
 
+### Added
+
+- **Series decisions now follow a show when its ID changes**, as movie decisions already did. When
+  a show comes back under a new ID, its exclusion, reviewed mark and stored episode list move with
+  it during the ordinary sync. That covers a provider reissuing its IDs and, on Dispatcharr 0.33,
+  a show being merged with another or split by language. It works for every show your provider
+  gives a TMDB ID; Dispatcharr gives one for nearly all of them. Until now the plugin read that ID
+  under a field name Dispatcharr does not use, so series looked as if they had none.
+- **When two copies of one show are merged and you had kept one and excluded the other, the show
+  stays.** Before, if the merged show kept the excluded copy's ID, the show you kept dropped out of
+  the sync and its folder was later removed. The log names any show this applies to, so you can
+  exclude it again if you meant to. Only a show you reviewed counts as kept.
+
 ## [1.10.0] - 2026-10-25
 
 ### Security

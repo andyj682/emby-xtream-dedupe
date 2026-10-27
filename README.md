@@ -70,12 +70,17 @@ once: long-settled titles reappear as unreviewed, files pointing at dead IDs get
 orphans, and nothing in any log explains it. This fork treats that as a first-class failure
 rather than bad luck.
 
-- **Decisions re-point themselves** — the plugin records each movie's TMDB ID alongside the
-  decision, so a title returning under a new ID is recognised and your choice moves with it,
-  during the ordinary sync. There is deliberately no button and no prompt: the defining property
-  of this failure is that nothing tells you it happened, so anything needing you to notice has
-  already failed. It protects decisions from the moment it is installed onward, needs the provider
-  to supply a TMDB ID, and does not cover series, whose listing carries none.
+- **Decisions re-point themselves** — the plugin records each title's TMDB ID alongside the
+  decision, so a movie or series returning under a new ID is recognised and your choice moves with
+  it, during the ordinary sync. There is deliberately no button and no prompt: the defining
+  property of this failure is that nothing tells you it happened, so anything needing you to notice
+  has already failed. It protects decisions from the moment it is installed onward, and needs the
+  provider to supply a TMDB ID; Dispatcharr does for nearly every title.
+- **When copies of one show disagree, keeping wins** — on Dispatcharr 0.33 a series' ID also
+  changes when two copies of a show are merged into one. If you had kept one copy and excluded the
+  other, the merged show stays in your library rather than disappearing with the excluded copy, and
+  the log names it so you can exclude it again if that is what you meant. Only a show you actually
+  reviewed counts as kept; one that is merely unreviewed does not override an exclusion.
 - **The sync will not delete a folder it just wrote** — exclusions are stored per ID but enforced
   by folder name, so two catalog entries that resolve to one folder name used to make the sync
   write a title and then immediately delete it, on every run, leaving you with neither copy.
@@ -86,8 +91,8 @@ rather than bad luck.
   there, which is what turns them from same-disk copies into real ones. The rollback stays beside
   the configuration on purpose: it is taken on every write, so it has to be somewhere always
   available.
-- **Recovery scripts for what the plugin cannot reach** — damage that predates installation, series
-  identity, and repairing a configuration after the fact. See
+- **Recovery scripts for what the plugin cannot reach** — damage that predates installation, titles
+  with no TMDB ID, and repairing a configuration after the fact. See
   [Diagnostics and recovery scripts](#diagnostics-and-recovery-scripts).
 
 The in-plugin half exists because the alternative did not hold up in practice: tooling that needs

@@ -232,8 +232,8 @@ namespace Emby.Xtream.Plugin
         /// <para>
         /// The pairing is what makes "the provider rotated this id" distinguishable from
         /// "the user withdrew this decision": an entry whose StreamId is no longer in
-        /// either store means the latter, and is dropped. Series are excluded — they carry
-        /// no TMDB id on the <c>get_series</c> list payload.
+        /// either store means the latter, and is dropped. Series have their own map,
+        /// <see cref="SeriesDecisionTmdbIdsJson"/>.
         /// </para>
         /// </summary>
         public string VodDecisionTmdbIdsJson { get; set; } = string.Empty;
@@ -255,6 +255,15 @@ namespace Emby.Xtream.Plugin
         /// JSON array of reviewed SeriesIds; reviewed = this set OR excluded.
         /// </summary>
         public string ReviewedSeriesIdsJson { get; set; } = string.Empty;
+
+        /// <summary>
+        /// FORK (ADR-F009): SeriesId → TMDB id for every series id that holds an exclusion, a
+        /// reviewed mark or a stored episode list. JSON object, the same shape as
+        /// <see cref="VodDecisionTmdbIdsJson"/>. Lets those carry over when a show comes back under
+        /// a new id — a provider re-issue, or on Dispatcharr 0.33 a merge or a language split.
+        /// Plugin bookkeeping, not a setting.
+        /// </summary>
+        public string SeriesDecisionTmdbIdsJson { get; set; } = string.Empty;
 
         // Content name cleaning
         public bool EnableContentNameCleaning { get; set; }

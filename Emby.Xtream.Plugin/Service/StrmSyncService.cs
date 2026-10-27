@@ -792,7 +792,7 @@ namespace Emby.Xtream.Plugin.Service
         {
             "ExcludedVodStreamIds", "ExcludedSeriesIds",
             "ReviewedVodStreamIdsJson", "ReviewedSeriesIdsJson",
-            "VodDecisionTmdbIdsJson", "SeriesEpisodeHashesJson",
+            "VodDecisionTmdbIdsJson", "SeriesDecisionTmdbIdsJson", "SeriesEpisodeHashesJson",
             "LastMovieSyncTimestamp", "LastSeriesSyncTimestamp",
             "SyncHistoryJson", "LastInstalledVersion",
             "StrmNamingVersion", "EpisodeFilenameMigrationVersion",
@@ -2101,6 +2101,466 @@ namespace Emby.Xtream.Plugin.Service
         }
 
         /// <summary>
+        /// What a <see cref="ReconcileSeriesDecisionIdentity"/> pass did.
+        /// </summary>
+        internal sealed class SeriesIdentityReconciliation
+        {
+            public int Backfilled { get; set; }
+
+            /// <summary>Records of listed ids whose TMDB id changed, brought up to date.</summary>
+            public int Updated { get; set; }
+
+            public int Pruned { get; set; }
+            public int Retired { get; set; }
+            public int RepointedExclusions { get; set; }
+            public int RepointedReviews { get; set; }
+            public int RepointedHashes { get; set; }
+
+            /// <summary>Exclusions not carried because a copy of the same show is kept.</summary>
+            public int DeclinedExclusions { get; set; }
+
+            /// <summary>Distinct series ids that received a carried decision or episode list.</summary>
+            public int MovedShows { get; set; }
+
+            /// <summary>Human-readable <c>old → new</c> evidence, capped by the caller.</summary>
+            public List<string> Samples { get; private set; }
+
+            /// <summary>
+            /// Listed ids whose exclusion was lifted because a kept copy merged into them, by name.
+            /// Not capped: each one undid a user's decision, so each one is reported.
+            /// </summary>
+            public List<string> Lifted { get; private set; }
+
+            public SeriesIdentityReconciliation()
+            {
+                Samples = new List<string>();
+                Lifted = new List<string>();
+            }
+
+            public bool ChangedStores
+            {
+                get { return RepointedExclusions > 0 || RepointedReviews > 0 || RepointedHashes > 0 || Lifted.Count > 0; }
+            }
+
+            public bool ChangedAnything
+            {
+                get { return ChangedStores || Backfilled > 0 || Updated > 0 || Pruned > 0 || Retired > 0; }
+            }
+        }
+
+        /// <summary>
+        /// Carries series decisions across a show coming back under a new id (ADR-F009): a provider
+        /// re-issuing its ids, or on Dispatcharr 0.33 a show merged into another or split by
+        /// language. The series twin of <see cref="ReconcileMovieDecisionIdentity"/>, with two
+        /// deliberate differences, both from ADR-F009.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <b>Keep wins, where kept means reviewed and not excluded.</b> An exclusion is not carried
+        /// onto a show any copy of which is kept, and a listed id that is excluded is LIFTED when a
+        /// kept copy of the same show has just merged into it and no listed copy is kept. Lifting
+        /// removes a decision, which the movie pass never does; it is reported by name. Unreviewed
+        /// is not kept — an unreviewed copy carries no decision, so an exclusion on another copy
+        /// is the only decision there is, and it carries.
+        /// </para>
+        /// <para>
+        /// <b>A moved record is retired once handled.</b> The movie pass keeps old records and
+        /// relies on idempotency. Here a lift that ran again would undo a user re-excluding the
+        /// show on every sync, so each dead record gets exactly one move; the new id gets its own
+        /// record, which covers a later third move. A dead id whose TMDB id is listed nowhere keeps
+        /// its record, so a show that returns later is still recognized.
+        /// </para>
+        /// <para>
+        /// Runs against the unfiltered, id-deduplicated listing and before the exclusion filter, so
+        /// a carried exclusion applies on the same run. Matching is on TMDB id only — never name.
+        /// </para>
+        /// </remarks>
+        /// <param name="hashes">
+        /// The stored episode lists, keyed by series id as a string. Null when the stored value did
+        /// not parse: the lists are then neither carried nor used to keep a record alive.
+        /// </param>
+        /// <param name="allowRepoint">
+        /// False when the listing was partial: absence is how a dead id is recognized, so a
+        /// category that failed to answer would make its shows look moved. Backfilling and pruning
+        /// infer nothing from absence and still run.
+        /// </param>
+        internal static SeriesIdentityReconciliation ReconcileSeriesDecisionIdentity(
+            IList<SeriesInfo> fetchedSeries,
+            HashSet<int> excludedIds,
+            HashSet<int> reviewedIds,
+            Dictionary<string, string> hashes,
+            Dictionary<int, int> tmdbBySeriesId,
+            bool allowRepoint,
+            int sampleSize)
+        {
+            var result = new SeriesIdentityReconciliation();
+            if (fetchedSeries == null || excludedIds == null || reviewedIds == null || tmdbBySeriesId == null)
+            {
+                return result;
+            }
+
+            Func<int, bool> holdsSomething = id =>
+                excludedIds.Contains(id)
+                || reviewedIds.Contains(id)
+                || (hashes != null && hashes.ContainsKey(id.ToString(CultureInfo.InvariantCulture)));
+
+            // 1. Drop records whose id no longer holds anything. Same reason as the movie pass: an
+            //    orphaned record would otherwise read as a move and restore what the user withdrew.
+            //    Not when the episode lists are unreadable: an id that holds only a list would look
+            //    empty and lose its record.
+            var stale = new List<int>();
+            foreach (var kv in tmdbBySeriesId)
+            {
+                if (hashes != null && !holdsSomething(kv.Key))
+                {
+                    stale.Add(kv.Key);
+                }
+            }
+
+            foreach (var id in stale)
+            {
+                tmdbBySeriesId.Remove(id);
+                result.Pruned++;
+            }
+
+            // 2. Index the listing. Lowest id wins where several listed ids share a TMDB id (every
+            //    category's copy on 0.32, an unmerged pair on 0.33), so the target cannot flip.
+            var liveIds = new HashSet<int>();
+            var liveIdByTmdb = new Dictionary<int, int>();
+            var tmdbByLiveId = new Dictionary<int, int>();
+            var nameBySeriesId = new Dictionary<int, string>();
+            foreach (var s in fetchedSeries)
+            {
+                if (s == null)
+                {
+                    continue;
+                }
+
+                liveIds.Add(s.SeriesId);
+                nameBySeriesId[s.SeriesId] = s.Name;
+
+                int tmdb;
+                if (!TryParseTmdbId(s.TmdbId, out tmdb))
+                {
+                    continue;
+                }
+
+                tmdbByLiveId[s.SeriesId] = tmdb;
+
+                int existing;
+                if (!liveIdByTmdb.TryGetValue(tmdb, out existing) || s.SeriesId < existing)
+                {
+                    liveIdByTmdb[tmdb] = s.SeriesId;
+                }
+            }
+
+            // 3. Backfill, from the listing, for every listed id that holds something — and bring a
+            //    listed id's record up to date when its TMDB id has changed (Dispatcharr correcting
+            //    or filling it in, or a merge handing it a show's id). A record only matters once
+            //    its id is gone, and then the latest TMDB id it carried is the one to look for.
+            foreach (var kv in tmdbByLiveId)
+            {
+                int recorded;
+                if (tmdbBySeriesId.TryGetValue(kv.Key, out recorded))
+                {
+                    if (recorded != kv.Value)
+                    {
+                        tmdbBySeriesId[kv.Key] = kv.Value;
+                        result.Updated++;
+                    }
+                }
+                else if (holdsSomething(kv.Key))
+                {
+                    tmdbBySeriesId[kv.Key] = kv.Value;
+                    result.Backfilled++;
+                }
+            }
+
+            if (!allowRepoint)
+            {
+                return result;
+            }
+
+            // Decisions as they stood before this pass, so nothing it carries changes how a later
+            // step reads a copy (the movie pass's reviewedBefore, extended to exclusions).
+            var excludedBefore = new HashSet<int>(excludedIds);
+            var reviewedBefore = new HashSet<int>(reviewedIds);
+            Func<int, bool> kept = id => reviewedBefore.Contains(id) && !excludedBefore.Contains(id);
+
+            var moves = new List<KeyValuePair<int, int>>();
+            foreach (var kv in tmdbBySeriesId)
+            {
+                int newId;
+                if (!liveIds.Contains(kv.Key)
+                    && liveIdByTmdb.TryGetValue(kv.Value, out newId)
+                    && newId != kv.Key)
+                {
+                    moves.Add(new KeyValuePair<int, int>(kv.Key, newId));
+                }
+            }
+
+            moves.Sort((a, b) => a.Key.CompareTo(b.Key));
+
+            // Shows with a kept copy: a listed one, or one among the copies that just moved.
+            var liveKeptTmdb = new HashSet<int>();
+            foreach (var kv in tmdbByLiveId)
+            {
+                if (kept(kv.Key))
+                {
+                    liveKeptTmdb.Add(kv.Value);
+                }
+            }
+
+            var keptTmdb = new HashSet<int>(liveKeptTmdb);
+            foreach (var move in moves)
+            {
+                if (kept(move.Key))
+                {
+                    keptTmdb.Add(tmdbBySeriesId[move.Key]);
+                }
+            }
+
+            var received = new HashSet<int>();
+
+            // 4. Reviewed marks.
+            foreach (var move in moves)
+            {
+                if (reviewedBefore.Contains(move.Key) && !reviewedIds.Contains(move.Value))
+                {
+                    reviewedIds.Add(move.Value);
+                    result.RepointedReviews++;
+                    received.Add(move.Value);
+                }
+            }
+
+            // 5. Stored episode lists, so the show reads "unchanged" rather than being re-fetched.
+            if (hashes != null)
+            {
+                foreach (var move in moves)
+                {
+                    var oldKey = move.Key.ToString(CultureInfo.InvariantCulture);
+                    var newKey = move.Value.ToString(CultureInfo.InvariantCulture);
+                    string hash;
+                    if (hashes.TryGetValue(oldKey, out hash) && !hashes.ContainsKey(newKey))
+                    {
+                        hashes[newKey] = hash;
+                        result.RepointedHashes++;
+                        received.Add(move.Value);
+                    }
+                }
+            }
+
+            // 6. Exclusions — unless any copy of the show is kept. Getting this wrong deletes a
+            //    folder the user chose to keep, with no ratio guard; declining costs a re-exclusion.
+            foreach (var move in moves)
+            {
+                if (!excludedBefore.Contains(move.Key) || excludedIds.Contains(move.Value))
+                {
+                    continue;
+                }
+
+                if (keptTmdb.Contains(tmdbBySeriesId[move.Key]))
+                {
+                    result.DeclinedExclusions++;
+                    continue;
+                }
+
+                excludedIds.Add(move.Value);
+                result.RepointedExclusions++;
+                received.Add(move.Value);
+            }
+
+            // 7. Lift: a kept copy merged into a listed id that is excluded, and no listed copy of
+            //    the show is kept. Without this the show the user kept drops out of the sync and
+            //    orphan cleanup removes its folder.
+            foreach (var move in moves)
+            {
+                if (!kept(move.Key)
+                    || !excludedBefore.Contains(move.Value)
+                    || !excludedIds.Contains(move.Value)
+                    || liveKeptTmdb.Contains(tmdbBySeriesId[move.Key]))
+                {
+                    continue;
+                }
+
+                excludedIds.Remove(move.Value);
+                reviewedIds.Add(move.Value);
+                received.Add(move.Value);
+
+                string name;
+                result.Lifted.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0} (id {1}, kept as id {2})",
+                    nameBySeriesId.TryGetValue(move.Value, out name) && !string.IsNullOrWhiteSpace(name) ? name : "?",
+                    move.Value,
+                    move.Key));
+            }
+
+            // 8. Records: the new id gets its own, the old one is retired — see the remarks.
+            var sampled = new HashSet<int>();
+            foreach (var move in moves)
+            {
+                var tmdb = tmdbBySeriesId[move.Key];
+                tmdbBySeriesId.Remove(move.Key);
+                result.Retired++;
+
+                if (holdsSomething(move.Value) && !tmdbBySeriesId.ContainsKey(move.Value))
+                {
+                    tmdbBySeriesId[move.Value] = tmdb;
+                }
+
+                if (received.Contains(move.Value) && sampled.Add(move.Value) && result.Samples.Count < sampleSize)
+                {
+                    string name;
+                    result.Samples.Add(string.Format(
+                        CultureInfo.InvariantCulture,
+                        "{0} → {1} (tmdb {2}) {3}",
+                        move.Key,
+                        move.Value,
+                        tmdb,
+                        nameBySeriesId.TryGetValue(move.Value, out name) ? name : string.Empty).TrimEnd());
+                }
+            }
+
+            result.MovedShows = received.Count;
+            return result;
+        }
+
+        /// <summary>
+        /// Reads the stores, runs <see cref="ReconcileSeriesDecisionIdentity"/>, writes back what
+        /// changed and reports it.
+        /// </summary>
+        private void ReconcileSeriesDecisionIdentityForSync(
+            PluginConfiguration config,
+            List<SeriesInfo> fetchedSeries,
+            bool allowRepoint,
+            Action saveConfig)
+        {
+            var reviewedIds = DeserializeIdSet(config.ReviewedSeriesIdsJson);
+            if (reviewedIds == null)
+            {
+                _logger.Error(
+                    "ReviewedSeriesIdsJson could not be parsed, so series decisions will not be reconciled against "
+                    + "id changes this run. Every reviewed mark would otherwise look withdrawn. Check the plugin "
+                    + "configuration file.");
+                return;
+            }
+
+            var tmdbBySeriesId = DeserializeTmdbMap(config.SeriesDecisionTmdbIdsJson);
+            if (tmdbBySeriesId == null)
+            {
+                _logger.Error(
+                    "SeriesDecisionTmdbIdsJson could not be parsed, so series decisions will not be reconciled against "
+                    + "id changes this run. The field is left untouched for repair rather than rebuilt. Check the "
+                    + "plugin configuration file.");
+                return;
+            }
+
+            // Strict read: DeserializeEpisodeHashes turns garbage into an empty map, which is right
+            // for the skip paths but would let this pass write a near-empty map over the original.
+            Dictionary<string, string> hashes = null;
+            if (string.IsNullOrWhiteSpace(config.SeriesEpisodeHashesJson))
+            {
+                hashes = new Dictionary<string, string>();
+            }
+            else
+            {
+                try
+                {
+                    hashes = STJ.JsonSerializer.Deserialize<Dictionary<string, string>>(config.SeriesEpisodeHashesJson);
+                }
+                catch
+                {
+                    hashes = null;
+                }
+            }
+
+            var excludedIds = new HashSet<int>(config.ExcludedSeriesIds ?? new int[0]);
+
+            const int SampleSize = 15;
+            var outcome = ReconcileSeriesDecisionIdentity(
+                fetchedSeries, excludedIds, reviewedIds, hashes, tmdbBySeriesId, allowRepoint, SampleSize);
+
+            if (!outcome.ChangedAnything)
+            {
+                return;
+            }
+
+            if (outcome.ChangedStores)
+            {
+                var ordered = new List<int>(excludedIds);
+                ordered.Sort();
+                config.ExcludedSeriesIds = ordered.ToArray();
+                config.ReviewedSeriesIdsJson = SerializeIdSet(reviewedIds);
+                if (hashes != null && outcome.RepointedHashes > 0)
+                {
+                    config.SeriesEpisodeHashesJson = STJ.JsonSerializer.Serialize(hashes);
+                }
+            }
+
+            config.SeriesDecisionTmdbIdsJson = SerializeTmdbMap(tmdbBySeriesId);
+            saveConfig?.Invoke();
+
+            if (outcome.MovedShows > 0)
+            {
+                _logger.Info(
+                    "Series identity: {0} show(s) came back under a new SeriesId — carried {1} exclusion(s), {2} reviewed "
+                    + "mark(s) and {3} stored episode list(s) across: {4}{5}",
+                    outcome.MovedShows,
+                    outcome.RepointedExclusions,
+                    outcome.RepointedReviews,
+                    outcome.RepointedHashes,
+                    string.Join(", ", outcome.Samples),
+                    outcome.MovedShows > outcome.Samples.Count ? ", ..." : string.Empty);
+            }
+
+            if (outcome.DeclinedExclusions > 0)
+            {
+                _logger.Info(
+                    "Series identity: did not carry {0} exclusion(s) onto a show you keep under another of its ids — "
+                    + "keep wins. Exclude the show again if that is not what you want.",
+                    outcome.DeclinedExclusions);
+            }
+
+            if (outcome.Lifted.Count > 0)
+            {
+                _logger.Warn(
+                    "Series identity: lifted the exclusion on {0} show(s), because a copy you kept is now listed under "
+                    + "the excluded id — keep wins. Exclude again in the de-dup view if you meant to drop them: {1}",
+                    outcome.Lifted.Count,
+                    string.Join(", ", outcome.Lifted));
+            }
+
+            if (outcome.Backfilled > 0 || outcome.Updated > 0 || outcome.Pruned > 0 || outcome.Retired > 0)
+            {
+                var holding = new HashSet<int>(excludedIds);
+                holding.UnionWith(reviewedIds);
+                if (hashes != null)
+                {
+                    foreach (var key in hashes.Keys)
+                    {
+                        int id;
+                        if (int.TryParse(key, NumberStyles.None, CultureInfo.InvariantCulture, out id))
+                        {
+                            holding.Add(id);
+                        }
+                    }
+                }
+
+                _logger.Info(
+                    "Series identity: recorded a TMDB id for {0} series id(s) ({1} updated), dropped {2} record(s) for "
+                    + "decisions no longer stored, retired {3} record(s) that moved — {4} of {5} series ids holding a "
+                    + "decision or episode list now carry one",
+                    outcome.Backfilled,
+                    outcome.Updated,
+                    outcome.Pruned,
+                    outcome.Retired,
+                    tmdbBySeriesId.Count,
+                    holding.Count);
+            }
+        }
+
+        /// <summary>
         /// Indexes an existing STRM library tree by the identity its folder names carry: the
         /// TMDB ID from a <c>[tmdbid=N]</c> suffix, and the ID-stripped folder name.
         /// </summary>
@@ -2878,9 +3338,8 @@ namespace Emby.Xtream.Plugin.Service
                         seriesFetch.FailedCategoryCount, seriesFetch.RequestedCategoryCount);
                 }
 
-                // The series half of the day's catalogue snapshot (ADR-F005 mechanism 6). Series
-                // carry no TMDB id on this payload, so these rows resolve by name — which is
-                // exactly why the snapshot remains the only route for series identity.
+                // The series half of the day's catalogue snapshot (ADR-F005 mechanism 6). Rows carry
+                // the TMDB id where the panel sends one — Dispatcharr does, as tmdb_id (ADR-F009).
                 if (!seriesFetch.HadFailures)
                 {
                     WriteCatalogueSnapshot(
@@ -2890,6 +3349,11 @@ namespace Emby.Xtream.Plugin.Service
                             .Select(s => FormatSnapshotRow("series", s.SeriesId, s.TmdbId, s.Name, s.CategoryId))
                             .ToList());
                 }
+
+                // ADR-F009: carry decisions to shows that came back under a new id. Before the
+                // exclusion filter and the collapse below, both of which read the stores it writes,
+                // and against the unfiltered listing so excluded shows are visible to it.
+                ReconcileSeriesDecisionIdentityForSync(config, fetchedSeries, !seriesFetch.HadFailures, saveConfig);
 
                 // Collapse key for every fetched series, built once up front: (target folder +
                 // cleaned name). Both the exclusion propagation immediately below and the collapse

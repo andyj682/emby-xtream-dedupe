@@ -36,6 +36,7 @@ exists, and a bare `ADR-016` anywhere in the tree is unambiguously upstream's.
 | [ADR-F006](006-fetch-movie-detail-on-sync.md) | Fetch movie detail for titles we sync | **Withdrawn** (built and measured; no consumer) |
 | [ADR-F007](007-never-delete-what-the-sync-just-wrote.md) | Never delete a folder the sync just wrote | Accepted |
 | [ADR-F008](008-publish-the-wanted-set.md) | Publish the wanted set as a file | Proposed |
+| [ADR-F009](009-series-decisions-survive-id-changes.md) | Series decisions survive ID changes | Accepted |
 
 ## History
 
